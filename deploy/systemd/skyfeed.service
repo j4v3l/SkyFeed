@@ -1,0 +1,17 @@
+[Unit]
+Description=SkyFeed ADS-B Discord bot container
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/skyfeed
+ExecStart=/usr/bin/docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml up -d
+ExecStop=/usr/bin/docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml down
+TimeoutStartSec=0
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

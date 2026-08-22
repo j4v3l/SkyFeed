@@ -1,0 +1,8 @@
+services:
+  skyfeed:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+      args:
+        VERSION: dev
+        COMMIT: local

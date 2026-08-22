@@ -1,0 +1,2 @@
+go test fuzz v1
+string("sf:v1: :0")

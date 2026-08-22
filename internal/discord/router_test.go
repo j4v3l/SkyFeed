@@ -1,0 +1,136 @@
+package discord
+
+import (
+	"testing"
+	"time"
+
+	disgocord "github.com/disgoorg/disgo/discord"
+	"github.com/j4v3l/SkyFeed/internal/domain"
+)
+
+type snapshotStub struct{ snapshot *domain.Snapshot }
+
+func (stub snapshotStub) Current() *domain.Snapshot { return stub.snapshot }
+
+type responseRecorder struct {
+	created     []disgocord.MessageCreate
+	updated     []disgocord.MessageUpdate
+	modals      []disgocord.ModalCreate
+	completions [][]disgocord.AutocompleteChoice
+}
+
+func (recorder *responseRecorder) CreateMessage(message disgocord.MessageCreate) error {
+	recorder.created = append(recorder.created, message)
+	return nil
+}
+func (recorder *responseRecorder) UpdateMessage(message disgocord.MessageUpdate) error {
+	recorder.updated = append(recorder.updated, message)
+	return nil
+}
+func (recorder *responseRecorder) ShowModal(modal disgocord.ModalCreate) error {
+	recorder.modals = append(recorder.modals, modal)
+	return nil
+}
+func (recorder *responseRecorder) Autocomplete(choices []disgocord.AutocompleteChoice) error {
+	recorder.completions = append(recorder.completions, choices)
+	return nil
+}
+
+func TestRouterCachedCommandsAcknowledgeWithinTarget(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, 15*time.Minute), now.Add(-time.Hour))
+	router.now = func() time.Time { return now }
+	for _, request := range []CommandRequest{
+		{Name: "status", UserID: 1, GuildID: 2, ChannelID: 3},
+		{Name: "nearby", UserID: 1, GuildID: 2, ChannelID: 3},
+		{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}},
+		{Name: "help", UserID: 1, GuildID: 2, ChannelID: 3},
+	} {
+		recorder := &responseRecorder{}
+		started := time.Now()
+		if err := router.HandleCommand(request, recorder); err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed >= 100*time.Millisecond {
+			t.Fatalf("%s response took %s", request.Name, elapsed)
+		}
+		if len(recorder.created) != 1 {
+			t.Fatalf("%s created %d responses", request.Name, len(recorder.created))
+		}
+	}
+}
+
+func TestRouterComponentBindingAndModalFlow(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), now)
+	router.now = func() time.Time { return now }
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	button := recorder.created[0].Components[0].(disgocord.ActionRowComponent).Components[0].(disgocord.ButtonComponent)
+	wrongUser := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 9, GuildID: 2, ChannelID: 3}, wrongUser); err != nil {
+		t.Fatal(err)
+	}
+	if len(wrongUser.created) != 1 || wrongUser.created[0].Flags&disgocord.MessageFlagEphemeral == 0 {
+		t.Fatal("unauthorized component did not get one private response")
+	}
+	modalResponse := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, modalResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(modalResponse.modals) != 1 {
+		t.Fatalf("got %d modals", len(modalResponse.modals))
+	}
+	submit := &responseRecorder{}
+	if err := router.HandleModal(ModalRequest{CustomID: modalResponse.modals[0].CustomID, UserID: 1, GuildID: 2, ChannelID: 3, Values: map[string]string{"label": "Home", "cooldown": "15"}}, submit); err != nil {
+		t.Fatal(err)
+	}
+	if len(submit.created) != 1 {
+		t.Fatalf("modal created %d responses", len(submit.created))
+	}
+}
+
+func TestAutocompleteIsBounded(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	for index := 0; index < 40; index++ {
+		snapshot.Search = append(snapshot.Search, domain.AircraftKey{ICAO: "DEF" + string(rune('A'+index%26))})
+	}
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), now)
+	recorder := &responseRecorder{}
+	if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft"}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(recorder.completions[0]); got != 25 {
+		t.Fatalf("got %d choices", got)
+	}
+}
+
+func TestDeferredInteractionPolicy(t *testing.T) {
+	if deferCommand(CommandRequest{Name: "status"}) {
+		t.Fatal("cached status should respond immediately")
+	}
+	report := CommandRequest{Name: "reports", Subcommand: "generate"}
+	if !deferCommand(report) || deferredEphemeral(report) {
+		t.Fatal("generated reports should defer publicly")
+	}
+	if !deferredEphemeral(CommandRequest{Name: "settings"}) {
+		t.Fatal("settings should defer ephemerally")
+	}
+}
+
+func testSnapshot(now time.Time) *domain.Snapshot {
+	aircraft := []domain.Aircraft{
+		{ICAO: "ABC123", Callsign: "SKY123", Registration: "N123SF", HasDistance: true, DistanceNM: 3.2, HasAltitude: true, AltitudeFeet: 10_000},
+		{ICAO: "DEF456", Callsign: "SKY456", HasDistance: true, DistanceNM: 8.1, HasAltitude: true, AltitudeFeet: 20_000},
+	}
+	return &domain.Snapshot{
+		FetchedAt: now, PublishedAt: now, Aircraft: aircraft,
+		ByICAO: map[string]int{"ABC123": 0, "DEF456": 1},
+		Search: []domain.AircraftKey{{ICAO: "ABC123", Callsign: "SKY123", Registration: "N123SF"}, {ICAO: "DEF456", Callsign: "SKY456"}},
+		Health: domain.Health{Aircraft: domain.SourceHealth{Status: domain.HealthHealthy}, Receiver: domain.SourceHealth{Status: domain.HealthHealthy}, Stats: domain.SourceHealth{Status: domain.HealthHealthy}},
+	}
+}

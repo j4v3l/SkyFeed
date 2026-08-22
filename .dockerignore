@@ -1,0 +1,16 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+.tmp
+bin
+dist
+docs
+secrets
+test
+*.db
+*.db-shm
+*.db-wal
+*.prof
+coverage.*

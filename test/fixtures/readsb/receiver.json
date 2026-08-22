@@ -1,0 +1,7 @@
+{
+  "version": "readsb synthetic-fixture",
+  "refresh": 1000,
+  "history": 120,
+  "lat": 40.0,
+  "lon": -75.0
+}

@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l .)"
+      - run: go mod verify
+      - run: go test ./...
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go tool staticcheck ./...
+      - run: go tool govulncheck ./...
+      - run: go tool go-licenses check ./cmd/skyfeed
+      - run: go tool go-licenses report ./cmd/skyfeed | tee dependency-licenses.csv
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dependency-licenses
+          path: dependency-licenses.csv
+      - name: Scan committed history for secrets
+        run: >-
+          docker run --rm
+          -v "$PWD:/repo"
+          ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+          git /repo --redact --no-banner
+      - run: go test -run=^$ -bench=. -benchmem ./internal/state ./internal/rules
+      - run: go test -run=^$ -fuzz=FuzzParseCustomID -fuzztime=10s ./internal/discord
+      - run: go test -run=^$ -fuzz=FuzzCommandFilters -fuzztime=10s ./internal/discord
+      - run: go test -run=^$ -fuzz=FuzzDurationParsing -fuzztime=10s ./internal/config
+      - run: go test -run=^$ -fuzz=FuzzAircraftJSONDecoder -fuzztime=10s ./internal/source/readsb
+      - run: go test -run=^$ -fuzz=FuzzADSBDBDecoder -fuzztime=10s ./internal/enrichment/adsbdb
+
+  container:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SKYFEED_DISCORD_APPLICATION_ID: "1"
+      SKYFEED_DISCORD_GUILD_ID: "2"
+      SKYFEED_ADSB_BASE_URL: http://192.0.2.1/data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - run: docker compose -f deploy/compose.yaml -f deploy/compose.local.yaml config --quiet
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: skyfeed:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - run: docker run --rm skyfeed:ci version
+      - run: test "$(docker image inspect skyfeed:ci --format '{{.Config.User}}')" = "nonroot:nonroot"
+      - name: Smoke-test fixed receiver contract from final image
+        run: |
+          docker network create skyfeed-ci
+          docker run -d --name fake-receiver --network skyfeed-ci \
+            -v "$PWD/test/fixtures/readsb:/srv/data:ro" -w /srv \
+            python:3.13-alpine python -m http.server 8080
+          ready=false
+          for attempt in {1..10}; do
+            if docker exec fake-receiver wget -q -O /dev/null http://127.0.0.1:8080/data/aircraft.json; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          test "$ready" = true
+          printf '%s' 'synthetic.ci.token' > /tmp/skyfeed-ci-token
+          docker run --rm --network skyfeed-ci \
+            -v /tmp/skyfeed-ci-token:/run/secrets/discord_token:ro \
+            -e SKYFEED_DISCORD_TOKEN_FILE=/run/secrets/discord_token \
+            -e SKYFEED_DISCORD_APPLICATION_ID=1 \
+            -e SKYFEED_DISCORD_GUILD_ID=2 \
+            -e SKYFEED_ADSB_BASE_URL=http://fake-receiver:8080/data \
+            skyfeed:ci source check

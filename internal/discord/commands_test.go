@@ -1,0 +1,69 @@
+package discord
+
+import (
+	"testing"
+
+	disgocord "github.com/disgoorg/disgo/discord"
+)
+
+func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
+	commands := DesiredCommands()
+	if len(commands) != 10 {
+		t.Fatalf("got %d commands", len(commands))
+	}
+	if err := validateDesiredCommands(commands); err != nil {
+		t.Fatal(err)
+	}
+	for _, command := range commands {
+		if command.Type() != disgocord.ApplicationCommandTypeSlash {
+			t.Fatalf("%s is not a slash command", command.CommandName())
+		}
+	}
+}
+
+func TestModerationCommandUsesTypedTargetsAndBoundedReasons(t *testing.T) {
+	for _, command := range DesiredCommands() {
+		if command.CommandName() != "moderation" {
+			continue
+		}
+		slash := command.(disgocord.SlashCommandCreate)
+		warn := slash.Options[0].(disgocord.ApplicationCommandOptionSubCommand)
+		if _, ok := warn.Options[0].(disgocord.ApplicationCommandOptionUser); !ok {
+			t.Fatalf("warn target is %T", warn.Options[0])
+		}
+		reason := warn.Options[1].(disgocord.ApplicationCommandOptionString)
+		if !reason.Required || reason.MinLength == nil || *reason.MinLength != 3 || reason.MaxLength == nil || *reason.MaxLength != 400 {
+			t.Fatalf("reason option = %+v", reason)
+		}
+		return
+	}
+	t.Fatal("moderation command not found")
+}
+
+func TestAircraftUsesAutocomplete(t *testing.T) {
+	for _, command := range DesiredCommands() {
+		if command.CommandName() != "aircraft" {
+			continue
+		}
+		slash := command.(disgocord.SlashCommandCreate)
+		query := slash.Options[0].(disgocord.ApplicationCommandOptionString)
+		if !query.Required || !query.Autocomplete {
+			t.Fatalf("query option = %+v", query)
+		}
+		return
+	}
+	t.Fatal("aircraft command not found")
+}
+
+func TestSettingsDefaultsToManageGuild(t *testing.T) {
+	for _, command := range DesiredCommands() {
+		if command.CommandName() == "settings" {
+			settings := command.(disgocord.SlashCommandCreate)
+			if !settings.DefaultMemberPermissions.OK || settings.DefaultMemberPermissions.Value == nil || *settings.DefaultMemberPermissions.Value != disgocord.PermissionManageGuild {
+				t.Fatalf("settings permissions = %+v", settings.DefaultMemberPermissions)
+			}
+			return
+		}
+	}
+	t.Fatal("settings command not found")
+}

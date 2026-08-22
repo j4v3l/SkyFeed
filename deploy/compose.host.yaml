@@ -1,0 +1,6 @@
+services:
+  skyfeed:
+    network_mode: host
+    ports: !reset []
+    environment:
+      SKYFEED_HEALTH_ADDR: 127.0.0.1:9090

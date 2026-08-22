@@ -1,0 +1,24 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+secrets/
+
+# Go build and test output
+/bin/
+/dist/
+*.test
+*.out
+coverage.*
+*.prof
+
+# Local state
+*.db
+*.db-shm
+*.db-wal
+/.tmp/
+
+# Editors
+.idea/
+.vscode/
+*.swp

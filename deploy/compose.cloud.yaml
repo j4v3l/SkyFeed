@@ -1,0 +1,8 @@
+services:
+  skyfeed:
+    restart: always
+    ports: !reset []
+    environment:
+      SKYFEED_PPROF_ADDR: ""
+    # Attach this service to a private VPN/mesh network. Never publish the
+    # unauthenticated receiver JSON or point this at a public port-forward.
