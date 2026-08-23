@@ -13,6 +13,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/enrichment"
 	"github.com/j4v3l/SkyFeed/internal/enrichment/adsbdb"
+	"github.com/j4v3l/SkyFeed/internal/enrichment/adsblol"
 	"github.com/j4v3l/SkyFeed/internal/health"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/report"
@@ -93,6 +94,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	reportAggregator := report.NewAggregator()
 	var lastAircraftFetch atomic.Int64
 	var enrichmentService *enrichment.Service
+	var routeService *enrichment.RouteService
 	if cfg.ADSBDB.Enabled {
 		enrichmentConfig := enrichment.DefaultConfig()
 		enrichmentConfig.Workers = cfg.ADSBDB.Workers
@@ -106,6 +108,16 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		healthState.SetComponent("adsbdb", "healthy", "asynchronous enrichment enabled")
 	} else {
 		healthState.SetComponent("adsbdb", "disabled", "enrichment disabled")
+	}
+	if cfg.AdsbLol.Enabled {
+		adsbClient, err := adsblol.NewClient(cfg.AdsbLol.BaseURL, cfg.AdsbLol.Timeout)
+		if err != nil {
+			return err
+		}
+		routeService = enrichment.NewRouteService(adsbClient, enrichment.DefaultRouteConfig())
+		healthState.SetComponent("adsblol", "healthy", "route and airport enrichment enabled")
+	} else {
+		healthState.SetComponent("adsblol", "disabled", "route enrichment disabled")
 	}
 	lastCallsigns := make(map[string]string)
 	var lastCallsignsMu sync.Mutex
@@ -171,6 +183,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			lastCallsigns = nextCallsigns
 			lastCallsignsMu.Unlock()
 		}
+		if routeService != nil {
+			routeService.Prefetch(snapshot.Aircraft)
+		}
 		emergencyDepth, normalDepth := alertQueue.Depth()
 		persistenceDepth, enrichmentCache := 0, 0
 		if persistence != nil {
@@ -182,6 +197,21 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			enrichmentCache = enrichmentService.CacheLen()
 			enrichmentStats := enrichmentService.Stats()
 			metrics.SetEnrichment(enrichmentStats.Hits, enrichmentStats.Misses, enrichmentStats.Requests, enrichmentStats.Failures, enrichmentStats.CircuitRejects)
+		}
+		if routeService != nil {
+			routeStats := routeService.Stats()
+			metrics.SetRouteEnrichment(
+				routeStats.Hits,
+				routeStats.Misses,
+				routeStats.Requests,
+				routeStats.Failures,
+				routeStats.CircuitRejects,
+				routeStats.Dropped,
+				routeStats.Batches,
+				routeService.RouteCacheLen(),
+				routeService.AirportCacheLen(),
+			)
+			enrichmentCache += routeService.RouteCacheLen() + routeService.AirportCacheLen()
 		}
 		metrics.SetQueues(emergencyDepth, normalDepth, alertQueue.Dropped(), persistenceDepth, enrichmentCache)
 	})
@@ -202,6 +232,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
 	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
+	router.SetPrivacyDisclosure(privacyDisclosure(cfg))
 	ruleReload := make(chan struct{}, 1)
 	if repository != nil {
 		router.SetRepository(repository)
@@ -242,6 +273,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			}
 		})
 	}
+	if routeService != nil {
+		router.SetRoutes(routeService)
+	}
 
 	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", Version)
 	services := []service{server.Run, func(serviceContext context.Context) error {
@@ -276,6 +310,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	if enrichmentService != nil {
 		services = append(services, enrichmentService.Run)
+	}
+	if routeService != nil {
+		services = append(services, routeService.Run)
 	}
 	if cfg.Discord.ApplicationID != 0 {
 		gateway := skydiscord.NewGatewayService(cfg.Discord, router, logger, func(ready bool) {
@@ -358,8 +395,12 @@ func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 		radiusNM = cfg.AirplanesLive.RadiusNM
 		attribution = append(attribution, privacy.Attribution{
 			Provider: "airplanes.live",
-			Notice:   "Aircraft data provided by Airplanes.live",
+			Notice:   airplaneslive.Attribution,
 		})
+	}
+	if cfg.AdsbLol.Enabled {
+		providers = append(providers, "adsb.lol")
+		attribution = append(attribution, privacy.Attribution{Provider: "adsb.lol", Notice: adsblol.Attribution})
 	}
 	if cfg.ADSBDB.Enabled {
 		providers = append(providers, "ADSBDB")
@@ -371,6 +412,7 @@ func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 		radiusNM,
 		[]privacy.Retention{
 			{Category: "raw aircraft snapshots", Period: "memory only"},
+			{Category: "route and airport enrichment", Period: "in-memory TTL cache only"},
 			{Category: "interaction sessions", Period: "15 minutes"},
 			{Category: "moderation cases", Period: "365 days"},
 		},

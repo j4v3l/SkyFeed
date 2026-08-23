@@ -1,11 +1,13 @@
 package discord
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	disgocord "github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 )
 
 type snapshotStub struct{ snapshot *domain.Snapshot }
@@ -153,8 +155,56 @@ func TestDeferredInteractionPolicy(t *testing.T) {
 	if !deferCommand(report) || deferredEphemeral(report) {
 		t.Fatal("generated reports should defer publicly")
 	}
-	if !deferredEphemeral(CommandRequest{Name: "settings"}) {
+	if !deferCommand(CommandRequest{Name: "route"}) || deferredEphemeral(CommandRequest{Name: "route"}) {
+		t.Fatal("route should defer publicly")
+	}
+	if deferCommand(CommandRequest{Name: "privacy"}) {
+		t.Fatal("privacy should respond immediately")
+	}
+	if !deferredEphemeral(CommandRequest{Name: "privacy"}) {
+		t.Fatal("privacy should be ephemeral")
+	}
+	if !deferCommand(CommandRequest{Name: "settings"}) || !deferredEphemeral(CommandRequest{Name: "settings"}) {
 		t.Fatal("settings should defer ephemerally")
+	}
+}
+
+func TestRouterPrivacyIsEphemeral(t *testing.T) {
+	router := NewRouter(snapshotStub{}, NewSessionManager(100, 10, time.Minute), 2, time.Now())
+	router.SetPrivacyDisclosure(privacy.NewDisclosure([]string{"readsb"}, "KPBI", 50, nil, nil))
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "privacy", UserID: 1, GuildID: 2, ChannelID: 3}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || recorder.created[0].Flags&disgocord.MessageFlagEphemeral == 0 {
+		t.Fatalf("privacy response = %#v", recorder.created)
+	}
+}
+
+func TestRouterSquawkRejectsInvalidCode(t *testing.T) {
+	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, time.Minute), 2, time.Now())
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "squawk", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "9999"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateRejection(t, recorder)
+}
+
+func TestRouterTopRanksByMetric(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	snapshot.Aircraft[0].Messages = 50
+	snapshot.Aircraft[1].Messages = 200
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), 2, now)
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "top", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "messages"}, Ints: map[string]int{"limit": 1}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || len(recorder.created[0].Embeds) != 1 {
+		t.Fatalf("top response = %#v", recorder.created)
+	}
+	if !strings.Contains(recorder.created[0].Embeds[0].Fields[0].Name, "SKY456") {
+		t.Fatalf("top ranking = %#v", recorder.created[0].Embeds[0].Fields)
 	}
 }
 

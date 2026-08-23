@@ -27,6 +27,7 @@ func TestMetricsUseOnlyFixedLowCardinalityLabels(t *testing.T) {
 	metrics.ObserveSource(domain.ProviderReadsb, domain.CapabilityAircraft, 5*time.Millisecond, 1024, true, time.Unix(1_700_000_001, 0))
 	metrics.ObserveSource(domain.ProviderID("unbounded-provider"), domain.CapabilityAircraft, time.Second, 1, false, time.Now())
 	metrics.ObserveSnapshot(42, time.Second)
+	metrics.SetRouteEnrichment(3, 1, 4, 0, 0, 0, 2, 5, 2)
 	request := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	response := httptest.NewRecorder()
 	metrics.ServeHTTP(response, request)
@@ -36,6 +37,8 @@ func TestMetricsUseOnlyFixedLowCardinalityLabels(t *testing.T) {
 		"skyfeed_source_capability_supported{provider=\"airplanes-live\",capability=\"receiver\"} 0",
 		"skyfeed_aircraft_provider_active{provider=\"airplanes-live\"} 1",
 		"skyfeed_source_health{provider=\"airplanes-live\",capability=\"aircraft\"} 1",
+		"skyfeed_adsblol_cache_total{result=\"hit\"} 3",
+		"skyfeed_adsblol_cache_entries{kind=\"route\"} 5",
 		"skyfeed_snapshot_aircraft 42",
 		"go_goroutines",
 	} {

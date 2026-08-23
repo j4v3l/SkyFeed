@@ -10,7 +10,7 @@ func TestSessionBindingExpiryAndCustomID(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	manager := NewSessionManager(4, 2, time.Minute)
 	manager.now = func() time.Time { return now }
-	session, err := manager.Create(1, 2, 3, "nearby", "distance")
+	session, err := manager.Create(1, 2, 3, "nearby", "distance", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,16 +33,16 @@ func TestSessionBindingExpiryAndCustomID(t *testing.T) {
 
 func TestSessionCaps(t *testing.T) {
 	manager := NewSessionManager(2, 1, time.Minute)
-	if _, err := manager.Create(1, 2, 3, "nearby", ""); err != nil {
+	if _, err := manager.Create(1, 2, 3, "nearby", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Create(1, 2, 3, "nearby", ""); !errors.Is(err, ErrSessionCapacity) {
+	if _, err := manager.Create(1, 2, 3, "nearby", "", "", ""); !errors.Is(err, ErrSessionCapacity) {
 		t.Fatalf("expected per-user cap, got %v", err)
 	}
-	if _, err := manager.Create(2, 2, 3, "nearby", ""); err != nil {
+	if _, err := manager.Create(2, 2, 3, "nearby", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Create(3, 2, 3, "nearby", ""); !errors.Is(err, ErrSessionCapacity) {
+	if _, err := manager.Create(3, 2, 3, "nearby", "", "", ""); !errors.Is(err, ErrSessionCapacity) {
 		t.Fatalf("expected global cap, got %v", err)
 	}
 }
@@ -51,7 +51,7 @@ func TestSessionCanUseShorterConfirmationTTL(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	manager := NewSessionManager(2, 1, 15*time.Minute)
 	manager.now = func() time.Time { return now }
-	session, err := manager.CreateWithTTL(1, 2, 3, "moderation", "", time.Minute)
+	session, err := manager.CreateWithTTL(1, 2, 3, "moderation", "", "", "", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

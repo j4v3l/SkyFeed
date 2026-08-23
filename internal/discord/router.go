@@ -11,6 +11,8 @@ import (
 	disgocord "github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/discord/render"
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/enrichment"
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -69,6 +71,7 @@ type ModalRequest struct {
 type AutocompleteRequest struct {
 	Name       string
 	Subcommand string
+	Option     string
 	Query      string
 	UserID     uint64
 	GuildID    uint64
@@ -83,6 +86,8 @@ type Router struct {
 	repository        storage.Repository
 	ruleReload        func()
 	enrichment        EnrichmentProvider
+	routes            RouteProvider
+	privacy           privacy.Disclosure
 	testSend          func(context.Context, uint64, string) error
 	moderation        ModerationExecutor
 }
@@ -117,6 +122,16 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleNearby(request, responder, snapshot)
 	case "aircraft":
 		return router.handleAircraft(request, responder, snapshot)
+	case "route":
+		return router.handleRoute(request, responder, snapshot)
+	case "airport":
+		return router.handleAirport(request, responder)
+	case "squawk":
+		return router.handleSquawk(request, responder, snapshot)
+	case "top":
+		return router.handleTop(request, responder, snapshot)
+	case "privacy":
+		return router.handlePrivacy(responder)
 	case "help":
 		return responder.CreateMessage(render.SafeMessage(render.Help(router.now(), request.ManageGuild), false))
 	case "settings":
@@ -162,8 +177,15 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		if len(request.Values) != 1 || !validSort(request.Values[0]) {
 			return responder.CreateMessage(errorMessage("That sort option is not valid."))
 		}
-		session.Filter = request.Values[0]
+		session.Sort = request.Values[0]
 		session.Page = 0
+	case "route":
+		return router.handleAircraftRouteAction(request, responder, session)
+	case "airport":
+		if len(request.Values) != 1 {
+			return responder.CreateMessage(errorMessage("That airport selection is not valid."))
+		}
+		return router.handleAirport(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"code": request.Values[0]}}, responder)
 	case "watch":
 		modalID, buildErr := CustomID(session.ID, "save-watch")
 		if buildErr != nil {
@@ -207,7 +229,7 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 	}
 	label := render.Truncate(strings.TrimSpace(request.Values["label"]), 64)
 	if label == "" {
-		label = session.Filter
+		label = session.Query
 	}
 	if router.repository == nil {
 		return responder.CreateMessage(errorMessage("Persistent watch storage is unavailable."))
@@ -221,12 +243,12 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 	if err := router.repository.EnsureGuild(ctx, request.GuildID); err != nil {
 		return responder.CreateMessage(errorMessage("Watch storage is temporarily unavailable."))
 	}
-	rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, Type: domain.RuleICAO, Value: session.Filter, Enabled: true, Cooldown: time.Duration(minutes) * time.Minute, MinimumObservations: 2})
+	rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, Type: domain.RuleICAO, Value: session.Query, Enabled: true, Cooldown: time.Duration(minutes) * time.Minute, MinimumObservations: 2})
 	if err != nil {
 		return responder.CreateMessage(errorMessage("The watch rule could not be saved."))
 	}
 	router.requestRuleReload()
-	return responder.CreateMessage(infoMessage("Watch rule saved", fmt.Sprintf("%s is saved as personal rule %d for aircraft %s.", label, rule.ID, session.Filter)))
+	return responder.CreateMessage(infoMessage("Watch rule saved", fmt.Sprintf("%s is saved as personal rule %d for aircraft %s.", label, rule.ID, session.Query)))
 }
 
 func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder InteractionResponder) error {
@@ -238,6 +260,17 @@ func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder 
 	}
 	snapshot := router.snapshots.Current()
 	query := strings.ToUpper(strings.TrimSpace(request.Query))
+	switch request.Name {
+	case "aircraft", "route":
+		return router.autocompleteAircraft(request, responder, snapshot, query)
+	case "airport":
+		return router.autocompleteAirports(request, responder, query)
+	default:
+		return responder.Autocomplete(nil)
+	}
+}
+
+func (router *Router) autocompleteAircraft(request AutocompleteRequest, responder InteractionResponder, snapshot *domain.Snapshot, query string) error {
 	choices := make([]disgocord.AutocompleteChoice, 0, 25)
 	if snapshot != nil {
 		for _, key := range snapshot.Search {
@@ -255,8 +288,54 @@ func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder 
 	return responder.Autocomplete(choices)
 }
 
+func (router *Router) autocompleteAirports(request AutocompleteRequest, responder InteractionResponder, query string) error {
+	choices := make([]disgocord.AutocompleteChoice, 0, 25)
+	if router.routes == nil {
+		return responder.Autocomplete(choices)
+	}
+	seen := make(map[string]struct{})
+	add := func(code string) {
+		if len(choices) >= 25 {
+			return
+		}
+		normalized, ok := enrichment.NormalizeAirportCode(code)
+		if !ok {
+			return
+		}
+		if query != "" && !strings.Contains(normalized, query) {
+			return
+		}
+		if _, exists := seen[normalized]; exists {
+			return
+		}
+		seen[normalized] = struct{}{}
+		choices = append(choices, disgocord.AutocompleteChoiceString{Name: normalized, Value: normalized})
+	}
+	snapshot := router.snapshots.Current()
+	if snapshot != nil {
+		for _, aircraft := range snapshot.Aircraft {
+			if aircraft.Callsign == "" || !aircraft.HasPosition {
+				continue
+			}
+			route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign)))
+			if !found {
+				continue
+			}
+			add(route.Origin.ICAO)
+			add(route.Destination.ICAO)
+			if route.Midpoint != nil {
+				add(route.Midpoint.ICAO)
+			}
+		}
+	}
+	if query != "" {
+		add(query)
+	}
+	return responder.Autocomplete(choices)
+}
+
 func (router *Router) handleNearby(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {
-	session, err := router.sessions.Create(request.UserID, request.GuildID, request.ChannelID, "nearby", normalizedSort(request.Strings["sort"]))
+	session, err := router.sessions.Create(request.UserID, request.GuildID, request.ChannelID, "nearby", normalizedSort(request.Strings["sort"]), "", normalizedSquawk(request.Strings["squawk"]))
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
@@ -288,16 +367,44 @@ func (router *Router) handleAircraft(request CommandRequest, responder Interacti
 	if !ok {
 		return responder.CreateMessage(errorMessage("That aircraft is no longer visible. Run `/aircraft` again to choose from current data."))
 	}
-	session, err := router.sessions.Create(request.UserID, request.GuildID, request.ChannelID, "aircraft", aircraft.ICAO)
+	session, err := router.sessions.Create(request.UserID, request.GuildID, request.ChannelID, "aircraft", "", aircraft.ICAO, "")
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
+	return responder.CreateMessage(router.aircraftMessage(session, aircraft, snapshot))
+}
+
+func (router *Router) handleAircraftRouteAction(request ComponentRequest, responder InteractionResponder, session Session) error {
+	snapshot := router.snapshots.Current()
+	aircraft, ok := findAircraft(snapshot, session.Query)
+	if !ok {
+		return responder.CreateMessage(errorMessage("This aircraft is no longer visible."))
+	}
+	return router.handleRoute(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"flight": aircraft.ICAO}}, responder, snapshot)
+}
+
+func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft, snapshot *domain.Snapshot) disgocord.MessageCreate {
 	watchID, _ := CustomID(session.ID, "watch")
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
 	message := render.SafeMessage(router.aircraftEmbed(aircraft, snapshot), false).
 		AddActionRow(disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
-	return responder.CreateMessage(message)
+	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
+		routeID, _ := CustomID(session.ID, "route")
+		message = message.AddActionRow(disgocord.NewSecondaryButton("Route", routeID))
+		if route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign))); found {
+			airportID, _ := CustomID(session.ID, "airport")
+			options := []disgocord.StringSelectMenuOption{
+				disgocord.NewStringSelectMenuOption(route.Origin.ICAO, route.Origin.ICAO).WithDescription("Origin"),
+				disgocord.NewStringSelectMenuOption(route.Destination.ICAO, route.Destination.ICAO).WithDescription("Destination"),
+			}
+			if route.Midpoint != nil {
+				options = append(options, disgocord.NewStringSelectMenuOption(route.Midpoint.ICAO, route.Midpoint.ICAO).WithDescription("Midpoint"))
+			}
+			message = message.AddActionRow(disgocord.NewStringSelectMenu(airportID, "Airports", options...))
+		}
+	}
+	return message
 }
 
 func (router *Router) updateSession(session Session, responder InteractionResponder) error {
@@ -309,35 +416,45 @@ func (router *Router) updateSession(session Session, responder InteractionRespon
 			return err
 		}
 		return responder.UpdateMessage(messageUpdate(message))
+	case "squawk":
+		message, err := router.squawkMessage(session, snapshot)
+		if err != nil {
+			return err
+		}
+		return responder.UpdateMessage(messageUpdate(message))
 	case "aircraft":
-		aircraft, ok := findAircraft(snapshot, session.Filter)
+		aircraft, ok := findAircraft(snapshot, session.Query)
 		if !ok {
 			return responder.UpdateMessage(disgocord.NewMessageUpdate().WithContent("This aircraft is no longer visible.").ClearEmbeds().ClearComponents())
 		}
-		message := render.SafeMessage(router.aircraftEmbed(aircraft, snapshot), false)
-		watchID, _ := CustomID(session.ID, "watch")
-		refreshID, _ := CustomID(session.ID, "refresh")
-		closeID, _ := CustomID(session.ID, "close")
-		message = message.AddActionRow(disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
-		return responder.UpdateMessage(messageUpdate(message))
+		return responder.UpdateMessage(messageUpdate(router.aircraftMessage(session, aircraft, snapshot)))
 	default:
 		return responder.CreateMessage(errorMessage("This view is no longer supported."))
 	}
 }
 
 func (router *Router) aircraftEmbed(aircraft domain.Aircraft, snapshot *domain.Snapshot) disgocord.Embed {
+	var enrichmentValue *domain.Enrichment
 	if router.enrichment != nil {
 		value, ok, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign)
 		if ok && value.Found {
-			return render.AircraftWithEnrichment(aircraft, snapshot, &value, router.now())
+			copyValue := value
+			enrichmentValue = &copyValue
 		}
 	}
-	return render.Aircraft(aircraft, snapshot, router.now())
+	var routeValue *domain.Route
+	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" {
+		if route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign))); found {
+			copyRoute := route
+			routeValue = &copyRoute
+		}
+	}
+	return render.AircraftWithEnrichment(aircraft, snapshot, enrichmentValue, routeValue, router.now())
 }
 
 func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) (disgocord.MessageCreate, error) {
 	aircraft := filteredAircraft(snapshot, session)
-	sortAircraft(aircraft, session.Filter)
+	sortAircraft(aircraft, session.Sort)
 	maxPage := max(0, (len(aircraft)-1)/session.PageSize)
 	if session.Page > maxPage {
 		session.Page = maxPage
@@ -359,9 +476,11 @@ func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) 
 		disgocord.NewDangerButton("Close", closeID),
 	)
 	menu := disgocord.NewStringSelectMenu(sortID, "Sort aircraft",
-		disgocord.NewStringSelectMenuOption("Distance", "distance").WithDefault(session.Filter == "distance"),
-		disgocord.NewStringSelectMenuOption("Altitude", "altitude").WithDefault(session.Filter == "altitude"),
-		disgocord.NewStringSelectMenuOption("Callsign", "callsign").WithDefault(session.Filter == "callsign"),
+		disgocord.NewStringSelectMenuOption("Distance", "distance").WithDefault(session.Sort == "distance"),
+		disgocord.NewStringSelectMenuOption("Altitude", "altitude").WithDefault(session.Sort == "altitude"),
+		disgocord.NewStringSelectMenuOption("Callsign", "callsign").WithDefault(session.Sort == "callsign"),
+		disgocord.NewStringSelectMenuOption("Ground speed", "speed").WithDefault(session.Sort == "speed"),
+		disgocord.NewStringSelectMenuOption("Messages", "messages").WithDefault(session.Sort == "messages"),
 	)
 	message = message.AddActionRow(menu)
 	return message, nil
@@ -382,6 +501,9 @@ func filteredAircraft(snapshot *domain.Snapshot, session Session) []domain.Aircr
 		if session.HasMax && (!aircraft.HasAltitude || aircraft.AltitudeFeet > session.MaxFeet) {
 			continue
 		}
+		if session.Squawk != "" && aircraft.Squawk != session.Squawk {
+			continue
+		}
 		result = append(result, aircraft)
 	}
 	return result
@@ -395,12 +517,30 @@ func sortAircraft(aircraft []domain.Aircraft, ordering string) {
 				return aircraft[i].HasAltitude
 			}
 			if aircraft[i].AltitudeFeet != aircraft[j].AltitudeFeet {
-				return aircraft[i].AltitudeFeet < aircraft[j].AltitudeFeet
+				return aircraft[i].AltitudeFeet > aircraft[j].AltitudeFeet
 			}
 		case "callsign":
 			left, right := firstNonEmpty(aircraft[i].Callsign, aircraft[i].Registration, aircraft[i].ICAO), firstNonEmpty(aircraft[j].Callsign, aircraft[j].Registration, aircraft[j].ICAO)
 			if left != right {
 				return left < right
+			}
+		case "speed":
+			if aircraft[i].HasGroundSpeed != aircraft[j].HasGroundSpeed {
+				return aircraft[i].HasGroundSpeed
+			}
+			if aircraft[i].GroundSpeedKts != aircraft[j].GroundSpeedKts {
+				return aircraft[i].GroundSpeedKts > aircraft[j].GroundSpeedKts
+			}
+		case "messages":
+			if aircraft[i].Messages != aircraft[j].Messages {
+				return aircraft[i].Messages > aircraft[j].Messages
+			}
+		case "signal":
+			if aircraft[i].HasRSSI != aircraft[j].HasRSSI {
+				return aircraft[i].HasRSSI
+			}
+			if aircraft[i].RSSI != aircraft[j].RSSI {
+				return aircraft[i].RSSI > aircraft[j].RSSI
 			}
 		default:
 			if aircraft[i].HasDistance != aircraft[j].HasDistance {
@@ -456,7 +596,15 @@ func normalizedSort(value string) string {
 }
 
 func validSort(value string) bool {
-	return value == "distance" || value == "altitude" || value == "callsign"
+	return value == "distance" || value == "altitude" || value == "callsign" || value == "speed" || value == "messages" || value == "signal"
+}
+
+func normalizedSquawk(value string) string {
+	value = strings.TrimSpace(value)
+	if squawkPattern.MatchString(value) {
+		return value
+	}
+	return ""
 }
 
 func boundedInt(value, lower, upper, fallback int) int {

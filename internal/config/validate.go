@@ -40,6 +40,12 @@ func (cfg *Config) validateStatic() error {
 	if err := validateADSBDBURL(cfg.ADSBDB.BaseURL); err != nil {
 		errs = append(errs, err)
 	}
+	if err := validateAdsbLolURL(cfg.AdsbLol.BaseURL); err != nil {
+		errs = append(errs, err)
+	}
+	if cfg.AdsbLol.Enabled && cfg.AdsbLol.BaseURL == nil {
+		errs = append(errs, errors.New("SKYFEED_ADSBLOL_BASE_URL is required when adsb.lol enrichment is enabled"))
+	}
 	if cfg.ADSBDB.RouteEnabled && !cfg.ADSBDB.Enabled {
 		errs = append(errs, errors.New("SKYFEED_ADSBDB_ROUTE_ENABLED requires SKYFEED_ADSBDB_ENABLED"))
 	}
@@ -53,6 +59,7 @@ func (cfg *Config) validateStatic() error {
 		validateDuration("SKYFEED_AIRPLANES_LIVE_TIMEOUT", cfg.AirplanesLive.Timeout, 250*time.Millisecond, 10*time.Second),
 		validateDuration("SKYFEED_AIRPLANES_LIVE_POLL", cfg.AirplanesLive.Poll, time.Second, time.Minute),
 		validateDuration("SKYFEED_ADSBDB_TIMEOUT", cfg.ADSBDB.Timeout, 250*time.Millisecond, 10*time.Second),
+		validateDuration("SKYFEED_ADSBLOL_TIMEOUT", cfg.AdsbLol.Timeout, 250*time.Millisecond, 10*time.Second),
 		validateDuration("SKYFEED_ADSBDB_AIRCRAFT_TTL", cfg.ADSBDB.AircraftTTL, 24*time.Hour, 30*24*time.Hour),
 		validateDuration("SKYFEED_ADSBDB_ROUTE_TTL", cfg.ADSBDB.RouteTTL, time.Hour, 12*time.Hour),
 		validateDuration("SKYFEED_ADSBDB_NOT_FOUND_TTL", cfg.ADSBDB.NotFoundTTL, 15*time.Minute, 6*time.Hour),
@@ -161,6 +168,17 @@ func validateReadsbURL(value *url.URL) error {
 func validateADSBDBURL(value *url.URL) error {
 	if value == nil || value.Scheme != "https" || value.Host == "" || value.User != nil || value.RawQuery != "" || value.Fragment != "" {
 		return errors.New("SKYFEED_ADSBDB_BASE_URL must be an absolute HTTPS URL without credentials, query, or fragment")
+	}
+	value.Path = strings.TrimSuffix(value.Path, "/")
+	return nil
+}
+
+func validateAdsbLolURL(value *url.URL) error {
+	if value == nil {
+		return nil
+	}
+	if value.Scheme != "https" || value.Host == "" || value.User != nil || value.RawQuery != "" || value.Fragment != "" {
+		return errors.New("SKYFEED_ADSBLOL_BASE_URL must be an absolute HTTPS URL without credentials, query, or fragment")
 	}
 	value.Path = strings.TrimSuffix(value.Path, "/")
 	return nil

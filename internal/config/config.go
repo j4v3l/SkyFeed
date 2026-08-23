@@ -38,6 +38,12 @@ type AirplanesLive struct {
 	Poll              time.Duration
 }
 
+type AdsbLol struct {
+	Enabled bool
+	BaseURL *url.URL
+	Timeout time.Duration
+}
+
 type ADSBDB struct {
 	Enabled      bool
 	RouteEnabled bool
@@ -55,6 +61,7 @@ type Config struct {
 	Discord           Discord
 	ADSB              ADSB
 	AirplanesLive     AirplanesLive
+	AdsbLol           AdsbLol
 	ADSBDB            ADSBDB
 	DatabasePath      string
 	DashboardInterval time.Duration
@@ -93,6 +100,10 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 			NotFoundTTL: 3 * time.Hour,
 			ErrorTTL:    30 * time.Second,
 			StaleTTL:    24 * time.Hour,
+		},
+		AdsbLol: AdsbLol{
+			Enabled: true,
+			Timeout: 4 * time.Second,
 		},
 		DatabasePath:      "/var/lib/skyfeed/skyfeed.db",
 		DashboardInterval: 15 * time.Second,
@@ -173,6 +184,12 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 	if cfg.ADSBDB.RouteEnabled, err = parseBool(lookup, "SKYFEED_ADSBDB_ROUTE_ENABLED", cfg.ADSBDB.RouteEnabled); err != nil {
 		return Config{}, err
 	}
+	if cfg.AdsbLol.Enabled, err = parseBool(lookup, "SKYFEED_ADSBLOL_ENABLED", cfg.AdsbLol.Enabled); err != nil {
+		return Config{}, err
+	}
+	if cfg.AdsbLol.Timeout, err = parseDuration(lookup, "SKYFEED_ADSBLOL_TIMEOUT", cfg.AdsbLol.Timeout); err != nil {
+		return Config{}, err
+	}
 
 	if raw := env(lookup, "SKYFEED_ADSB_BASE_URL", ""); raw != "" {
 		cfg.ADSB.BaseURL, err = url.Parse(raw)
@@ -184,6 +201,12 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		cfg.ADSBDB.BaseURL, err = url.Parse(raw)
 		if err != nil {
 			return Config{}, fmt.Errorf("SKYFEED_ADSBDB_BASE_URL: %w", err)
+		}
+	}
+	if raw := env(lookup, "SKYFEED_ADSBLOL_BASE_URL", "https://api.adsb.lol"); raw != "" {
+		cfg.AdsbLol.BaseURL, err = url.Parse(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("SKYFEED_ADSBLOL_BASE_URL: %w", err)
 		}
 	}
 	cfg.AirplanesLive.PublicAirportCode = strings.ToUpper(env(lookup, "SKYFEED_PUBLIC_CENTER_AIRPORT_CODE", ""))

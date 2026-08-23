@@ -7,15 +7,71 @@
    endpoints; HTTP 200 with an empty body is a failure.
 3. Run `commands sync` in the development guild.
 4. Start the service and require `/livez`, `/readyz`, and `/healthz` to pass.
-5. Confirm `/metrics` has recent aircraft/receiver/stats success timestamps.
+5. Confirm `/metrics` has recent aircraft/receiver/stats success timestamps and
+   that `skyfeed_aircraft_provider_active` reflects the expected provider.
+6. When airplanes.live fallback is configured, confirm health JSON `privacy`
+   shows the public airport code and radius only—never coordinates.
+7. When adsb.lol enrichment is enabled, confirm the `adsblol` component is
+   `healthy` and `skyfeed_adsblol_requests_total` advances during live traffic.
 
-## Receiver failures
+## Receiver and aircraft-source failures
 
 SkyFeed retains the last good snapshot, marks each source independently, and
 does not replace state with empty, malformed, non-2xx, or oversized payloads.
 An aircraft-source outage emits one high-priority alert; recovery requires two
 healthy observations. `receiver.json` or `stats.json` failures do not stop the
 aircraft pipeline.
+
+When `airplanes-live` is configured after `readsb`, aircraft failover is
+ordered and anti-flapping: readsb remains primary for receiver metadata and
+statistics, while airplanes.live supplies aircraft snapshots only when readsb
+aircraft polling fails. Fallback success is healthy; provider changes do not
+create false message deltas. airplanes.live enforces one request per second and
+rejects radii outside 1–250 NM. Treat HTTP 429 responses as operational signals
+rather than ingest faults.
+
+Route and airport enrichment failures open a circuit, serve cached values when
+available, and never block ingest, emergency alerts, or snapshot publication.
+Disable adsb.lol immediately with `SKYFEED_ADSBLOL_ENABLED=false`.
+
+## Health and metrics
+
+Health JSON is returned by `/livez`, `/readyz`, and `/healthz`. Besides aggregate
+status, readiness, uptime, and component messages, each response embeds the same
+`privacy` object used by `/privacy` (providers, public airport code, radius,
+retention, attribution). Coordinates, receiver URLs, and guild identifiers are
+never included.
+
+Component keys to monitor:
+
+| Component | Healthy when |
+| --- | --- |
+| `aircraft_source` | Active aircraft provider (`readsb` or `airplanes-live`) is healthy or degraded/stale within policy |
+| `receiver_source` | Local receiver metadata is healthy, or disabled when unsupported |
+| `stats_source` | Local statistics are healthy, or disabled when unsupported |
+| `adsbdb` | `healthy` when opt-in enrichment is enabled, otherwise `disabled` |
+| `adsblol` | `healthy` when route enrichment is enabled, otherwise `disabled` |
+
+Prometheus metrics at `/metrics` intentionally use fixed labels only. Provider
+observability series:
+
+- `skyfeed_aircraft_provider_active{provider="readsb|airplanes-live"}`
+- `skyfeed_source_capability_supported`, `skyfeed_source_health`,
+  `skyfeed_source_requests_total`, `skyfeed_source_errors_total`,
+  `skyfeed_source_payload_bytes_total`, `skyfeed_source_request_duration_seconds`,
+  and `skyfeed_source_last_success_timestamp_seconds` with
+  `{provider,capability}` where `capability` is `aircraft`, `receiver`, or
+  `statistics`.
+- `skyfeed_adsbdb_*` when ADSBDB enrichment is enabled.
+- `skyfeed_adsblol_cache_total{result="hit|miss"}`,
+  `skyfeed_adsblol_requests_total`, `skyfeed_adsblol_failures_total`,
+  `skyfeed_adsblol_circuit_rejects_total`, `skyfeed_adsblol_queue_drops_total`,
+  `skyfeed_adsblol_batches_total`, and
+  `skyfeed_adsblol_cache_entries{kind="route|airport"}` when adsb.lol enrichment
+  is enabled.
+
+Never expect ICAO, callsign, guild, channel, user, airport-code, or coordinate
+labels in metrics output.
 
 ## Database
 
@@ -36,10 +92,15 @@ run backward.
 ## Fault isolation
 
 - ADSBDB failures open a circuit and never block ingest or emergency state.
+- adsb.lol route/airport failures open a separate circuit and never block ingest
+  or emergency state.
+- airplanes.live fallback is cancellation-safe and never logs URLs or center
+  coordinates on errors.
 - Discord disconnects leave ingest/rules active while bounded outbound queues
   coalesce dashboards and normal duplicate alerts.
 - pprof is disabled unless `SKYFEED_PPROF_ADDR` is explicitly set to loopback.
-- Metrics never label ICAO, callsign, guild, channel, or user IDs.
+- Metrics never label ICAO, callsign, guild, channel, user IDs, airport codes,
+  or coordinates.
 
 ## Role and moderation recovery
 

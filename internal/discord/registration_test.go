@@ -21,7 +21,7 @@ func TestCommandSchemaIsStableAndVersioned(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("command schema is not deterministic")
 	}
-	if CommandSchemaVersion != 4 || len(first) < 100 {
+	if CommandSchemaVersion != 5 || len(first) < 100 {
 		t.Fatalf("schema version=%d bytes=%d", CommandSchemaVersion, len(first))
 	}
 }
@@ -58,7 +58,7 @@ func TestCommandEquivalentComparesPermissionsInstallAndContext(t *testing.T) {
 		t.Fatal("context drift was ignored")
 	}
 
-	settings := DesiredCommands()[8].(disgocord.SlashCommandCreate)
+	settings := findCommand(t, "settings").(disgocord.SlashCommandCreate)
 	remoteSettings := remoteSlashCommand(t, settings, "2")
 	withoutPermissions := settings
 	withoutPermissions.DefaultMemberPermissions = status.DefaultMemberPermissions
@@ -87,6 +87,17 @@ func TestSyncDeletesOwnedTombstonesAndIgnoresForeignCommands(t *testing.T) {
 	if stats.Deleted != 1 || stats.Ignored != 1 || len(deleted) != 1 || deleted[0] != "1" {
 		t.Fatalf("stats=%+v deleted=%v", stats, deleted)
 	}
+}
+
+func findCommand(t *testing.T, name string) disgocord.ApplicationCommandCreate {
+	t.Helper()
+	for _, command := range DesiredCommands() {
+		if command.CommandName() == name {
+			return command
+		}
+	}
+	t.Fatalf("command %q not found", name)
+	return nil
 }
 
 func remoteSlashCommand(t *testing.T, command disgocord.SlashCommandCreate, id string) disgocord.SlashCommand {

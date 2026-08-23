@@ -7,6 +7,7 @@ import (
 
 	"github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 )
 
 func TestBoundEmbedEnforcesLimits(t *testing.T) {
@@ -163,6 +164,41 @@ func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
 	}
 	if feederFields["Messages in window"] != "1800" || feederFields["Tracks reported"] != "6" || feederFields["Max range in window"] != "110.0 NM" {
 		t.Fatalf("feeder fields = %#v", feederFields)
+	}
+}
+
+func TestPrivacyRendererOmitsCoordinates(t *testing.T) {
+	embed := Privacy(privacy.NewDisclosure(
+		[]string{"readsb", "airplanes.live"},
+		"KPBI",
+		50,
+		[]privacy.Retention{{Category: "snapshots", Period: "memory only"}},
+		[]privacy.Attribution{{Provider: "adsb.lol", Notice: "https://evil.example/route **bold**"}},
+	))
+	body := embed.Description + embed.Fields[0].Value + embed.Fields[1].Value + embed.Fields[len(embed.Fields)-1].Value
+	if strings.Contains(body, "https://") || strings.Contains(body, "26.") || strings.Contains(body, "-80.") {
+		t.Fatalf("privacy embed leaked sensitive text: %q", body)
+	}
+	message := SafeMessage(embed, true)
+	if message.Flags&discord.MessageFlagEphemeral == 0 {
+		t.Fatal("privacy response must be ephemeral")
+	}
+}
+
+func TestRouteRendererSanitizesProviderText(t *testing.T) {
+	route := domain.Route{
+		Callsign:    "SKY123",
+		Origin:      domain.Airport{ICAO: "KBOS", Name: "https://evil.example"},
+		Destination: domain.Airport{ICAO: "KJFK", Name: "Normal"},
+		Attribution: "adsb.lol https://evil.example",
+	}
+	embed := Route(route, domain.Aircraft{ICAO: "ABC123", Callsign: "SKY123"}, time.Unix(1_700_000_000, 0))
+	combined := embed.Description
+	for _, field := range embed.Fields {
+		combined += field.Value
+	}
+	if strings.Contains(combined, "https://") {
+		t.Fatalf("route embed leaked URL: %q", combined)
 	}
 }
 

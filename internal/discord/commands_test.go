@@ -8,7 +8,7 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 10 {
+	if len(commands) != 15 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {

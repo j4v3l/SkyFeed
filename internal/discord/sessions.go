@@ -26,7 +26,9 @@ type Session struct {
 	GuildID               uint64
 	ChannelID             uint64
 	View                  string
-	Filter                string
+	Sort                  string
+	Query                 string
+	Squawk                string
 	Page                  int
 	PageSize              int
 	RadiusNM              float64
@@ -66,11 +68,11 @@ func NewSessionManager(maxGlobal, maxPerUser int, ttl time.Duration) *SessionMan
 	}
 }
 
-func (manager *SessionManager) Create(userID, guildID, channelID uint64, view, filter string) (Session, error) {
-	return manager.CreateWithTTL(userID, guildID, channelID, view, filter, manager.ttl)
+func (manager *SessionManager) Create(userID, guildID, channelID uint64, view, sort, query, squawk string) (Session, error) {
+	return manager.CreateWithTTL(userID, guildID, channelID, view, sort, query, squawk, manager.ttl)
 }
 
-func (manager *SessionManager) CreateWithTTL(userID, guildID, channelID uint64, view, filter string, ttl time.Duration) (Session, error) {
+func (manager *SessionManager) CreateWithTTL(userID, guildID, channelID uint64, view, sort, query, squawk string, ttl time.Duration) (Session, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.cleanupLocked(manager.now())
@@ -96,7 +98,7 @@ func (manager *SessionManager) CreateWithTTL(userID, guildID, channelID uint64, 
 	if ttl <= 0 || ttl > manager.ttl {
 		ttl = manager.ttl
 	}
-	session := Session{ID: id, UserID: userID, GuildID: guildID, ChannelID: channelID, View: view, Filter: filter, CreatedAt: now, ExpiresAt: now.Add(ttl)}
+	session := Session{ID: id, UserID: userID, GuildID: guildID, ChannelID: channelID, View: view, Sort: sort, Query: query, Squawk: squawk, CreatedAt: now, ExpiresAt: now.Add(ttl)}
 	manager.sessions[id] = session
 	manager.perUser[userID]++
 	return session, nil

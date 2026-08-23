@@ -110,7 +110,7 @@ func TestRouteServiceQueueCoalescesNormalizedCallsigns(t *testing.T) {
 	go func() { done <- service.Run(ctx) }()
 	waitFor(t, func() bool { return service.RouteCacheLen() == 1 })
 	cancel()
-	_ = <-done
+	<-done
 	routes, _ := stub.counts()
 	if routes != 1 || service.Stats().Coalesced != 19 {
 		t.Fatalf("calls=%d stats=%+v", routes, service.Stats())

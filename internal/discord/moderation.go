@@ -100,7 +100,7 @@ func (router *Router) handleModerationComponent(request ComponentRequest, respon
 }
 
 func (router *Router) confirmModeration(execution ModerationExecution, responder InteractionResponder) error {
-	session, err := router.sessions.CreateWithTTL(execution.ModeratorID, execution.GuildID, execution.ChannelID, "moderation", "", moderationConfirmationTTL)
+	session, err := router.sessions.CreateWithTTL(execution.ModeratorID, execution.GuildID, execution.ChannelID, "moderation", "", "", "", moderationConfirmationTTL)
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active confirmation requests. Try again after an older request expires."))
 	}

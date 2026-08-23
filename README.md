@@ -3,13 +3,15 @@
 SkyFeed is a local-first ADS-B Discord bot for one readsb/tar1090 feeder. It
 polls the receiver once per second, publishes immutable in-memory snapshots,
 evaluates indexed alert rules, and serves native Discord commands without the
-privileged Message Content intent. SQLite, Discord, and ADSBDB work remain off
+privileged Message Content intent. SQLite, Discord, and enrichment work remain off
 the ingest critical path.
 
-The final distroless container resolves the configured feeder and successfully
-decodes all three confirmed JSON endpoints. Tests continue to use deterministic,
-privacy-reviewed synthetic fixtures so no receiver-specific observations enter
-the repository.
+Local readsb stays the primary aircraft source. When configured, airplanes.live
+provides a privacy-safe point-query fallback around a public airport reference
+(KPBI by default in the bundled Compose profile). Route and airport enrichment
+via adsb.lol is opt-in at the HTTP layer and uses only callsigns and already-
+public aircraft positions. Tests continue to use deterministic, privacy-reviewed
+synthetic fixtures so no receiver-specific observations enter the repository.
 
 Public verification pages:
 
@@ -41,6 +43,12 @@ Edit `.env` locally. Use a stable receiver IP or ordinary LAN DNS hostname and
 leave the base URL ending in `/data`; do not assume `.local` mDNS works in the
 CGO-disabled image.
 
+The example profile enables `readsb,airplanes-live` with KPBI as the public
+fallback center and a 50 NM query radius. Discord, structured logs, health JSON,
+and metrics expose only the airport code (`KPBI`), never the configured center
+coordinates. Change `SKYFEED_PUBLIC_CENTER_*` only when you deliberately choose a
+different published airport reference—not a private receiver site.
+
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml config
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml build
@@ -67,11 +75,17 @@ metrics bind only to `127.0.0.1:9090` on the host.
 
 ## Discord interface
 
-SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/watch`, `/alerts`,
-`/reports`, `/feeder`, `/settings`, `/moderation`, and `/help`. Nearby pages are
-bound to their initiating user and expire. Buttons, select menus, modals, and
-autocomplete use opaque versioned session IDs. Settings and durable
-administration are private; allowed mentions default to none.
+SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
+`/squawk`, `/top`, `/privacy`, `/watch`, `/alerts`, `/reports`, `/feeder`,
+`/settings`, `/moderation`, and `/help`. Nearby pages are bound to their
+initiating user and expire. Buttons, select menus, modals, and autocomplete use
+opaque versioned session IDs. Settings and durable administration are private;
+allowed mentions default to none.
+
+`/privacy` is ephemeral and mirrors the same typed disclosure returned by health
+endpoints: provider names, the public airport code, query radius, retention, and
+attribution. It never includes coordinates, receiver URLs, guild IDs, or other
+deployment identifiers.
 
 Role access uses existing Discord roles and never creates or edits them. A
 Discord Administrator bootstraps the first binding, after which privileged
@@ -100,6 +114,44 @@ scheduler and record their last successful run to prevent restart duplicates.
 Operator, owner, and aircraft-type watch rules are visibly best-effort and use
 only asynchronously cached ADSBDB metadata; they can never become emergencies.
 
+## Aircraft sources and privacy
+
+| Provider | Role | Notes |
+| --- | --- | --- |
+| `readsb` | Primary | Local receiver JSON (`/data/aircraft.json`, `receiver.json`, `stats.json`). Supplies receiver metadata and statistics. |
+| `airplanes-live` | Ordered fallback | Point query around the configured public airport center when readsb aircraft data is unavailable. Never merged into readsb snapshots. |
+
+airplanes.live is a non-commercial community feed with no SLA. SkyFeed enforces
+its client-side rate limit of one request per second and caps the configured
+radius at 250 NM. Use only for non-commercial SkyFeed operation and confirm the
+current provider terms before production use.
+
+When airplanes.live is active, Discord and logs identify the public center by
+airport code only (for example `KPBI`). Center latitude and longitude exist
+only in local configuration and outbound provider requests; they are not stored
+in SQLite, rendered in embeds, emitted in metrics labels, or written to health
+JSON.
+
+Disable external aircraft fallback immediately by removing `airplanes-live` from
+`SKYFEED_AIRCRAFT_PROVIDER_ORDER` or by clearing the public-center settings and
+recreating the container.
+
+## Route and airport enrichment
+
+adsb.lol route and airport enrichment is enabled by default in the example
+profile (`SKYFEED_ADSBLOL_ENABLED=true`). `/route` and `/airport` resolve data
+from a bounded in-memory cache. Prefetch batches up to 50 visible aircraft and
+sends only normalized callsigns plus each aircraft's already-public position to
+`POST /api/0/routeset`; airport lookups use `GET /api/0/airport/{icao}`. No
+receiver or home position is transmitted.
+
+Route and airport responses are attributed in Discord (`adsb.lol route and
+airport data (ODbL)`). Cached enrichment is transient, excluded from SQLite
+exports, and covered by the same `/privacy` disclosure as other providers.
+
+Disable adsb.lol traffic immediately by setting `SKYFEED_ADSBLOL_ENABLED=false`
+and recreating the container.
+
 ## Operations
 
 Local endpoints:
@@ -111,12 +163,31 @@ curl --fail http://127.0.0.1:9090/healthz
 curl --fail http://127.0.0.1:9090/metrics
 ```
 
-Health responses include the same typed privacy disclosure intended for the
-future `/privacy` command. Its public contract is limited to provider names, a
-public airport code, query radius in nautical miles, retention, and attribution;
-it has no coordinate, receiver URL, guild ID, or other deployment-identifier
-field. An empty airport code and zero radius mean no external point-query source
-is configured.
+`/livez`, `/readyz`, and `/healthz` return JSON snapshots. Each includes the same
+typed `privacy` object as `/privacy`: provider names, public airport code, query
+radius in nautical miles, retention categories, and attribution notices. An empty
+airport code and zero radius mean no external point-query source is configured.
+No coordinate, receiver URL, guild ID, or other deployment-identifier field is
+present.
+
+Aggregate health also reports component status for `aircraft_source`,
+`receiver_source`, `stats_source`, `adsbdb`, and `adsblol`. Readiness requires
+a known aircraft source, Discord Gateway readiness, and SQLite initialization.
+
+Prometheus-style metrics use fixed low-cardinality labels only (`provider`,
+`capability`, `priority`, `result`, `kind`). Useful series for the expanded
+provider stack:
+
+| Metric | Meaning |
+| --- | --- |
+| `skyfeed_aircraft_provider_active{provider}` | Which aircraft provider currently supplies snapshots (`readsb` or `airplanes-live`). |
+| `skyfeed_source_*{provider,capability}` | Per-provider request counts, errors, latency, payload bytes, capability support, and health for `aircraft`, `receiver`, and `statistics`. |
+| `skyfeed_adsbdb_*` | Optional ADSBDB enrichment cache and circuit metrics when `SKYFEED_ADSBDB_ENABLED=true`. |
+| `skyfeed_adsblol_*` | adsb.lol route/airport cache, queue, batch, and circuit metrics when route enrichment is enabled. |
+| `skyfeed_snapshot_aircraft`, `skyfeed_snapshot_age_seconds` | Current snapshot size and age. |
+
+Metrics never label ICAO, callsign, guild, channel, user IDs, airport codes, or
+coordinates.
 
 Create a consistent SQLite backup inside the persistent volume:
 
@@ -181,5 +252,5 @@ PGO is deliberately deferred until a representative ARM64 profile exists; see
 The current measured baseline and remaining release gates are recorded in the
 [implementation checkpoint](docs/checkpoints/implementation-status.md).
 
-Tests never contact Discord, a live receiver, or public ADSBDB. See
+Tests never contact Discord, a live receiver, or public enrichment APIs. See
 [SECURITY.md](SECURITY.md) for private vulnerability reporting.

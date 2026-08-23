@@ -22,3 +22,6 @@ Synthetic fixtures:
 
 Before production acceptance, compare these shapes to sanitized live payloads,
 add any representative optional fields, and retain the synthetic identifiers.
+
+Related fixture policies: [airplanes.live](../airplaneslive/README.md) and
+[adsb.lol](../adsblol/README.md).

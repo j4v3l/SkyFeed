@@ -15,12 +15,21 @@ var forbiddenFixturePatterns = map[string]*regexp.Regexp{
 }
 
 func TestReadsbFixturesAreSyntheticJSON(t *testing.T) {
-	paths, err := filepath.Glob(filepath.Join("..", "fixtures", "readsb", "*.json"))
+	assertSyntheticFixtures(t, filepath.Join("..", "fixtures", "readsb", "*.json"))
+}
+
+func TestAirplanesLiveFixturesAreSyntheticJSON(t *testing.T) {
+	assertSyntheticFixtures(t, filepath.Join("..", "fixtures", "airplaneslive", "*.json"))
+}
+
+func assertSyntheticFixtures(t *testing.T, pattern string) {
+	t.Helper()
+	paths, err := filepath.Glob(pattern)
 	if err != nil {
 		t.Fatalf("list fixtures: %v", err)
 	}
 	if len(paths) == 0 {
-		t.Skip("receiver gate is open only after sanitized JSON fixtures exist")
+		t.Skip("fixture gate is open only after sanitized JSON fixtures exist")
 	}
 
 	for _, path := range paths {

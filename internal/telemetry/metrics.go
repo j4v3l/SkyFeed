@@ -24,34 +24,43 @@ type sourceMetrics struct {
 }
 
 type Metrics struct {
-	started             time.Time
-	sources             [len(metricProviders) * len(metricCapabilities)]sourceMetrics
-	sourceSupported     [len(metricProviders) * len(metricCapabilities)]atomic.Bool
-	sourceHealth        [len(metricProviders) * len(metricCapabilities)]atomic.Int64
-	activeProviders     [len(metricProviders)]atomic.Bool
-	aircraft            atomic.Int64
-	snapshotAgeNanos    atomic.Int64
-	ruleDurationNanos   atomic.Int64
-	ruleMatches         atomic.Uint64
-	alertEmergencyDepth atomic.Int64
-	alertNormalDepth    atomic.Int64
-	alertDrops          atomic.Uint64
-	persistenceDepth    atomic.Int64
-	enrichmentCache     atomic.Int64
-	interactionAckNanos atomic.Int64
-	discordSucceeded    atomic.Uint64
-	discordFailed       atomic.Uint64
-	discordRetried      atomic.Uint64
-	discordDropped      atomic.Uint64
-	discordCoalesced    atomic.Uint64
-	adsbdbHits          atomic.Uint64
-	adsbdbMisses        atomic.Uint64
-	adsbdbRequests      atomic.Uint64
-	adsbdbFailures      atomic.Uint64
-	adsbdbCircuitReject atomic.Uint64
-	sqliteBatchSize     atomic.Int64
-	sqliteLatencyNanos  atomic.Int64
-	sqliteFailures      atomic.Uint64
+	started              time.Time
+	sources              [len(metricProviders) * len(metricCapabilities)]sourceMetrics
+	sourceSupported      [len(metricProviders) * len(metricCapabilities)]atomic.Bool
+	sourceHealth         [len(metricProviders) * len(metricCapabilities)]atomic.Int64
+	activeProviders      [len(metricProviders)]atomic.Bool
+	aircraft             atomic.Int64
+	snapshotAgeNanos     atomic.Int64
+	ruleDurationNanos    atomic.Int64
+	ruleMatches          atomic.Uint64
+	alertEmergencyDepth  atomic.Int64
+	alertNormalDepth     atomic.Int64
+	alertDrops           atomic.Uint64
+	persistenceDepth     atomic.Int64
+	enrichmentCache      atomic.Int64
+	interactionAckNanos  atomic.Int64
+	discordSucceeded     atomic.Uint64
+	discordFailed        atomic.Uint64
+	discordRetried       atomic.Uint64
+	discordDropped       atomic.Uint64
+	discordCoalesced     atomic.Uint64
+	adsbdbHits           atomic.Uint64
+	adsbdbMisses         atomic.Uint64
+	adsbdbRequests       atomic.Uint64
+	adsbdbFailures       atomic.Uint64
+	adsbdbCircuitReject  atomic.Uint64
+	adsblolHits          atomic.Uint64
+	adsblolMisses        atomic.Uint64
+	adsblolRequests      atomic.Uint64
+	adsblolFailures      atomic.Uint64
+	adsblolCircuitReject atomic.Uint64
+	adsblolDrops         atomic.Uint64
+	adsblolBatches       atomic.Uint64
+	adsblolRouteCache    atomic.Int64
+	adsblolAirportCache  atomic.Int64
+	sqliteBatchSize      atomic.Int64
+	sqliteLatencyNanos   atomic.Int64
+	sqliteFailures       atomic.Uint64
 }
 
 func NewMetrics(now time.Time) *Metrics { return &Metrics{started: now} }
@@ -145,6 +154,18 @@ func (metrics *Metrics) SetEnrichment(hits, misses, requests, failures, circuitR
 	metrics.adsbdbCircuitReject.Store(circuitRejects)
 }
 
+func (metrics *Metrics) SetRouteEnrichment(hits, misses, requests, failures, circuitRejects, drops, batches uint64, routeEntries, airportEntries int) {
+	metrics.adsblolHits.Store(hits)
+	metrics.adsblolMisses.Store(misses)
+	metrics.adsblolRequests.Store(requests)
+	metrics.adsblolFailures.Store(failures)
+	metrics.adsblolCircuitReject.Store(circuitRejects)
+	metrics.adsblolDrops.Store(drops)
+	metrics.adsblolBatches.Store(batches)
+	metrics.adsblolRouteCache.Store(int64(routeEntries))
+	metrics.adsblolAirportCache.Store(int64(airportEntries))
+}
+
 func (metrics *Metrics) SetSQLite(batchSize int, latency time.Duration, failures uint64) {
 	metrics.sqliteBatchSize.Store(int64(batchSize))
 	metrics.sqliteLatencyNanos.Store(latency.Nanoseconds())
@@ -198,6 +219,15 @@ func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(writer, "skyfeed_adsbdb_requests_total %d\n", metrics.adsbdbRequests.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_adsbdb_failures_total %d\n", metrics.adsbdbFailures.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_adsbdb_circuit_rejects_total %d\n", metrics.adsbdbCircuitReject.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_cache_total{result=\"hit\"} %d\n", metrics.adsblolHits.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_cache_total{result=\"miss\"} %d\n", metrics.adsblolMisses.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_requests_total %d\n", metrics.adsblolRequests.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_failures_total %d\n", metrics.adsblolFailures.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_circuit_rejects_total %d\n", metrics.adsblolCircuitReject.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_queue_drops_total %d\n", metrics.adsblolDrops.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_batches_total %d\n", metrics.adsblolBatches.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_cache_entries{kind=\"route\"} %d\n", metrics.adsblolRouteCache.Load())
+	_, _ = fmt.Fprintf(writer, "skyfeed_adsblol_cache_entries{kind=\"airport\"} %d\n", metrics.adsblolAirportCache.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_sqlite_batch_size %d\n", metrics.sqliteBatchSize.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_sqlite_batch_duration_seconds %.6f\n", float64(metrics.sqliteLatencyNanos.Load())/float64(time.Second))
 	_, _ = fmt.Fprintf(writer, "skyfeed_sqlite_failures_total %d\n", metrics.sqliteFailures.Load())

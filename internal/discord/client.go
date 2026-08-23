@@ -631,11 +631,13 @@ func (service *GatewayService) autocompleteEvent(event *events.AutocompleteInter
 	started := time.Now()
 	defer service.observeInteraction(started)
 	query := ""
+	option := ""
 	if focused := event.Data.Focused(); focused.Type == disgocord.ApplicationCommandOptionTypeString {
 		query = focused.String()
+		option = focused.Name
 	}
 	responder := eventResponder{autocomplete: event.AutocompleteResult}
-	request := AutocompleteRequest{Name: event.Data.CommandName, Query: query, UserID: uint64(event.User().ID), GuildID: guildID(event.GuildID())}
+	request := AutocompleteRequest{Name: event.Data.CommandName, Option: option, Query: query, UserID: uint64(event.User().ID), GuildID: guildID(event.GuildID())}
 	if event.Data.SubCommandName != nil {
 		request.Subcommand = *event.Data.SubCommandName
 	}
@@ -666,7 +668,7 @@ func (service *GatewayService) modalEvent(event *events.ModalSubmitInteractionCr
 
 func deferCommand(request CommandRequest) bool {
 	switch request.Name {
-	case "watch", "alerts", "settings", "reports", "moderation":
+	case "watch", "alerts", "settings", "reports", "moderation", "route", "airport":
 		return true
 	default:
 		return false
@@ -674,7 +676,14 @@ func deferCommand(request CommandRequest) bool {
 }
 
 func deferredEphemeral(request CommandRequest) bool {
-	return request.Name != "reports" || request.Subcommand != "generate"
+	switch request.Name {
+	case "privacy", "watch", "alerts", "settings", "moderation":
+		return true
+	case "reports":
+		return request.Subcommand != "generate"
+	default:
+		return false
+	}
 }
 
 func (service *GatewayService) observeInteraction(started time.Time) {
@@ -707,7 +716,7 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 			request.RoleIDs[index] = uint64(roleID)
 		}
 	}
-	for _, key := range []string{"query", "sort", "kind", "value", "rule", "category", "period", "cadence", "purpose", "tier", "reason", "duration", "user-id"} {
+	for _, key := range []string{"query", "sort", "kind", "value", "rule", "category", "period", "cadence", "purpose", "tier", "reason", "duration", "user-id", "flight", "code", "metric", "squawk"} {
 		if value, ok := data.OptString(key); ok {
 			request.Strings[key] = value
 		}

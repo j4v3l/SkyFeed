@@ -7,15 +7,15 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 4
+const CommandSchemaVersion = 5
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
 // synchronization can remove the stale remote command without touching names
 // owned by another application feature.
 var ownedCommandNames = map[string]struct{}{
-	"status": {}, "nearby": {}, "aircraft": {}, "watch": {}, "alerts": {},
-	"reports": {}, "feeder": {}, "settings": {}, "help": {},
+	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "top": {}, "privacy": {},
+	"watch": {}, "alerts": {}, "reports": {}, "feeder": {}, "settings": {}, "help": {},
 	"moderation": {},
 }
 
@@ -35,7 +35,9 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft per page", MinValue: &minLimit, MaxValue: &maxLimit},
 				disgocord.ApplicationCommandOptionString{Name: "sort", Description: "Aircraft ordering", Choices: []disgocord.ApplicationCommandOptionChoiceString{
 					{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Callsign", Value: "callsign"},
+					{Name: "Ground speed", Value: "speed"}, {Name: "Messages", Value: "messages"},
 				}},
+				disgocord.ApplicationCommandOptionString{Name: "squawk", Description: "Filter by transponder code", MinLength: intPtr(4), MaxLength: intPtr(4)},
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -44,6 +46,35 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 				disgocord.ApplicationCommandOptionString{Name: "query", Description: "ICAO, registration, or callsign", Required: true, Autocomplete: true},
 			},
 		},
+		disgocord.SlashCommandCreate{
+			Name: "route", Description: "Show the filed route for a visible aircraft",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "flight", Description: "Visible aircraft callsign or ICAO", Required: true, Autocomplete: true},
+			},
+		},
+		disgocord.SlashCommandCreate{
+			Name: "airport", Description: "Show airport details and cached route context",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "code", Description: "ICAO airport code", Required: true, Autocomplete: true},
+			},
+		},
+		disgocord.SlashCommandCreate{
+			Name: "squawk", Description: "List visible aircraft matching a transponder code",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+			},
+		},
+		disgocord.SlashCommandCreate{
+			Name: "top", Description: "Show the highest-ranked visible aircraft for a live metric",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
+					{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Ground speed", Value: "speed"},
+					{Name: "Messages", Value: "messages"}, {Name: "Signal", Value: "signal"},
+				}},
+				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft to show", MinValue: &minLimit, MaxValue: &maxLimit},
+			},
+		},
+		disgocord.SlashCommandCreate{Name: "privacy", Description: "Show how SkyFeed shares provider data in this server"},
 		disgocord.SlashCommandCreate{Name: "watch", Description: "Manage personal or server aircraft watch rules", Options: watchOptions()},
 		disgocord.SlashCommandCreate{Name: "alerts", Description: "View or configure alert delivery", Options: alertsOptions()},
 		disgocord.SlashCommandCreate{Name: "reports", Description: "Generate reports or manage schedules", Options: reportOptions()},

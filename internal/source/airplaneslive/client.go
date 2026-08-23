@@ -22,6 +22,7 @@ import (
 
 const (
 	defaultBaseURL   = "https://api.airplanes.live/v2"
+	Attribution      = "Aircraft data from airplanes.live (non-commercial use only; no SLA)"
 	maxResponseBytes = 16 << 20
 	maxErrorBytes    = 4 << 10
 	maxRetryAfter    = 30 * time.Second
