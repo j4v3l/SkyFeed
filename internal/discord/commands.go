@@ -7,7 +7,7 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 7
+const CommandSchemaVersion = 9
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
@@ -102,7 +102,11 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	for index, command := range commands {
 		slash := command.(disgocord.SlashCommandCreate)
 		slash.IntegrationTypes = []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall}
-		slash.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeGuild}
+		// Global commands honor BOT_DM; guild-scoped commands cannot be used in bot DMs.
+		slash.Contexts = []disgocord.InteractionContextType{
+			disgocord.InteractionContextTypeGuild,
+			disgocord.InteractionContextTypeBotDM,
+		}
 		commands[index] = slash
 	}
 	return commands
@@ -130,8 +134,8 @@ func validateDesiredCommands(commands []disgocord.ApplicationCommandCreate) erro
 		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
 			return fmt.Errorf("command %q must allow guild installation only", name)
 		}
-		if len(slash.Contexts) != 1 || slash.Contexts[0] != disgocord.InteractionContextTypeGuild {
-			return fmt.Errorf("command %q must allow guild interaction context only", name)
+		if !guildAndBotDMContexts(slash.Contexts) {
+			return fmt.Errorf("command %q must allow guild and bot DM interaction contexts only", name)
 		}
 		seen[name] = struct{}{}
 	}
@@ -278,3 +282,21 @@ func ruleChoiceOption() []disgocord.ApplicationCommandOption {
 }
 
 func intPtr(value int) *int { return &value }
+
+func guildAndBotDMContexts(contexts []disgocord.InteractionContextType) bool {
+	if len(contexts) != 2 {
+		return false
+	}
+	hasGuild, hasBotDM := false, false
+	for _, context := range contexts {
+		switch context {
+		case disgocord.InteractionContextTypeGuild:
+			hasGuild = true
+		case disgocord.InteractionContextTypeBotDM:
+			hasBotDM = true
+		default:
+			return false
+		}
+	}
+	return hasGuild && hasBotDM
+}

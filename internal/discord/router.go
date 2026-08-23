@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -77,6 +78,17 @@ type AutocompleteRequest struct {
 	GuildID    uint64
 }
 
+// GuildMemberInfo is the guild-scoped membership used to authorize bot DMs.
+type GuildMemberInfo struct {
+	RoleIDs     []uint64
+	Permissions disgocord.Permissions
+	Owner       bool
+}
+
+type GuildMemberProvider interface {
+	GuildMember(ctx context.Context, guildID, userID uint64) (GuildMemberInfo, error)
+}
+
 type Router struct {
 	snapshots         SnapshotProvider
 	sessions          *SessionManager
@@ -84,6 +96,7 @@ type Router struct {
 	startedAt         time.Time
 	now               func() time.Time
 	repository        storage.Repository
+	members           GuildMemberProvider
 	ruleReload        func()
 	enrichment        EnrichmentProvider
 	routes            RouteProvider
@@ -104,6 +117,9 @@ func (router *Router) SetDashboardReset(reset func(context.Context) error) {
 	router.dashboardReset = reset
 }
 func (router *Router) SetModeration(executor ModerationExecutor) { router.moderation = executor }
+func (router *Router) SetGuildMemberProvider(provider GuildMemberProvider) {
+	router.members = provider
+}
 
 func (router *Router) requestRuleReload() {
 	if router.ruleReload != nil {
@@ -118,6 +134,13 @@ func NewRouter(snapshots SnapshotProvider, sessions *SessionManager, configuredG
 func (router *Router) HandleCommand(request CommandRequest, responder InteractionResponder) error {
 	if !router.acceptsGuild(request.GuildID) {
 		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
+	}
+	fromDM := request.GuildID == 0
+	request.GuildID = router.resolveGuildID(request.GuildID)
+	if fromDM {
+		if err := router.authorizeDirectMessageAdmin(context.Background(), &request); err != nil {
+			return responder.CreateMessage(errorMessage(directMessageAdminOnly))
+		}
 	}
 	snapshot := router.snapshots.Current()
 	switch request.Name {
@@ -163,6 +186,17 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 func (router *Router) HandleComponent(request ComponentRequest, responder InteractionResponder) error {
 	if !router.acceptsGuild(request.GuildID) {
 		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
+	}
+	fromDM := request.GuildID == 0
+	request.GuildID = router.resolveGuildID(request.GuildID)
+	if fromDM {
+		commandLike := &CommandRequest{UserID: request.UserID, GuildID: request.GuildID, RoleIDs: request.RoleIDs, Administrator: request.Administrator, Permissions: request.Permissions}
+		if err := router.authorizeDirectMessageAdmin(context.Background(), commandLike); err != nil {
+			return responder.CreateMessage(errorMessage(directMessageAdminOnly))
+		}
+		request.RoleIDs = commandLike.RoleIDs
+		request.Administrator = commandLike.Administrator
+		request.Permissions = commandLike.Permissions
 	}
 	sessionID, action, err := ParseCustomID(request.CustomID)
 	if err != nil {
@@ -221,6 +255,14 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 	if !router.acceptsGuild(request.GuildID) {
 		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
 	}
+	fromDM := request.GuildID == 0
+	request.GuildID = router.resolveGuildID(request.GuildID)
+	if fromDM {
+		commandLike := &CommandRequest{UserID: request.UserID, GuildID: request.GuildID}
+		if err := router.authorizeDirectMessageAdmin(context.Background(), commandLike); err != nil {
+			return responder.CreateMessage(errorMessage(directMessageAdminOnly))
+		}
+	}
 	sessionID, action, err := ParseCustomID(request.CustomID)
 	if err != nil || action != "save-watch" {
 		return responder.CreateMessage(errorMessage("This form is invalid or expired."))
@@ -263,6 +305,14 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder InteractionResponder) error {
 	if !router.acceptsGuild(request.GuildID) {
 		return responder.Autocomplete(nil)
+	}
+	fromDM := request.GuildID == 0
+	request.GuildID = router.resolveGuildID(request.GuildID)
+	if fromDM {
+		commandLike := &CommandRequest{UserID: request.UserID, GuildID: request.GuildID}
+		if err := router.authorizeDirectMessageAdmin(context.Background(), commandLike); err != nil {
+			return responder.Autocomplete(nil)
+		}
 	}
 	if request.Name == "watch" {
 		return router.autocompleteRules(request, responder)
@@ -645,5 +695,43 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (router *Router) acceptsGuild(guildID uint64) bool {
-	return router.configuredGuildID != 0 && guildID == router.configuredGuildID
+	if router.configuredGuildID == 0 {
+		return false
+	}
+	// guildID 0 is a bot DM; attribute it to the single configured guild.
+	return guildID == 0 || guildID == router.configuredGuildID
+}
+
+func (router *Router) resolveGuildID(guildID uint64) uint64 {
+	if guildID == 0 {
+		return router.configuredGuildID
+	}
+	return guildID
+}
+
+var errDirectMessageAdminOnly = errors.New("direct message requires skyfeed admin")
+
+const directMessageAdminOnly = "Only SkyFeed Admins can use this bot in direct messages. Assign yourself the configured Admin role in the server, or use slash commands in a channel."
+
+func (router *Router) authorizeDirectMessageAdmin(ctx context.Context, request *CommandRequest) error {
+	if router.members == nil {
+		return errDirectMessageAdminOnly
+	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	member, err := router.members.GuildMember(ctx, request.GuildID, request.UserID)
+	if err != nil {
+		return errDirectMessageAdminOnly
+	}
+	request.RoleIDs = append([]uint64(nil), member.RoleIDs...)
+	request.Permissions = member.Permissions
+	request.Administrator = member.Owner || member.Permissions.Has(disgocord.PermissionAdministrator)
+	request.ManageGuild = request.Administrator || member.Permissions.Has(disgocord.PermissionManageGuild)
+	if request.Administrator {
+		return nil
+	}
+	if router.repository == nil || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, false, "admin") {
+		return errDirectMessageAdminOnly
+	}
+	return nil
 }

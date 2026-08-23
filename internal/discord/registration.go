@@ -56,6 +56,25 @@ func SyncGlobalCommands(ctx context.Context, api rest.Applications, applicationI
 	})
 }
 
+func PurgeOwnedGuildCommands(ctx context.Context, api rest.Applications, applicationID, guildID snowflake.ID) (RegistrationStats, error) {
+	existing, err := api.GetGuildCommands(applicationID, guildID, false, rest.WithCtx(ctx))
+	if err != nil {
+		return RegistrationStats{}, fmt.Errorf("list guild commands: %w", err)
+	}
+	stats := RegistrationStats{}
+	for _, remote := range existing {
+		if !OwnedCommand(remote.Name()) {
+			stats.Ignored++
+			continue
+		}
+		if err := api.DeleteGuildCommand(applicationID, guildID, remote.ID(), rest.WithCtx(ctx)); err != nil {
+			return stats, fmt.Errorf("delete guild command %q: %w", remote.Name(), err)
+		}
+		stats.Deleted++
+	}
+	return stats, nil
+}
+
 type commandAPI struct {
 	scope  string
 	list   func() ([]disgocord.ApplicationCommand, error)

@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -65,38 +66,79 @@ func TestRouterCachedCommandsAcknowledgeWithinTarget(t *testing.T) {
 
 func TestRouterRejectsEveryInteractionOutsideConfiguredGuild(t *testing.T) {
 	router := NewRouter(snapshotStub{}, NewSessionManager(100, 10, time.Minute), 42, time.Now())
-	for _, test := range []struct {
-		name    string
-		guildID uint64
-	}{{name: "direct-message", guildID: 0}, {name: "other-guild", guildID: 99}} {
-		t.Run(test.name, func(t *testing.T) {
-			command := &responseRecorder{}
-			if err := router.HandleCommand(CommandRequest{Name: "status", GuildID: test.guildID}, command); err != nil {
-				t.Fatal(err)
-			}
-			assertPrivateRejection(t, command)
+	t.Run("other-guild", func(t *testing.T) {
+		command := &responseRecorder{}
+		if err := router.HandleCommand(CommandRequest{Name: "status", GuildID: 99}, command); err != nil {
+			t.Fatal(err)
+		}
+		assertPrivateRejection(t, command)
 
-			component := &responseRecorder{}
-			if err := router.HandleComponent(ComponentRequest{CustomID: "untrusted", GuildID: test.guildID}, component); err != nil {
-				t.Fatal(err)
-			}
-			assertPrivateRejection(t, component)
+		component := &responseRecorder{}
+		if err := router.HandleComponent(ComponentRequest{CustomID: "untrusted", GuildID: 99}, component); err != nil {
+			t.Fatal(err)
+		}
+		assertPrivateRejection(t, component)
 
-			modal := &responseRecorder{}
-			if err := router.HandleModal(ModalRequest{CustomID: "untrusted", GuildID: test.guildID}, modal); err != nil {
-				t.Fatal(err)
-			}
-			assertPrivateRejection(t, modal)
+		modal := &responseRecorder{}
+		if err := router.HandleModal(ModalRequest{CustomID: "untrusted", GuildID: 99}, modal); err != nil {
+			t.Fatal(err)
+		}
+		assertPrivateRejection(t, modal)
 
-			autocomplete := &responseRecorder{}
-			if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft", GuildID: test.guildID}, autocomplete); err != nil {
-				t.Fatal(err)
-			}
-			if len(autocomplete.completions) != 1 || len(autocomplete.completions[0]) != 0 {
-				t.Fatalf("autocomplete response = %#v", autocomplete.completions)
-			}
-		})
+		autocomplete := &responseRecorder{}
+		if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft", GuildID: 99}, autocomplete); err != nil {
+			t.Fatal(err)
+		}
+		if len(autocomplete.completions) != 1 || len(autocomplete.completions[0]) != 0 {
+			t.Fatalf("autocomplete response = %#v", autocomplete.completions)
+		}
+	})
+}
+
+func TestRouterAcceptsDirectMessagesAsConfiguredGuild(t *testing.T) {
+	now := time.Now().UTC()
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 42, now.Add(-time.Hour))
+	router.SetGuildMemberProvider(memberProviderStub{
+		info: GuildMemberInfo{Permissions: disgocord.PermissionAdministrator},
+	})
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "status", UserID: 1, GuildID: 0, ChannelID: 9}, recorder); err != nil {
+		t.Fatal(err)
 	}
+	if len(recorder.created) != 1 {
+		t.Fatalf("created %d responses", len(recorder.created))
+	}
+	if len(recorder.created[0].Embeds) == 0 || !strings.Contains(recorder.created[0].Embeds[0].Title, "Status") {
+		t.Fatalf("unexpected DM status response: %+v", recorder.created)
+	}
+}
+
+func TestRouterRejectsDirectMessagesWithoutAdmin(t *testing.T) {
+	now := time.Now().UTC()
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 42, now)
+	router.SetGuildMemberProvider(memberProviderStub{
+		info: GuildMemberInfo{RoleIDs: []uint64{7}},
+	})
+	denied := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "status", UserID: 1, GuildID: 0, ChannelID: 9}, denied); err != nil {
+		t.Fatal(err)
+	}
+	assertPrivateRejection(t, denied)
+	if len(denied.created) != 1 || !strings.Contains(denied.created[0].Embeds[0].Description, "Only SkyFeed Admins") {
+		t.Fatalf("unexpected rejection: %+v", denied.created)
+	}
+}
+
+type memberProviderStub struct {
+	info GuildMemberInfo
+	err  error
+}
+
+func (stub memberProviderStub) GuildMember(context.Context, uint64, uint64) (GuildMemberInfo, error) {
+	if stub.err != nil {
+		return GuildMemberInfo{}, stub.err
+	}
+	return stub.info, nil
 }
 
 func TestRouterComponentBindingAndModalFlow(t *testing.T) {
@@ -149,7 +191,10 @@ func TestAutocompleteIsBounded(t *testing.T) {
 
 func TestDeferredInteractionPolicy(t *testing.T) {
 	if deferCommand(CommandRequest{Name: "status"}) {
-		t.Fatal("cached status should respond immediately")
+		t.Fatal("cached status should respond immediately in guild channels")
+	}
+	if !shouldDeferCommand(CommandRequest{Name: "status", GuildID: 0}) {
+		t.Fatal("direct messages should defer before admin authorization")
 	}
 	report := CommandRequest{Name: "reports", Subcommand: "generate"}
 	if !deferCommand(report) || deferredEphemeral(report) {

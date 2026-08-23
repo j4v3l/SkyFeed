@@ -40,6 +40,9 @@ func (monitor *InterestingMonitor) Evaluate(guildID uint64, snapshot *domain.Sna
 	}
 	alerts := make([]domain.Alert, 0, 1)
 	for _, aircraft := range snapshot.Aircraft {
+		if aircraft.Provider != domain.ProviderReadsb {
+			continue
+		}
 		icao := normalizeInterestingICAO(aircraft.ICAO)
 		if icao == "" {
 			continue

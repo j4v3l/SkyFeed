@@ -21,7 +21,7 @@ func TestCommandSchemaIsStableAndVersioned(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("command schema is not deterministic")
 	}
-	if CommandSchemaVersion != 7 || len(first) < 100 {
+	if CommandSchemaVersion != 9 || len(first) < 100 {
 		t.Fatalf("schema version=%d bytes=%d", CommandSchemaVersion, len(first))
 	}
 }
@@ -35,7 +35,7 @@ func TestSlashUpdateIncludesCompleteOwnedSchema(t *testing.T) {
 	if update.IntegrationTypes == nil || len(*update.IntegrationTypes) != 1 || (*update.IntegrationTypes)[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
 		t.Fatalf("integration types = %#v", update.IntegrationTypes)
 	}
-	if update.Contexts == nil || len(*update.Contexts) != 1 || (*update.Contexts)[0] != disgocord.InteractionContextTypeGuild {
+	if update.Contexts == nil || !guildAndBotDMContexts(*update.Contexts) {
 		t.Fatalf("contexts = %#v", update.Contexts)
 	}
 }
@@ -53,7 +53,7 @@ func TestCommandEquivalentComparesPermissionsInstallAndContext(t *testing.T) {
 		t.Fatal("integration type drift was ignored")
 	}
 	directMessage := status
-	directMessage.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeBotDM}
+	directMessage.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeGuild}
 	if commandEquivalent(remoteStatus, directMessage) {
 		t.Fatal("context drift was ignored")
 	}

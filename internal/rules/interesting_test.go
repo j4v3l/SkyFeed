@@ -19,8 +19,8 @@ func TestInterestingMonitorFiresOncePerICAO(t *testing.T) {
 	snapshot := &domain.Snapshot{
 		PublishedAt: now,
 		Aircraft: []domain.Aircraft{
-			{ICAO: "AE1234", Callsign: "RCH123", DistanceNM: 12.5, HasDistance: true},
-			{ICAO: "ABCDEF", Callsign: "UAL1"},
+			{ICAO: "AE1234", Provider: domain.ProviderReadsb, Callsign: "RCH123", DistanceNM: 12.5, HasDistance: true},
+			{ICAO: "ABCDEF", Provider: domain.ProviderReadsb, Callsign: "UAL1"},
 		},
 	}
 	alerts := monitor.Evaluate(42, snapshot)
@@ -42,7 +42,22 @@ func TestInterestingMonitorRestoreSkipsSeen(t *testing.T) {
 	monitor.Restore([]string{"AE1234"})
 	snapshot := &domain.Snapshot{
 		PublishedAt: time.Now(),
-		Aircraft:    []domain.Aircraft{{ICAO: "AE1234"}},
+		Aircraft:    []domain.Aircraft{{ICAO: "AE1234", Provider: domain.ProviderReadsb}},
+	}
+	if alerts := monitor.Evaluate(1, snapshot); len(alerts) != 0 {
+		t.Fatalf("alerts=%d", len(alerts))
+	}
+}
+
+func TestInterestingMonitorIgnoresNonReadsbProvider(t *testing.T) {
+	monitor := NewInterestingMonitor(func(icao string) (planealert.Record, bool) {
+		return planealert.Record{ICAO: icao, Group: "Mil"}, true
+	})
+	snapshot := &domain.Snapshot{
+		PublishedAt: time.Now(),
+		Aircraft: []domain.Aircraft{
+			{ICAO: "AE1234", Provider: domain.ProviderAirplanesLive},
+		},
 	}
 	if alerts := monitor.Evaluate(1, snapshot); len(alerts) != 0 {
 		t.Fatalf("alerts=%d", len(alerts))

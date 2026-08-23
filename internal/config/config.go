@@ -15,11 +15,14 @@ import (
 const maxTokenBytes = 4096
 
 type Discord struct {
-	TokenFile      string
-	Token          Secret
-	ApplicationID  uint64
-	GuildID        uint64
-	GlobalCommands bool
+	TokenFile       string
+	Token           Secret
+	ApplicationID   uint64
+	GuildID         uint64
+	GlobalCommands  bool
+	AdminRoleID     uint64
+	OperatorRoleID  uint64
+	ModeratorRoleID uint64
 }
 
 type ADSB struct {
@@ -141,6 +144,15 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Discord.GlobalCommands, err = parseBool(lookup, "SKYFEED_DISCORD_GLOBAL_COMMANDS", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.Discord.AdminRoleID, err = parseUint(lookup, "SKYFEED_DISCORD_ADMIN_ROLE_ID", 0); err != nil {
+		return Config{}, err
+	}
+	if cfg.Discord.OperatorRoleID, err = parseUint(lookup, "SKYFEED_DISCORD_OPERATOR_ROLE_ID", 0); err != nil {
+		return Config{}, err
+	}
+	if cfg.Discord.ModeratorRoleID, err = parseUint(lookup, "SKYFEED_DISCORD_MODERATOR_ROLE_ID", 0); err != nil {
 		return Config{}, err
 	}
 	if cfg.ADSB.AircraftPoll, err = parseDuration(lookup, "SKYFEED_AIRCRAFT_POLL", cfg.ADSB.AircraftPoll); err != nil {

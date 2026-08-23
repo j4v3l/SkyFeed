@@ -62,7 +62,16 @@ func RegisterCommands(ctx context.Context, cfg config.Discord, logger *slog.Logg
 		return RegistrationStats{}, errors.New("discord token application ID does not match configured application ID")
 	}
 	if cfg.GlobalCommands {
-		return SyncGlobalCommands(ctx, client.Rest, client.ApplicationID)
+		stats, err := SyncGlobalCommands(ctx, client.Rest, client.ApplicationID)
+		if err != nil {
+			return RegistrationStats{}, err
+		}
+		if cfg.GuildID != 0 {
+			if _, purgeErr := PurgeOwnedGuildCommands(ctx, client.Rest, client.ApplicationID, snowflake.ID(cfg.GuildID)); purgeErr != nil {
+				return stats, purgeErr
+			}
+		}
+		return stats, nil
 	}
 	return SyncGuildCommands(ctx, client.Rest, client.ApplicationID, snowflake.ID(cfg.GuildID))
 }
@@ -80,6 +89,32 @@ func (service *GatewayService) SetReportInterval(interval time.Duration) {
 
 func (service *GatewayService) SetInteractionObserver(observer func(time.Duration)) {
 	service.interactionMetric = observer
+}
+
+func (service *GatewayService) GuildMember(ctx context.Context, guildID, userID uint64) (GuildMemberInfo, error) {
+	client := service.client.Load()
+	if client == nil {
+		return GuildMemberInfo{}, errors.New("discord client unavailable")
+	}
+	guildSnowflake := snowflake.ID(guildID)
+	userSnowflake := snowflake.ID(userID)
+	guild, err := client.Rest.GetGuild(guildSnowflake, false, rest.WithCtx(ctx))
+	if err != nil {
+		return GuildMemberInfo{}, err
+	}
+	member, err := client.Rest.GetMember(guildSnowflake, userSnowflake, rest.WithCtx(ctx))
+	if err != nil {
+		return GuildMemberInfo{}, err
+	}
+	roleIDs := make([]uint64, len(member.RoleIDs))
+	for index, roleID := range member.RoleIDs {
+		roleIDs[index] = uint64(roleID)
+	}
+	return GuildMemberInfo{
+		RoleIDs:     roleIDs,
+		Permissions: memberPermissions(guildSnowflake, guild.Roles, member.RoleIDs),
+		Owner:       guild.OwnerID == userSnowflake,
+	}, nil
 }
 
 func (service *GatewayService) OutboundStats() QueueStats { return service.outbound.Stats() }
@@ -140,11 +175,22 @@ func (service *GatewayService) Run(ctx context.Context) error {
 	var stats RegistrationStats
 	if service.config.GlobalCommands {
 		stats, err = SyncGlobalCommands(ctx, client.Rest, client.ApplicationID)
+		if err != nil {
+			return err
+		}
+		if service.config.GuildID != 0 {
+			purgeStats, purgeErr := PurgeOwnedGuildCommands(ctx, client.Rest, client.ApplicationID, snowflake.ID(service.config.GuildID))
+			if purgeErr != nil {
+				service.logger.Warn("guild command purge failed", "component", "discord", "event", "guild_command_purge_failure", "error", purgeErr)
+			} else if purgeStats.Deleted > 0 {
+				service.logger.Info("removed guild-scoped commands superseded by global registration", "component", "discord", "event", "guild_command_purge", "deleted", purgeStats.Deleted, "ignored", purgeStats.Ignored)
+			}
+		}
 	} else {
 		stats, err = SyncGuildCommands(ctx, client.Rest, client.ApplicationID, snowflake.ID(service.config.GuildID))
-	}
-	if err != nil {
-		return err
+		if err != nil {
+			return err
+		}
 	}
 	scope := "guild"
 	if service.config.GlobalCommands {
@@ -630,7 +676,7 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 			service.observeInteraction(started)
 		}
 	}()
-	if deferCommand(request) {
+	if shouldDeferCommand(request) {
 		if err := event.DeferCreateMessage(deferredEphemeral(request)); err != nil {
 			service.logInteractionError("command_defer", data.CommandName(), err)
 			return
@@ -669,6 +715,21 @@ func (service *GatewayService) componentEvent(event *events.ComponentInteraction
 	_, action, parseErr := ParseCustomID(request.CustomID)
 	if parseErr == nil && action == "moderate-confirm" {
 		if err := event.DeferUpdateMessage(); err != nil {
+			service.logInteractionError("component_defer", request.CustomID, err)
+			service.observeInteraction(started)
+			return
+		}
+		service.observeInteraction(started)
+		updateResponse := func(update disgocord.MessageUpdate, opts ...rest.RequestOpt) error {
+			_, err := event.Client().Rest.UpdateInteractionResponse(event.ApplicationID(), event.Token(), update, opts...)
+			return err
+		}
+		responder.update = updateResponse
+		responder.create = func(message disgocord.MessageCreate, opts ...rest.RequestOpt) error {
+			return updateResponse(messageUpdate(message), opts...)
+		}
+	} else if request.GuildID == 0 {
+		if err := event.DeferCreateMessage(true); err != nil {
 			service.logInteractionError("component_defer", request.CustomID, err)
 			service.observeInteraction(started)
 			return
@@ -727,6 +788,10 @@ func (service *GatewayService) modalEvent(event *events.ModalSubmitInteractionCr
 	if err := service.router.HandleModal(request, responder); err != nil {
 		service.logInteractionError("modal", request.CustomID, err)
 	}
+}
+
+func shouldDeferCommand(request CommandRequest) bool {
+	return deferCommand(request) || request.GuildID == 0
 }
 
 func deferCommand(request CommandRequest) bool {

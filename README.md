@@ -96,7 +96,18 @@ action:
 /settings roles bind tier:Admin role:@SkyFeed Admin
 /settings roles bind tier:Operator role:@SkyFeed Operator
 /settings roles bind tier:Moderator role:@SkyFeed Moderator
+/settings roles list
+```
+
+Set `SKYFEED_DISCORD_ADMIN_ROLE_ID`, `SKYFEED_DISCORD_OPERATOR_ROLE_ID`, and
+`SKYFEED_DISCORD_MODERATOR_ROLE_ID` in `.env` to auto-bind these on startup, or
+run `python3 scripts/setup-discord-governance.py` to apply channel permissions
+and post server rules. Grant `@SkyFeed Admin` the **Manage Roles** permission in
+Discord so admins can assign Operator and Moderator roles to members.
+
+```text
 /settings channels purpose:Moderation log channel:#moderation-log
+/settings channels purpose:Interesting aircraft channel:#interesting-aircraft
 ```
 
 Viewer commands remain public. Operators manage server watch rules, alerts,
@@ -108,7 +119,8 @@ recorded. Moderation log delivery retries from a bounded SQLite outbox across
 restarts, and cases expire after 365 days in bounded purge batches.
 
 Configure durable channel IDs with `/settings channels`. Names such as
-`#adsb-alerts` are documentation only and are never treated as identifiers.
+`#adsb-alerts` and `#interesting-aircraft` are documentation only and are never
+treated as identifiers.
 Daily and weekly report schedules are delivered by the bounded outbound
 scheduler and record their last successful run to prevent restart duplicates.
 Operator, owner, and aircraft-type watch rules are visibly best-effort and use
@@ -152,6 +164,39 @@ exports, and covered by the same `/privacy` disclosure as other providers.
 Disable adsb.lol traffic immediately by setting `SKYFEED_ADSBLOL_ENABLED=false`
 and recreating the container.
 
+## Interesting aircraft (plane-alert-db)
+
+SkyFeed matches aircraft seen by your **local readsb feeder** against the
+community [plane-alert-db](https://github.com/sdr-enthusiasts/plane-alert-db)
+ICAO list (Mil, Gov, Pol, Civ). The reference CSV is downloaded on startup and
+refreshed daily (`SKYFEED_PLANE_ALERT_REFRESH`, default `24h`). No coordinates
+are sent to plane-alert-db—only local ICAO hex matching against a cached SQLite
+reference table.
+
+Each ICAO triggers **one first-sighting alert per guild** (not every overflight).
+airplanes.live fallback aircraft are excluded; only `readsb` provider sightings
+qualify.
+
+Create a read-only Discord channel (deny Send Messages for `@everyone`; allow
+the bot to Send Messages and Embed Links—the same pattern as `#flight-alerts`):
+
+```text
+/settings channels purpose:Interesting aircraft channel:#interesting-aircraft
+/settings test purpose:Interesting aircraft
+```
+
+Tune delivery with `/alerts configure category:Interesting aircraft`. Alerts
+respect `/settings pause-alerts` like other non-emergency categories.
+
+Enable in `.env`:
+
+```env
+SKYFEED_PLANE_ALERT_ENABLED=true
+SKYFEED_PLANE_ALERT_REFRESH=24h
+```
+
+Health JSON reports a `planealert` component when matching is active.
+
 ## Operations
 
 Local endpoints:
@@ -171,8 +216,9 @@ No coordinate, receiver URL, guild ID, or other deployment-identifier field is
 present.
 
 Aggregate health also reports component status for `aircraft_source`,
-`receiver_source`, `stats_source`, `adsbdb`, and `adsblol`. Readiness requires
-a known aircraft source, Discord Gateway readiness, and SQLite initialization.
+`receiver_source`, `stats_source`, `adsbdb`, `adsblol`, and `planealert`.
+Readiness requires a known aircraft source, Discord Gateway readiness, and SQLite
+initialization.
 
 Prometheus-style metrics use fixed low-cardinality labels only (`provider`,
 `capability`, `priority`, `result`, `kind`). Useful series for the expanded

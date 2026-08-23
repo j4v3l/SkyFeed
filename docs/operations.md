@@ -106,9 +106,28 @@ run backward.
 
 A Discord Administrator can bootstrap or repair `/settings roles` bindings.
 SkyFeed uses existing roles only; it never creates roles and does not need
-Manage Roles. Keep the bot role above members it may moderate and grant the bot
+Manage Roles on the bot. Keep the bot role above members it may moderate and grant the bot
 only Moderate Members, Kick Members, and Ban Members in addition to its normal
 message permissions.
+
+On startup, SkyFeed can auto-bind access tiers when these env vars are set:
+`SKYFEED_DISCORD_ADMIN_ROLE_ID`, `SKYFEED_DISCORD_OPERATOR_ROLE_ID`, and
+`SKYFEED_DISCORD_MODERATOR_ROLE_ID`. The `@SkyFeed Admin` Discord role should
+include **Manage Roles** so admins can assign Operator and Moderator roles to
+members. Run `python3 scripts/setup-discord-governance.py` to apply channel
+permission overwrites and post server rules to `#server-guide`.
+
+### Channel access by role
+
+| Channel group | Who can view | Who can post |
+| --- | --- | --- |
+| Bot feeds (`#live-radar`, `#flight-alerts`, `#emergency-squawks`, `#flight-reports`, `#interesting-aircraft`) | Everyone | SkyFeed bot only |
+| Staff (`#operations-log`, `#moderation-log`) | Admin, Operator, Moderator | Staff roles + bot |
+| Rules (`#welcome`, `#server-guide`) | Everyone | Admin + bot |
+| `#announcements` | Everyone | Admin + bot |
+| Community (chat, spotting, `#bot-commands`) | Everyone | Everyone |
+
+Viewer slash commands work in any channel without Send Messages permission.
 
 Configure a `moderation` channel binding before enabling staff workflows.
 Completed actions are not rolled back when log delivery fails: the durable
@@ -116,6 +135,29 @@ outbox retries across restarts with bounded backoff. Inspect `/moderation case`
 or `/moderation history` privately to reconcile an action. Cases older than 365
 days are deleted in bounded batches. A missing or inaccessible moderation-log
 channel should be treated as an operational fault.
+
+## Interesting aircraft channel
+
+SkyFeed posts first sightings of plane-alert-db matches (Mil, Gov, Pol, Civ) to
+the `interesting` channel binding. Matching is **feeder-only**: aircraft must
+come from the local `readsb` provider; airplanes.live fallback sightings never
+trigger interesting alerts.
+
+Configure the binding before expecting delivery:
+
+```text
+/settings channels purpose:Interesting aircraft channel:#interesting-aircraft
+/settings test purpose:Interesting aircraft
+```
+
+Verify health component `planealert` is `healthy` and logs show
+`plane-alert-db reference updated` with a non-zero record count. Confirm
+`interesting_aircraft_seen` grows only on first ICAO sightings (restarts restore
+the seen set from SQLite).
+
+Use `/alerts configure category:Interesting aircraft` to disable delivery or
+override cooldown/destination. Pause/resume via `/settings pause-alerts` and
+`/settings resume-alerts` applies to interesting alerts as well.
 
 Before granting staff access, test a hierarchy rejection and a harmless warning
 against a consenting test account. Never test kick or ban against an unrelated

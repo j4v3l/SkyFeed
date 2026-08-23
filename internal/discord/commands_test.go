@@ -22,7 +22,7 @@ func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
 			t.Fatalf("%s integration types = %#v", slash.Name, slash.IntegrationTypes)
 		}
-		if len(slash.Contexts) != 1 || slash.Contexts[0] != disgocord.InteractionContextTypeGuild {
+		if !guildAndBotDMContexts(slash.Contexts) {
 			t.Fatalf("%s contexts = %#v", slash.Name, slash.Contexts)
 		}
 	}
@@ -37,7 +37,12 @@ func TestCommandValidationRejectsBroaderInstallOrInteractionScope(t *testing.T) 
 	command = DesiredCommands()[0].(disgocord.SlashCommandCreate)
 	command.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeBotDM}
 	if err := validateDesiredCommands([]disgocord.ApplicationCommandCreate{command}); err == nil {
-		t.Fatal("direct-message command passed validation")
+		t.Fatal("bot-DM-only command passed validation")
+	}
+	command = DesiredCommands()[0].(disgocord.SlashCommandCreate)
+	command.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeGuild}
+	if err := validateDesiredCommands([]disgocord.ApplicationCommandCreate{command}); err == nil {
+		t.Fatal("guild-only command passed validation")
 	}
 }
 

@@ -65,6 +65,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if err := repository.EnsureGuild(ctx, cfg.Discord.GuildID); err != nil {
 				return err
 			}
+			bootstrapRoleBindings(ctx, repository, cfg.Discord, logger)
 		}
 		persistence = storage.NewWriter(repository, 1_024, 64, 250*time.Millisecond)
 		storedRules, err := repository.AllWatchRules(ctx, cfg.Discord.GuildID, 500)
@@ -378,6 +379,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
+		router.SetGuildMemberProvider(gateway)
 		if repository != nil {
 			router.SetDashboardReset(func(resetContext context.Context) error {
 				if err := repository.DeleteMessageBinding(resetContext, cfg.Discord.GuildID, "dashboard"); err != nil {
