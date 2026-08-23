@@ -18,6 +18,26 @@ func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 		if command.Type() != disgocord.ApplicationCommandTypeSlash {
 			t.Fatalf("%s is not a slash command", command.CommandName())
 		}
+		slash := command.(disgocord.SlashCommandCreate)
+		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
+			t.Fatalf("%s integration types = %#v", slash.Name, slash.IntegrationTypes)
+		}
+		if len(slash.Contexts) != 1 || slash.Contexts[0] != disgocord.InteractionContextTypeGuild {
+			t.Fatalf("%s contexts = %#v", slash.Name, slash.Contexts)
+		}
+	}
+}
+
+func TestCommandValidationRejectsBroaderInstallOrInteractionScope(t *testing.T) {
+	command := DesiredCommands()[0].(disgocord.SlashCommandCreate)
+	command.IntegrationTypes = []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeUserInstall}
+	if err := validateDesiredCommands([]disgocord.ApplicationCommandCreate{command}); err == nil {
+		t.Fatal("user-install command passed validation")
+	}
+	command = DesiredCommands()[0].(disgocord.SlashCommandCreate)
+	command.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeBotDM}
+	if err := validateDesiredCommands([]disgocord.ApplicationCommandCreate{command}); err == nil {
+		t.Fatal("direct-message command passed validation")
 	}
 }
 

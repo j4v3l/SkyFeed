@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/source"
 )
 
@@ -20,6 +21,9 @@ func TestNormalizeSyntheticFixtures(t *testing.T) {
 	batch := normalizeAircraft(aircraftPayload)
 	if len(batch.Aircraft) != 3 {
 		t.Fatalf("aircraft count = %d", len(batch.Aircraft))
+	}
+	if batch.Provider != domain.ProviderReadsb || !batch.MessageCounterValid || batch.Aircraft[0].Provider != domain.ProviderReadsb {
+		t.Fatalf("provider state = %+v", batch)
 	}
 	if batch.Aircraft[0].ICAO != "ABC123" || batch.Aircraft[0].Callsign != "SKY123" || !batch.Aircraft[0].HasAltitude {
 		t.Fatalf("unexpected normalized aircraft: %#v", batch.Aircraft[0])

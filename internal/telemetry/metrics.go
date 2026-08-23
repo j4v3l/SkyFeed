@@ -8,7 +8,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
+
+var metricProviders = [...]domain.ProviderID{domain.ProviderReadsb, domain.ProviderAirplanesLive}
+var metricCapabilities = [...]domain.Capability{domain.CapabilityAircraft, domain.CapabilityReceiver, domain.CapabilityStatistics}
 
 type sourceMetrics struct {
 	requests        atomic.Uint64
@@ -20,7 +25,10 @@ type sourceMetrics struct {
 
 type Metrics struct {
 	started             time.Time
-	sources             [3]sourceMetrics
+	sources             [len(metricProviders) * len(metricCapabilities)]sourceMetrics
+	sourceSupported     [len(metricProviders) * len(metricCapabilities)]atomic.Bool
+	sourceHealth        [len(metricProviders) * len(metricCapabilities)]atomic.Int64
+	activeProviders     [len(metricProviders)]atomic.Bool
 	aircraft            atomic.Int64
 	snapshotAgeNanos    atomic.Int64
 	ruleDurationNanos   atomic.Int64
@@ -48,8 +56,11 @@ type Metrics struct {
 
 func NewMetrics(now time.Time) *Metrics { return &Metrics{started: now} }
 
-func (metrics *Metrics) ObserveSource(source string, duration time.Duration, bytes int, success bool, at time.Time) {
-	index := sourceIndex(source)
+func (metrics *Metrics) ObserveSource(provider domain.ProviderID, capability domain.Capability, duration time.Duration, bytes int, success bool, at time.Time) {
+	index, known := sourceIndex(provider, capability)
+	if !known {
+		return
+	}
 	item := &metrics.sources[index]
 	item.requests.Add(1)
 	item.bytes.Add(uint64(max(bytes, 0)))
@@ -58,6 +69,41 @@ func (metrics *Metrics) ObserveSource(source string, duration time.Duration, byt
 		item.lastSuccessUnix.Store(at.Unix())
 	} else {
 		item.errors.Add(1)
+	}
+}
+
+func (metrics *Metrics) SetProviderCapabilities(provider domain.ProviderID, capabilities domain.Capabilities) {
+	for _, capability := range metricCapabilities {
+		if index, known := sourceIndex(provider, capability); known {
+			metrics.sourceSupported[index].Store(capabilities.Supports(capability))
+		}
+	}
+}
+
+func (metrics *Metrics) SetActiveAircraftProvider(provider domain.ProviderID) {
+	for index, knownProvider := range metricProviders {
+		metrics.activeProviders[index].Store(provider == knownProvider)
+	}
+}
+
+func (metrics *Metrics) SetSourceHealth(health domain.Health) {
+	values := [...]struct {
+		capability domain.Capability
+		health     domain.SourceHealth
+	}{
+		{capability: domain.CapabilityAircraft, health: health.Aircraft},
+		{capability: domain.CapabilityReceiver, health: health.Receiver},
+		{capability: domain.CapabilityStatistics, health: health.Stats},
+	}
+	for _, value := range values {
+		for _, provider := range metricProviders {
+			if index, known := sourceIndex(provider, value.capability); known {
+				metrics.sourceHealth[index].Store(0)
+			}
+		}
+		if index, known := sourceIndex(value.health.Provider, value.capability); known {
+			metrics.sourceHealth[index].Store(healthValue(value.health.Status))
+		}
 	}
 }
 
@@ -108,13 +154,27 @@ func (metrics *Metrics) SetSQLite(batchSize int, latency time.Duration, failures
 func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 	writer.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
-	for index, name := range []string{"aircraft", "receiver", "stats"} {
-		item := &metrics.sources[index]
-		_, _ = fmt.Fprintf(writer, "skyfeed_source_requests_total{source=\"%s\"} %d\n", name, item.requests.Load())
-		_, _ = fmt.Fprintf(writer, "skyfeed_source_errors_total{source=\"%s\"} %d\n", name, item.errors.Load())
-		_, _ = fmt.Fprintf(writer, "skyfeed_source_payload_bytes_total{source=\"%s\"} %d\n", name, item.bytes.Load())
-		_, _ = fmt.Fprintf(writer, "skyfeed_source_request_duration_seconds{source=\"%s\"} %.6f\n", name, float64(item.latencyNanos.Load())/float64(time.Second))
-		_, _ = fmt.Fprintf(writer, "skyfeed_source_last_success_timestamp_seconds{source=\"%s\"} %d\n", name, item.lastSuccessUnix.Load())
+	for providerIndex, provider := range metricProviders {
+		active := 0
+		if metrics.activeProviders[providerIndex].Load() {
+			active = 1
+		}
+		_, _ = fmt.Fprintf(writer, "skyfeed_aircraft_provider_active{provider=\"%s\"} %d\n", provider, active)
+		for _, capability := range metricCapabilities {
+			index, _ := sourceIndex(provider, capability)
+			item := &metrics.sources[index]
+			supported := 0
+			if metrics.sourceSupported[index].Load() {
+				supported = 1
+			}
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_capability_supported{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, supported)
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_health{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, metrics.sourceHealth[index].Load())
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_requests_total{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, item.requests.Load())
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_errors_total{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, item.errors.Load())
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_payload_bytes_total{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, item.bytes.Load())
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_request_duration_seconds{provider=\"%s\",capability=\"%s\"} %.6f\n", provider, capability, float64(item.latencyNanos.Load())/float64(time.Second))
+			_, _ = fmt.Fprintf(writer, "skyfeed_source_last_success_timestamp_seconds{provider=\"%s\",capability=\"%s\"} %d\n", provider, capability, item.lastSuccessUnix.Load())
+		}
 	}
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
@@ -173,12 +233,37 @@ func processOpenFileDescriptors() (int, bool) {
 	return 0, false
 }
 
-func sourceIndex(source string) int {
-	switch source {
-	case "receiver":
+func sourceIndex(provider domain.ProviderID, capability domain.Capability) (int, bool) {
+	providerIndex := -1
+	for index, known := range metricProviders {
+		if provider == known {
+			providerIndex = index
+			break
+		}
+	}
+	if providerIndex < 0 {
+		return 0, false
+	}
+	for index, known := range metricCapabilities {
+		if capability == known {
+			return providerIndex*len(metricCapabilities) + index, true
+		}
+	}
+	return 0, false
+}
+
+func healthValue(status domain.HealthStatus) int64 {
+	switch status {
+	case domain.HealthHealthy:
 		return 1
-	case "stats":
+	case domain.HealthDegraded:
 		return 2
+	case domain.HealthStale:
+		return 3
+	case domain.HealthOffline:
+		return 4
+	case domain.HealthDisabled:
+		return 5
 	default:
 		return 0
 	}

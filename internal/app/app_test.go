@@ -50,9 +50,99 @@ func TestSourcesInitializedRequiresSuccessfulFetches(t *testing.T) {
 		t.Fatal("startup failures incorrectly initialized the sources")
 	}
 	health.Aircraft.LastSuccess = now
-	health.Receiver.LastSuccess = now
-	health.Stats.LastSuccess = now
+	health.Receiver.Status = domain.HealthDisabled
+	health.Stats.Status = domain.HealthDisabled
 	if !sourcesInitialized(health) {
-		t.Fatal("successful source observations did not initialize the sources")
+		t.Fatal("successful aircraft with disabled metadata did not initialize the sources")
+	}
+	health.Aircraft = domain.SourceHealth{Status: domain.HealthDisabled}
+	if sourcesInitialized(health) {
+		t.Fatal("disabled aircraft capability initialized the sources")
+	}
+}
+
+func TestPrivacyDisclosureReflectsEnabledProvidersWithoutCoordinates(t *testing.T) {
+	disclosure := privacyDisclosure(config.Config{ADSBDB: config.ADSBDB{Enabled: true}})
+	if len(disclosure.Providers) != 2 || disclosure.Providers[0] != "readsb" || disclosure.Providers[1] != "ADSBDB" {
+		t.Fatalf("providers = %v", disclosure.Providers)
+	}
+	if disclosure.PublicAirportCode != "" || disclosure.RadiusNM != 0 {
+		t.Fatalf("unexpected point-query disclosure: %+v", disclosure)
+	}
+	if len(disclosure.Attribution) != 1 || disclosure.Attribution[0].Provider != "ADSBDB" {
+		t.Fatalf("attribution = %+v", disclosure.Attribution)
+	}
+}
+
+func TestPrivacyDisclosureIncludesExplicitPublicPointProvider(t *testing.T) {
+	latitude, longitude := 1.25, -2.5
+	cfg := config.Config{
+		ADSB: config.ADSB{ProviderOrder: []domain.ProviderID{
+			domain.ProviderReadsb,
+			domain.ProviderAirplanesLive,
+		}},
+		AirplanesLive: config.AirplanesLive{
+			PublicAirportCode: "KXYZ",
+			Latitude:          &latitude,
+			Longitude:         &longitude,
+			RadiusNM:          50,
+		},
+		ADSBDB: config.ADSBDB{Enabled: true},
+	}
+	disclosure := privacyDisclosure(cfg)
+	if len(disclosure.Providers) != 3 ||
+		disclosure.Providers[0] != "readsb" ||
+		disclosure.Providers[1] != "airplanes.live" ||
+		disclosure.Providers[2] != "ADSBDB" {
+		t.Fatalf("providers = %v", disclosure.Providers)
+	}
+	if disclosure.PublicAirportCode != "KXYZ" || disclosure.RadiusNM != 50 {
+		t.Fatalf("point-query disclosure = %+v", disclosure)
+	}
+	if len(disclosure.Attribution) != 2 || disclosure.Attribution[0].Provider != "airplanes.live" {
+		t.Fatalf("attribution = %+v", disclosure.Attribution)
+	}
+}
+
+func TestConfigureSourcesKeepsReadsbMetadataAndOrderedAircraftFallback(t *testing.T) {
+	baseURL, err := url.Parse("http://receiver.invalid/data")
+	if err != nil {
+		t.Fatal(err)
+	}
+	latitude, longitude := 1.25, -2.5
+	cfg := config.Config{
+		ADSB: config.ADSB{
+			BaseURL: baseURL,
+			ProviderOrder: []domain.ProviderID{
+				domain.ProviderReadsb,
+				domain.ProviderAirplanesLive,
+			},
+		},
+		AirplanesLive: config.AirplanesLive{
+			Latitude:  &latitude,
+			Longitude: &longitude,
+			RadiusNM:  50,
+			Timeout:   time.Second,
+			Poll:      time.Second,
+		},
+	}
+	configured, err := configureSources(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.Set.Aircraft.ProviderID() != domain.ProviderReadsb ||
+		configured.Set.Receiver.ProviderID() != domain.ProviderReadsb ||
+		configured.Set.Stats.ProviderID() != domain.ProviderReadsb {
+		t.Fatalf("source set = %+v", configured.Set)
+	}
+	if len(configured.AircraftChecks) != 2 ||
+		configured.AircraftChecks[0].ProviderID() != domain.ProviderReadsb ||
+		configured.AircraftChecks[1].ProviderID() != domain.ProviderAirplanesLive {
+		t.Fatalf("aircraft checks = %+v", configured.AircraftChecks)
+	}
+	if configured.AirplanesLive == nil ||
+		configured.AirplanesLive.Capabilities().Supports(domain.CapabilityReceiver) ||
+		!configured.AirplanesLive.Capabilities().Supports(domain.CapabilityAircraft) {
+		t.Fatalf("airplanes.live capabilities are incorrect")
 	}
 }

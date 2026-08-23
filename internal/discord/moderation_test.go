@@ -129,7 +129,7 @@ func moderationTestRouter(t *testing.T) (*Router, *sqlite.Store, *moderationExec
 		t.Fatal(err)
 	}
 	executor := &moderationExecutorStub{}
-	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, 15*time.Minute), time.Now())
+	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, 15*time.Minute), 42, time.Now())
 	router.SetRepository(repository)
 	router.SetModeration(executor)
 	return router, repository, executor

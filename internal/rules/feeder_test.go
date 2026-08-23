@@ -33,3 +33,18 @@ func TestFeederMonitorRestoresNewestDurableState(t *testing.T) {
 		t.Fatalf("restored outage refired: %+v", alerts)
 	}
 }
+
+func TestFeederMonitorIgnoresUnsupportedCapabilities(t *testing.T) {
+	monitor := NewFeederMonitor()
+	snapshot := &domain.Snapshot{
+		PublishedAt: time.Now(),
+		Health: domain.Health{
+			Aircraft: domain.SourceHealth{Status: domain.HealthHealthy},
+			Receiver: domain.SourceHealth{Status: domain.HealthDisabled},
+			Stats:    domain.SourceHealth{Status: domain.HealthDisabled},
+		},
+	}
+	if alerts := monitor.Evaluate(42, snapshot); len(alerts) != 0 {
+		t.Fatalf("disabled capabilities generated alerts: %+v", alerts)
+	}
+}

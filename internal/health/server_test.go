@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 )
 
 func TestHealthEndpointsTrackReadiness(t *testing.T) {
@@ -47,6 +49,31 @@ func TestHealthEndpointReflectsComponentFailures(t *testing.T) {
 	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	if !strings.Contains(response.Body.String(), `"status":"offline"`) {
 		t.Fatalf("health body = %q", response.Body.String())
+	}
+}
+
+func TestHealthDiagnosticsExposeSharedPrivacyDisclosure(t *testing.T) {
+	state := NewState(time.Now())
+	state.SetPrivacyDisclosure(privacy.NewDisclosure(
+		[]string{"readsb", "airplanes.live"},
+		"KPBI",
+		50,
+		[]privacy.Retention{{Category: "snapshots", Period: "memory only"}},
+		[]privacy.Attribution{{Provider: "airplanes.live", Notice: "airplanes.live"}},
+	))
+	server := NewServer("127.0.0.1:0", state, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/livez", nil))
+	body := response.Body.String()
+	for _, expected := range []string{`"privacy":`, `"public_airport_code":"KPBI"`, `"radius_nm":50`, `"providers":["readsb","airplanes.live"]`} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("health body missing %q: %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{"latitude", "longitude", "coordinate"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("health body exposed %q: %s", forbidden, body)
+		}
 	}
 }
 

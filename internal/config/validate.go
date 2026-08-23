@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 func (cfg *Config) validateStatic() error {
@@ -28,6 +30,13 @@ func (cfg *Config) validateStatic() error {
 	if err := validateReadsbURL(cfg.ADSB.BaseURL); err != nil {
 		errs = append(errs, err)
 	}
+	airplanesLiveEnabled, providerOrderErr := validateProviderOrder(cfg.ADSB.ProviderOrder)
+	if providerOrderErr != nil {
+		errs = append(errs, providerOrderErr)
+	}
+	if err := validateAirplanesLive(cfg.AirplanesLive, airplanesLiveEnabled); err != nil {
+		errs = append(errs, err)
+	}
 	if err := validateADSBDBURL(cfg.ADSBDB.BaseURL); err != nil {
 		errs = append(errs, err)
 	}
@@ -41,6 +50,8 @@ func (cfg *Config) validateStatic() error {
 	errs = append(errs,
 		validateDuration("SKYFEED_AIRCRAFT_POLL", cfg.ADSB.AircraftPoll, 250*time.Millisecond, time.Minute),
 		validateDuration("SKYFEED_METADATA_POLL", cfg.ADSB.MetadataPoll, 5*time.Second, 15*time.Minute),
+		validateDuration("SKYFEED_AIRPLANES_LIVE_TIMEOUT", cfg.AirplanesLive.Timeout, 250*time.Millisecond, 10*time.Second),
+		validateDuration("SKYFEED_AIRPLANES_LIVE_POLL", cfg.AirplanesLive.Poll, time.Second, time.Minute),
 		validateDuration("SKYFEED_ADSBDB_TIMEOUT", cfg.ADSBDB.Timeout, 250*time.Millisecond, 10*time.Second),
 		validateDuration("SKYFEED_ADSBDB_AIRCRAFT_TTL", cfg.ADSBDB.AircraftTTL, 24*time.Hour, 30*24*time.Hour),
 		validateDuration("SKYFEED_ADSBDB_ROUTE_TTL", cfg.ADSBDB.RouteTTL, time.Hour, 12*time.Hour),
@@ -70,6 +81,63 @@ func (cfg *Config) validateStatic() error {
 	}
 
 	return errors.Join(compact(errs)...)
+}
+
+func validateProviderOrder(providers []domain.ProviderID) (bool, error) {
+	if len(providers) == 0 {
+		return false, errors.New("SKYFEED_AIRCRAFT_PROVIDER_ORDER must contain readsb")
+	}
+	if len(providers) > 2 {
+		return false, errors.New("SKYFEED_AIRCRAFT_PROVIDER_ORDER supports only readsb,airplanes-live")
+	}
+	if providers[0] != domain.ProviderReadsb {
+		return false, errors.New("SKYFEED_AIRCRAFT_PROVIDER_ORDER must start with readsb")
+	}
+	if len(providers) == 1 {
+		return false, nil
+	}
+	if providers[1] != domain.ProviderAirplanesLive {
+		return false, errors.New("SKYFEED_AIRCRAFT_PROVIDER_ORDER may only append airplanes-live after readsb")
+	}
+	return true, nil
+}
+
+func validateAirplanesLive(value AirplanesLive, enabled bool) error {
+	centerConfigured := value.PublicAirportCode != "" || value.Latitude != nil || value.Longitude != nil
+	if !enabled {
+		if centerConfigured {
+			return errors.New("airplanes-live public center settings require airplanes-live in SKYFEED_AIRCRAFT_PROVIDER_ORDER")
+		}
+		return nil
+	}
+
+	var errs []error
+	if len(value.PublicAirportCode) != 4 || !asciiLetters(value.PublicAirportCode) {
+		errs = append(errs, errors.New("SKYFEED_PUBLIC_CENTER_AIRPORT_CODE must be a four-letter airport code"))
+	}
+	if value.Latitude == nil || value.Longitude == nil {
+		errs = append(errs, errors.New("airplanes-live requires both public center coordinates"))
+	} else {
+		if *value.Latitude < -90 || *value.Latitude > 90 {
+			errs = append(errs, errors.New("SKYFEED_PUBLIC_CENTER_LATITUDE must be between -90 and 90"))
+		}
+		if *value.Longitude < -180 || *value.Longitude > 180 {
+			errs = append(errs, errors.New("SKYFEED_PUBLIC_CENTER_LONGITUDE must be between -180 and 180"))
+		}
+	}
+	if value.RadiusNM < 1 || value.RadiusNM > 250 {
+		errs = append(errs, errors.New("SKYFEED_AIRPLANES_LIVE_RADIUS_NM must be between 1 and 250"))
+	}
+	return errors.Join(errs...)
+}
+
+func asciiLetters(value string) bool {
+	for _, character := range value {
+		if character < 'A' || character > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func validateReadsbURL(value *url.URL) error {

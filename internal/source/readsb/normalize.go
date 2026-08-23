@@ -23,9 +23,11 @@ func validateAircraftResponse(response aircraftResponse) error {
 
 func normalizeAircraft(response aircraftResponse) domain.AircraftBatch {
 	batch := domain.AircraftBatch{
-		GeneratedAt: unixFloat(response.Now),
-		Messages:    response.Messages,
-		Aircraft:    make([]domain.Aircraft, 0, len(response.Aircraft)),
+		Provider:            domain.ProviderReadsb,
+		GeneratedAt:         unixFloat(response.Now),
+		Messages:            response.Messages,
+		MessageCounterValid: true,
+		Aircraft:            make([]domain.Aircraft, 0, len(response.Aircraft)),
 	}
 	for _, raw := range response.Aircraft {
 		icao := strings.ToUpper(strings.TrimSpace(raw.Hex))
@@ -34,6 +36,7 @@ func normalizeAircraft(response aircraftResponse) domain.AircraftBatch {
 		}
 		aircraft := domain.Aircraft{
 			ICAO:         icao,
+			Provider:     domain.ProviderReadsb,
 			SourceType:   strings.TrimSpace(raw.Type),
 			Callsign:     strings.ToUpper(strings.TrimSpace(raw.Flight)),
 			Registration: strings.ToUpper(strings.TrimSpace(raw.Registration)),

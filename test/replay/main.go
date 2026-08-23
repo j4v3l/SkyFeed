@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/source"
 	"github.com/j4v3l/SkyFeed/internal/source/readsb"
 	"github.com/j4v3l/SkyFeed/internal/state"
 )
@@ -70,7 +71,7 @@ func main() {
 		}
 	})
 	start := time.Now()
-	if err := engine.Run(ctx, readsb.NewClient(baseURL, time.Second), *cadence, *cadence); err != nil {
+	if err := engine.Run(ctx, source.NewSet(readsb.NewClient(baseURL, time.Second)), *cadence, *cadence); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

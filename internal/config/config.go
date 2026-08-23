@@ -2,11 +2,14 @@ package config
 
 import (
 	"fmt"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 const maxTokenBytes = 4096
@@ -20,9 +23,19 @@ type Discord struct {
 }
 
 type ADSB struct {
-	BaseURL      *url.URL
-	AircraftPoll time.Duration
-	MetadataPoll time.Duration
+	BaseURL       *url.URL
+	ProviderOrder []domain.ProviderID
+	AircraftPoll  time.Duration
+	MetadataPoll  time.Duration
+}
+
+type AirplanesLive struct {
+	PublicAirportCode string
+	Latitude          *float64
+	Longitude         *float64
+	RadiusNM          int
+	Timeout           time.Duration
+	Poll              time.Duration
 }
 
 type ADSBDB struct {
@@ -41,6 +54,7 @@ type ADSBDB struct {
 type Config struct {
 	Discord           Discord
 	ADSB              ADSB
+	AirplanesLive     AirplanesLive
 	ADSBDB            ADSBDB
 	DatabasePath      string
 	DashboardInterval time.Duration
@@ -61,8 +75,14 @@ func Load() (Config, error) {
 func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 	cfg := Config{
 		ADSB: ADSB{
-			AircraftPoll: time.Second,
-			MetadataPoll: 30 * time.Second,
+			ProviderOrder: []domain.ProviderID{domain.ProviderReadsb},
+			AircraftPoll:  time.Second,
+			MetadataPoll:  30 * time.Second,
+		},
+		AirplanesLive: AirplanesLive{
+			RadiusNM: 50,
+			Timeout:  2 * time.Second,
+			Poll:     time.Second,
 		},
 		ADSBDB: ADSBDB{
 			Enabled:     false,
@@ -103,6 +123,24 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.ADSB.MetadataPoll, err = parseDuration(lookup, "SKYFEED_METADATA_POLL", cfg.ADSB.MetadataPoll); err != nil {
+		return Config{}, err
+	}
+	if cfg.ADSB.ProviderOrder, err = parseProviderOrder(lookup, "SKYFEED_AIRCRAFT_PROVIDER_ORDER", cfg.ADSB.ProviderOrder); err != nil {
+		return Config{}, err
+	}
+	if cfg.AirplanesLive.Latitude, err = parseOptionalFloat(lookup, "SKYFEED_PUBLIC_CENTER_LATITUDE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.AirplanesLive.Longitude, err = parseOptionalFloat(lookup, "SKYFEED_PUBLIC_CENTER_LONGITUDE"); err != nil {
+		return Config{}, err
+	}
+	if cfg.AirplanesLive.RadiusNM, err = parseInt(lookup, "SKYFEED_AIRPLANES_LIVE_RADIUS_NM", cfg.AirplanesLive.RadiusNM); err != nil {
+		return Config{}, err
+	}
+	if cfg.AirplanesLive.Timeout, err = parseDuration(lookup, "SKYFEED_AIRPLANES_LIVE_TIMEOUT", cfg.AirplanesLive.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.AirplanesLive.Poll, err = parseDuration(lookup, "SKYFEED_AIRPLANES_LIVE_POLL", cfg.AirplanesLive.Poll); err != nil {
 		return Config{}, err
 	}
 	if cfg.ADSBDB.Timeout, err = parseDuration(lookup, "SKYFEED_ADSBDB_TIMEOUT", cfg.ADSBDB.Timeout); err != nil {
@@ -148,6 +186,7 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 			return Config{}, fmt.Errorf("SKYFEED_ADSBDB_BASE_URL: %w", err)
 		}
 	}
+	cfg.AirplanesLive.PublicAirportCode = strings.ToUpper(env(lookup, "SKYFEED_PUBLIC_CENTER_AIRPORT_CODE", ""))
 	if zone := env(lookup, "SKYFEED_TIMEZONE", "UTC"); zone != "UTC" {
 		cfg.Timezone, err = time.LoadLocation(zone)
 		if err != nil {
@@ -238,4 +277,33 @@ func parseBool(lookup LookupEnv, key string, fallback bool) (bool, error) {
 		return false, fmt.Errorf("%s: parse boolean: %w", key, err)
 	}
 	return value, nil
+}
+
+func parseProviderOrder(lookup LookupEnv, key string, fallback []domain.ProviderID) ([]domain.ProviderID, error) {
+	raw := env(lookup, key, "")
+	if raw == "" {
+		return append([]domain.ProviderID(nil), fallback...), nil
+	}
+	parts := strings.Split(raw, ",")
+	providers := make([]domain.ProviderID, 0, len(parts))
+	for _, part := range parts {
+		provider := domain.ProviderID(strings.TrimSpace(part))
+		if provider == "" {
+			return nil, fmt.Errorf("%s must not contain empty providers", key)
+		}
+		providers = append(providers, provider)
+	}
+	return providers, nil
+}
+
+func parseOptionalFloat(lookup LookupEnv, key string) (*float64, error) {
+	raw, configured := lookup(key)
+	if !configured || strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(raw), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil, fmt.Errorf("%s must be a finite number", key)
+	}
+	return &value, nil
 }

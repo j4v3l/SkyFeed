@@ -39,7 +39,7 @@ func (recorder *responseRecorder) Autocomplete(choices []disgocord.AutocompleteC
 func TestRouterCachedCommandsAcknowledgeWithinTarget(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	snapshot := testSnapshot(now)
-	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, 15*time.Minute), now.Add(-time.Hour))
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, 15*time.Minute), 2, now.Add(-time.Hour))
 	router.now = func() time.Time { return now }
 	for _, request := range []CommandRequest{
 		{Name: "status", UserID: 1, GuildID: 2, ChannelID: 3},
@@ -61,9 +61,45 @@ func TestRouterCachedCommandsAcknowledgeWithinTarget(t *testing.T) {
 	}
 }
 
+func TestRouterRejectsEveryInteractionOutsideConfiguredGuild(t *testing.T) {
+	router := NewRouter(snapshotStub{}, NewSessionManager(100, 10, time.Minute), 42, time.Now())
+	for _, test := range []struct {
+		name    string
+		guildID uint64
+	}{{name: "direct-message", guildID: 0}, {name: "other-guild", guildID: 99}} {
+		t.Run(test.name, func(t *testing.T) {
+			command := &responseRecorder{}
+			if err := router.HandleCommand(CommandRequest{Name: "status", GuildID: test.guildID}, command); err != nil {
+				t.Fatal(err)
+			}
+			assertPrivateRejection(t, command)
+
+			component := &responseRecorder{}
+			if err := router.HandleComponent(ComponentRequest{CustomID: "untrusted", GuildID: test.guildID}, component); err != nil {
+				t.Fatal(err)
+			}
+			assertPrivateRejection(t, component)
+
+			modal := &responseRecorder{}
+			if err := router.HandleModal(ModalRequest{CustomID: "untrusted", GuildID: test.guildID}, modal); err != nil {
+				t.Fatal(err)
+			}
+			assertPrivateRejection(t, modal)
+
+			autocomplete := &responseRecorder{}
+			if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft", GuildID: test.guildID}, autocomplete); err != nil {
+				t.Fatal(err)
+			}
+			if len(autocomplete.completions) != 1 || len(autocomplete.completions[0]) != 0 {
+				t.Fatalf("autocomplete response = %#v", autocomplete.completions)
+			}
+		})
+	}
+}
+
 func TestRouterComponentBindingAndModalFlow(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
-	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), now)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
 	router.now = func() time.Time { return now }
 	recorder := &responseRecorder{}
 	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
@@ -99,9 +135,9 @@ func TestAutocompleteIsBounded(t *testing.T) {
 	for index := 0; index < 40; index++ {
 		snapshot.Search = append(snapshot.Search, domain.AircraftKey{ICAO: "DEF" + string(rune('A'+index%26))})
 	}
-	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), now)
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), 2, now)
 	recorder := &responseRecorder{}
-	if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft"}, recorder); err != nil {
+	if err := router.HandleAutocomplete(AutocompleteRequest{Name: "aircraft", GuildID: 2}, recorder); err != nil {
 		t.Fatal(err)
 	}
 	if got := len(recorder.completions[0]); got != 25 {
@@ -119,6 +155,13 @@ func TestDeferredInteractionPolicy(t *testing.T) {
 	}
 	if !deferredEphemeral(CommandRequest{Name: "settings"}) {
 		t.Fatal("settings should defer ephemerally")
+	}
+}
+
+func assertPrivateRejection(t *testing.T, recorder *responseRecorder) {
+	t.Helper()
+	if len(recorder.created) != 1 || recorder.created[0].Flags&disgocord.MessageFlagEphemeral == 0 {
+		t.Fatalf("rejection response = %#v", recorder.created)
 	}
 }
 

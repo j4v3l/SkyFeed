@@ -10,9 +10,11 @@ const (
 	HealthStale    HealthStatus = "stale"
 	HealthOffline  HealthStatus = "offline"
 	HealthDegraded HealthStatus = "degraded"
+	HealthDisabled HealthStatus = "disabled"
 )
 
 type SourceHealth struct {
+	Provider            ProviderID
 	Status              HealthStatus
 	LastAttempt         time.Time
 	LastSuccess         time.Time
@@ -50,17 +52,20 @@ type Statistics struct {
 // Snapshot is immutable after publication. Writers must build fresh slices and
 // maps; readers load one pointer and never alter its contents.
 type Snapshot struct {
-	Sequence          uint64
-	SourceGeneratedAt time.Time
-	FetchedAt         time.Time
-	PublishedAt       time.Time
-	Receiver          Receiver
-	Statistics        Statistics
-	ReceiverMessages  uint64
-	Aircraft          []Aircraft
-	ByICAO            map[string]int
-	Search            []AircraftKey
-	Health            Health
+	Sequence            uint64
+	ActiveProvider      ProviderID
+	Capabilities        Capabilities
+	SourceGeneratedAt   time.Time
+	FetchedAt           time.Time
+	PublishedAt         time.Time
+	Receiver            Receiver
+	Statistics          Statistics
+	ReceiverMessages    uint64
+	MessageCounterValid bool
+	Aircraft            []Aircraft
+	ByICAO              map[string]int
+	Search              []AircraftKey
+	Health              Health
 }
 
 func (snapshot *Snapshot) LookupICAO(icao string) (Aircraft, bool) {

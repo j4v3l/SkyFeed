@@ -5,8 +5,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/config"
+	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/source"
 )
 
 func TestCLIVersion(t *testing.T) {
@@ -55,4 +58,101 @@ func TestCLIUsage(t *testing.T) {
 	if !strings.Contains(stderr.String(), "usage:") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
+}
+
+func TestCheckConfiguredSourcesProbesEveryAircraftProviderAndReadsbMetadata(t *testing.T) {
+	now := time.Unix(1_787_414_400, 0)
+	readsbSource := &sourceCheckStub{
+		id: domain.ProviderReadsb,
+		aircraft: source.Frame[domain.AircraftBatch]{
+			FetchedAt: now,
+			Value: domain.AircraftBatch{
+				Aircraft: []domain.Aircraft{{ICAO: "ABC123"}, {ICAO: "DEF456"}},
+			},
+		},
+		receiver: source.Frame[domain.Receiver]{
+			FetchedAt: now,
+			Value:     domain.Receiver{Version: "synthetic"},
+		},
+		stats: source.Frame[domain.Statistics]{
+			FetchedAt: now,
+			Value:     domain.Statistics{Messages: 42},
+		},
+	}
+	fallback := &sourceCheckStub{
+		id: domain.ProviderAirplanesLive,
+		aircraft: source.Frame[domain.AircraftBatch]{
+			FetchedAt: now,
+			Value: domain.AircraftBatch{
+				Aircraft: []domain.Aircraft{{ICAO: "123ABC"}},
+			},
+		},
+	}
+
+	result, err := checkConfiguredSources(
+		context.Background(),
+		[]source.AircraftSource{readsbSource, fallback},
+		readsbSource,
+		readsbSource,
+		domain.ProviderReadsb,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReadsbAircraft != 2 || result.ReceiverVersion != "synthetic" || result.Messages != 42 {
+		t.Fatalf("result = %+v", result)
+	}
+	if strings.Join(result.AircraftCounts, ",") != "readsb:2,airplanes-live:1" {
+		t.Fatalf("provider counts = %v", result.AircraftCounts)
+	}
+	if readsbSource.aircraftCalls != 1 || fallback.aircraftCalls != 1 ||
+		readsbSource.receiverCalls != 1 || readsbSource.statsCalls != 1 {
+		t.Fatalf(
+			"calls readsb_aircraft=%d fallback=%d receiver=%d stats=%d",
+			readsbSource.aircraftCalls,
+			fallback.aircraftCalls,
+			readsbSource.receiverCalls,
+			readsbSource.statsCalls,
+		)
+	}
+}
+
+type sourceCheckStub struct {
+	id            domain.ProviderID
+	aircraft      source.Frame[domain.AircraftBatch]
+	receiver      source.Frame[domain.Receiver]
+	stats         source.Frame[domain.Statistics]
+	aircraftCalls int
+	receiverCalls int
+	statsCalls    int
+}
+
+func (stub *sourceCheckStub) ProviderID() domain.ProviderID {
+	return stub.id
+}
+
+func (stub *sourceCheckStub) Capabilities() domain.Capabilities {
+	if stub.id == domain.ProviderAirplanesLive {
+		return domain.CapabilitiesOf(domain.CapabilityAircraft)
+	}
+	return domain.CapabilitiesOf(
+		domain.CapabilityAircraft,
+		domain.CapabilityReceiver,
+		domain.CapabilityStatistics,
+	)
+}
+
+func (stub *sourceCheckStub) FetchAircraft(context.Context) (source.Frame[domain.AircraftBatch], error) {
+	stub.aircraftCalls++
+	return stub.aircraft, nil
+}
+
+func (stub *sourceCheckStub) FetchReceiver(context.Context) (source.Frame[domain.Receiver], error) {
+	stub.receiverCalls++
+	return stub.receiver, nil
+}
+
+func (stub *sourceCheckStub) FetchStats(context.Context) (source.Frame[domain.Statistics], error) {
+	stub.statsCalls++
+	return stub.stats, nil
 }

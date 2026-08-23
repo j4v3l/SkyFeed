@@ -2,8 +2,61 @@ package domain
 
 import "time"
 
+type ProviderID string
+
+const (
+	ProviderUnknown       ProviderID = "unknown"
+	ProviderReadsb        ProviderID = "readsb"
+	ProviderAirplanesLive ProviderID = "airplanes-live"
+)
+
+func (provider ProviderID) Known() bool {
+	switch provider {
+	case ProviderReadsb, ProviderAirplanesLive:
+		return true
+	default:
+		return false
+	}
+}
+
+type Capability uint8
+
+const (
+	CapabilityAircraft Capability = 1 << iota
+	CapabilityReceiver
+	CapabilityStatistics
+)
+
+func (capability Capability) String() string {
+	switch capability {
+	case CapabilityAircraft:
+		return "aircraft"
+	case CapabilityReceiver:
+		return "receiver"
+	case CapabilityStatistics:
+		return "stats"
+	default:
+		return "unknown"
+	}
+}
+
+type Capabilities uint8
+
+func CapabilitiesOf(capabilities ...Capability) Capabilities {
+	var supported Capabilities
+	for _, capability := range capabilities {
+		supported |= Capabilities(capability)
+	}
+	return supported
+}
+
+func (capabilities Capabilities) Supports(capability Capability) bool {
+	return capabilities&Capabilities(capability) != 0
+}
+
 type Aircraft struct {
 	ICAO            string
+	Provider        ProviderID
 	SourceType      string
 	Callsign        string
 	Registration    string
@@ -34,9 +87,11 @@ type Aircraft struct {
 }
 
 type AircraftBatch struct {
-	GeneratedAt time.Time
-	Messages    uint64
-	Aircraft    []Aircraft
+	Provider            ProviderID
+	GeneratedAt         time.Time
+	Messages            uint64
+	MessageCounterValid bool
+	Aircraft            []Aircraft
 }
 
 type AircraftKey struct {

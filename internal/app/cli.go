@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/config"
 	skydiscord "github.com/j4v3l/SkyFeed/internal/discord"
+	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/health"
-	"github.com/j4v3l/SkyFeed/internal/source/readsb"
+	"github.com/j4v3l/SkyFeed/internal/source"
 	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
 	"github.com/j4v3l/SkyFeed/internal/telemetry"
 )
@@ -114,16 +116,68 @@ func (cli CLI) sourceCheck(ctx context.Context) int {
 	}
 	checkContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	client := readsb.NewClient(cfg.ADSB.BaseURL, 2*time.Second)
-	aircraft, aircraftErr := client.FetchAircraft(checkContext)
-	receiver, receiverErr := client.FetchReceiver(checkContext)
-	stats, statsErr := client.FetchStats(checkContext)
-	if err := errors.Join(aircraftErr, receiverErr, statsErr); err != nil {
+	upstreams, err := configureSources(cfg)
+	if err != nil {
+		_, _ = fmt.Fprintf(cli.Stderr, "source configuration error: %v\n", err)
+		return ExitUsage
+	}
+
+	result, err := checkConfiguredSources(
+		checkContext,
+		upstreams.AircraftChecks,
+		upstreams.Set.Receiver,
+		upstreams.Set.Stats,
+		upstreams.Readsb.ProviderID(),
+	)
+	if err != nil {
 		_, _ = fmt.Fprintf(cli.Stderr, "source check failed: %v\n", err)
 		return ExitRuntime
 	}
-	_, _ = fmt.Fprintf(cli.Stdout, "source valid: aircraft=%d receiver_version=%s messages=%d\n", len(aircraft.Value.Aircraft), receiver.Value.Version, stats.Value.Messages)
+	_, _ = fmt.Fprintf(cli.Stdout, "source valid: aircraft=%d receiver_version=%s messages=%d", result.ReadsbAircraft, result.ReceiverVersion, result.Messages)
+	if len(result.AircraftCounts) > 1 {
+		_, _ = fmt.Fprintf(cli.Stdout, " providers=%s", strings.Join(result.AircraftCounts, ","))
+	}
+	_, _ = fmt.Fprintln(cli.Stdout)
 	return ExitSuccess
+}
+
+type sourceCheckResult struct {
+	ReadsbAircraft  int
+	ReceiverVersion string
+	Messages        uint64
+	AircraftCounts  []string
+}
+
+func checkConfiguredSources(
+	ctx context.Context,
+	aircraftSources []source.AircraftSource,
+	receiverSource source.ReceiverSource,
+	statsSource source.StatisticsSource,
+	readsbProvider domain.ProviderID,
+) (sourceCheckResult, error) {
+	result := sourceCheckResult{AircraftCounts: make([]string, 0, len(aircraftSources))}
+	var fetchErrors []error
+	for _, provider := range aircraftSources {
+		frame, fetchErr := provider.FetchAircraft(ctx)
+		if fetchErr != nil {
+			fetchErrors = append(fetchErrors, fmt.Errorf("%s aircraft: %w", provider.ProviderID(), fetchErr))
+			continue
+		}
+		count := len(frame.Value.Aircraft)
+		if provider.ProviderID() == readsbProvider {
+			result.ReadsbAircraft = count
+		}
+		result.AircraftCounts = append(result.AircraftCounts, fmt.Sprintf("%s:%d", provider.ProviderID(), count))
+	}
+	receiver, receiverErr := receiverSource.FetchReceiver(ctx)
+	stats, statsErr := statsSource.FetchStats(ctx)
+	fetchErrors = append(fetchErrors, receiverErr, statsErr)
+	if err := errors.Join(fetchErrors...); err != nil {
+		return sourceCheckResult{}, err
+	}
+	result.ReceiverVersion = receiver.Value.Version
+	result.Messages = stats.Value.Messages
+	return result, nil
 }
 
 func (cli CLI) commandsSync(ctx context.Context) int {

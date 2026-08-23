@@ -15,21 +15,37 @@ type AircraftMetadata struct {
 }
 
 type Airport struct {
-	CountryCode  string
-	Municipality string
-	Name         string
-	IATA         string
-	ICAO         string
+	CountryCode   string
+	Municipality  string
+	Name          string
+	IATA          string
+	ICAO          string
+	Latitude      float64
+	Longitude     float64
+	HasPosition   bool
+	ElevationFeet float64
+	HasElevation  bool
+	FetchedAt     time.Time
+	ExpiresAt     time.Time
+	Stale         bool
+	Attribution   string
 }
 
 type Route struct {
-	Callsign    string
-	AirlineName string
-	AirlineICAO string
-	AirlineIATA string
-	Origin      Airport
-	Midpoint    *Airport
-	Destination Airport
+	Callsign          string
+	AirlineName       string
+	AirlineICAO       string
+	AirlineIATA       string
+	Origin            Airport
+	Midpoint          *Airport
+	Destination       Airport
+	Airports          []Airport
+	Plausible         bool
+	PlausibilityKnown bool
+	FetchedAt         time.Time
+	ExpiresAt         time.Time
+	Stale             bool
+	Attribution       string
 }
 
 type Enrichment struct {

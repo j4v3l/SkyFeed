@@ -33,11 +33,12 @@ type Client struct {
 }
 
 type Observation struct {
-	Source   string
-	Duration time.Duration
-	Bytes    int
-	Success  bool
-	At       time.Time
+	Provider   domain.ProviderID
+	Capability domain.Capability
+	Duration   time.Duration
+	Bytes      int
+	Success    bool
+	At         time.Time
 }
 
 func NewClient(baseURL *url.URL, timeout time.Duration) *Client {
@@ -67,13 +68,23 @@ func NewClient(baseURL *url.URL, timeout time.Duration) *Client {
 
 func (client *Client) SetObserver(observer func(Observation)) { client.observer = observer }
 
+func (*Client) ProviderID() domain.ProviderID { return domain.ProviderReadsb }
+
+func (*Client) Capabilities() domain.Capabilities {
+	return domain.CapabilitiesOf(
+		domain.CapabilityAircraft,
+		domain.CapabilityReceiver,
+		domain.CapabilityStatistics,
+	)
+}
+
 func (client *Client) FetchAircraft(ctx context.Context) (source.Frame[domain.AircraftBatch], error) {
 	var response aircraftResponse
 	fetchedAt, err := fetchJSON(ctx, client, aircraftPath, maxAircraftBytes, &response, validateAircraftResponse)
 	if err != nil {
 		return source.Frame[domain.AircraftBatch]{}, err
 	}
-	return source.Frame[domain.AircraftBatch]{FetchedAt: fetchedAt, Value: normalizeAircraft(response)}, nil
+	return source.Frame[domain.AircraftBatch]{FetchedAt: fetchedAt, Provider: domain.ProviderReadsb, Value: normalizeAircraft(response)}, nil
 }
 
 func (client *Client) FetchReceiver(ctx context.Context) (source.Frame[domain.Receiver], error) {
@@ -82,7 +93,7 @@ func (client *Client) FetchReceiver(ctx context.Context) (source.Frame[domain.Re
 	if err != nil {
 		return source.Frame[domain.Receiver]{}, err
 	}
-	return source.Frame[domain.Receiver]{FetchedAt: fetchedAt, Value: normalizeReceiver(response, fetchedAt)}, nil
+	return source.Frame[domain.Receiver]{FetchedAt: fetchedAt, Provider: domain.ProviderReadsb, Value: normalizeReceiver(response, fetchedAt)}, nil
 }
 
 func (client *Client) FetchStats(ctx context.Context) (source.Frame[domain.Statistics], error) {
@@ -91,12 +102,12 @@ func (client *Client) FetchStats(ctx context.Context) (source.Frame[domain.Stati
 	if err != nil {
 		return source.Frame[domain.Statistics]{}, err
 	}
-	return source.Frame[domain.Statistics]{FetchedAt: fetchedAt, Value: normalizeStats(response, fetchedAt)}, nil
+	return source.Frame[domain.Statistics]{FetchedAt: fetchedAt, Provider: domain.ProviderReadsb, Value: normalizeStats(response, fetchedAt)}, nil
 }
 
 func fetchJSON[T any](ctx context.Context, client *Client, endpoint string, maximum int64, output *T, validate func(T) error) (time.Time, error) {
 	started := time.Now()
-	observation := Observation{Source: sourceName(endpoint)}
+	observation := Observation{Provider: domain.ProviderReadsb, Capability: sourceCapability(endpoint)}
 	defer func() {
 		if client.observer != nil {
 			observation.Duration = time.Since(started)
@@ -152,13 +163,13 @@ func fetchJSON[T any](ctx context.Context, client *Client, endpoint string, maxi
 	return fetchedAt, nil
 }
 
-func sourceName(endpoint string) string {
+func sourceCapability(endpoint string) domain.Capability {
 	switch endpoint {
 	case receiverPath:
-		return "receiver"
+		return domain.CapabilityReceiver
 	case statsPath:
-		return "stats"
+		return domain.CapabilityStatistics
 	default:
-		return "aircraft"
+		return domain.CapabilityAircraft
 	}
 }

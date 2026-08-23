@@ -75,15 +75,16 @@ type AutocompleteRequest struct {
 }
 
 type Router struct {
-	snapshots  SnapshotProvider
-	sessions   *SessionManager
-	startedAt  time.Time
-	now        func() time.Time
-	repository storage.Repository
-	ruleReload func()
-	enrichment EnrichmentProvider
-	testSend   func(context.Context, uint64, string) error
-	moderation ModerationExecutor
+	snapshots         SnapshotProvider
+	sessions          *SessionManager
+	configuredGuildID uint64
+	startedAt         time.Time
+	now               func() time.Time
+	repository        storage.Repository
+	ruleReload        func()
+	enrichment        EnrichmentProvider
+	testSend          func(context.Context, uint64, string) error
+	moderation        ModerationExecutor
 }
 
 func (router *Router) SetRepository(repository storage.Repository) { router.repository = repository }
@@ -100,13 +101,13 @@ func (router *Router) requestRuleReload() {
 	}
 }
 
-func NewRouter(snapshots SnapshotProvider, sessions *SessionManager, startedAt time.Time) *Router {
-	return &Router{snapshots: snapshots, sessions: sessions, startedAt: startedAt, now: time.Now}
+func NewRouter(snapshots SnapshotProvider, sessions *SessionManager, configuredGuildID uint64, startedAt time.Time) *Router {
+	return &Router{snapshots: snapshots, sessions: sessions, configuredGuildID: configuredGuildID, startedAt: startedAt, now: time.Now}
 }
 
 func (router *Router) HandleCommand(request CommandRequest, responder InteractionResponder) error {
-	if request.GuildID == 0 {
-		return responder.CreateMessage(errorMessage("SkyFeed commands are available inside a configured server."))
+	if !router.acceptsGuild(request.GuildID) {
+		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
 	}
 	snapshot := router.snapshots.Current()
 	switch request.Name {
@@ -136,6 +137,9 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 }
 
 func (router *Router) HandleComponent(request ComponentRequest, responder InteractionResponder) error {
+	if !router.acceptsGuild(request.GuildID) {
+		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
+	}
 	sessionID, action, err := ParseCustomID(request.CustomID)
 	if err != nil {
 		return responder.CreateMessage(errorMessage("This control is invalid or belongs to an older SkyFeed version."))
@@ -183,6 +187,9 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 }
 
 func (router *Router) HandleModal(request ModalRequest, responder InteractionResponder) error {
+	if !router.acceptsGuild(request.GuildID) {
+		return responder.CreateMessage(errorMessage("SkyFeed is not available in this server."))
+	}
 	sessionID, action, err := ParseCustomID(request.CustomID)
 	if err != nil || action != "save-watch" {
 		return responder.CreateMessage(errorMessage("This form is invalid or expired."))
@@ -223,6 +230,9 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 }
 
 func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder InteractionResponder) error {
+	if !router.acceptsGuild(request.GuildID) {
+		return responder.Autocomplete(nil)
+	}
 	if request.Name == "watch" {
 		return router.autocompleteRules(request, responder)
 	}
@@ -463,4 +473,8 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return "Unknown"
+}
+
+func (router *Router) acceptsGuild(guildID uint64) bool {
+	return router.configuredGuildID != 0 && guildID == router.configuredGuildID
 }

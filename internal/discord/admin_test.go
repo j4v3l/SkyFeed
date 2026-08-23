@@ -15,7 +15,7 @@ func TestAdministrativeCommandsPersistAndAuthorize(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer repository.Close()
-	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, time.Minute), time.Now())
+	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, time.Minute), 42, time.Now())
 	router.SetRepository(repository)
 
 	unauthorized := &responseRecorder{}

@@ -22,24 +22,30 @@ type Engine struct {
 	now     func() time.Time
 	publish PublishFunc
 
-	sequence uint64
-	batch    domain.AircraftBatch
-	fetched  time.Time
-	receiver domain.Receiver
-	stats    domain.Statistics
-	health   domain.Health
+	sequence     uint64
+	batch        domain.AircraftBatch
+	fetched      time.Time
+	receiver     domain.Receiver
+	stats        domain.Statistics
+	health       domain.Health
+	capabilities domain.Capabilities
 }
 
 func NewEngine(publish PublishFunc) *Engine {
-	engine := &Engine{now: time.Now, publish: publish}
+	engine := &Engine{
+		now:     time.Now,
+		publish: publish,
+		batch:   domain.AircraftBatch{Provider: domain.ProviderUnknown},
+	}
 	engine.current.Store(&domain.Snapshot{
-		Aircraft: []domain.Aircraft{},
-		ByICAO:   map[string]int{},
-		Search:   []domain.AircraftKey{},
+		ActiveProvider: domain.ProviderUnknown,
+		Aircraft:       []domain.Aircraft{},
+		ByICAO:         map[string]int{},
+		Search:         []domain.AircraftKey{},
 		Health: domain.Health{
-			Aircraft: domain.SourceHealth{Status: domain.HealthUnknown},
-			Receiver: domain.SourceHealth{Status: domain.HealthUnknown},
-			Stats:    domain.SourceHealth{Status: domain.HealthUnknown},
+			Aircraft: domain.SourceHealth{Provider: domain.ProviderUnknown, Status: domain.HealthUnknown},
+			Receiver: domain.SourceHealth{Provider: domain.ProviderUnknown, Status: domain.HealthUnknown},
+			Stats:    domain.SourceHealth{Provider: domain.ProviderUnknown, Status: domain.HealthUnknown},
 		},
 	})
 	return engine
@@ -49,46 +55,88 @@ func (engine *Engine) Current() *domain.Snapshot {
 	return engine.current.Load()
 }
 
-func (engine *Engine) Run(ctx context.Context, upstream source.Source, aircraftPoll, metadataPoll time.Duration) error {
+func (engine *Engine) Run(ctx context.Context, upstream source.Set, aircraftPoll, metadataPoll time.Duration) error {
+	engine.configureSources(upstream)
+	aircraftEnabled := source.Supports(upstream.Aircraft, domain.CapabilityAircraft)
+	receiverEnabled := source.Supports(upstream.Receiver, domain.CapabilityReceiver)
+	statsEnabled := source.Supports(upstream.Stats, domain.CapabilityStatistics)
+
 	group, groupContext := errgroup.WithContext(ctx)
 	group.SetLimit(2)
-	group.Go(func() error {
-		return poll(groupContext, aircraftPoll, func(pollContext context.Context) {
-			frame, err := upstream.FetchAircraft(pollContext)
-			if err != nil {
-				if pollContext.Err() == nil {
-					engine.aircraftFailure(err, aircraftPoll)
+	started := 0
+	if aircraftEnabled {
+		started++
+		group.Go(func() error {
+			return poll(groupContext, aircraftPoll, func(pollContext context.Context) {
+				frame, err := upstream.Aircraft.FetchAircraft(pollContext)
+				if err != nil {
+					if pollContext.Err() == nil {
+						engine.aircraftFailure(err, aircraftPoll)
+					}
+					return
 				}
-				return
-			}
-			engine.applyAircraft(frame, aircraftPoll)
+				engine.applyAircraft(frame, aircraftPoll)
+			})
 		})
-	})
-	group.Go(func() error {
-		return poll(groupContext, metadataPoll, func(pollContext context.Context) {
-			receiverFrame, err := upstream.FetchReceiver(pollContext)
-			if err != nil {
-				if pollContext.Err() == nil {
-					engine.receiverFailure(err, metadataPoll)
+	}
+	if receiverEnabled || statsEnabled {
+		started++
+		group.Go(func() error {
+			return poll(groupContext, metadataPoll, func(pollContext context.Context) {
+				if receiverEnabled {
+					receiverFrame, err := upstream.Receiver.FetchReceiver(pollContext)
+					if err != nil {
+						if pollContext.Err() == nil {
+							engine.receiverFailure(err, metadataPoll)
+						}
+					} else {
+						engine.applyReceiver(receiverFrame, metadataPoll)
+					}
 				}
-			} else {
-				engine.applyReceiver(receiverFrame, metadataPoll)
-			}
 
-			if pollContext.Err() != nil {
-				return
-			}
-			statsFrame, err := upstream.FetchStats(pollContext)
-			if err != nil {
-				if pollContext.Err() == nil {
-					engine.statsFailure(err, metadataPoll)
+				if pollContext.Err() != nil || !statsEnabled {
+					return
 				}
-				return
-			}
-			engine.applyStats(statsFrame, metadataPoll)
+				statsFrame, err := upstream.Stats.FetchStats(pollContext)
+				if err != nil {
+					if pollContext.Err() == nil {
+						engine.statsFailure(err, metadataPoll)
+					}
+					return
+				}
+				engine.applyStats(statsFrame, metadataPoll)
+			})
 		})
-	})
+	}
+	if started == 0 {
+		<-ctx.Done()
+		return nil
+	}
 	return group.Wait()
+}
+
+func (engine *Engine) configureSources(upstream source.Set) {
+	engine.mu.Lock()
+	engine.capabilities = upstream.Capabilities()
+	engine.health = domain.Health{
+		Aircraft: configuredHealth(upstream.Aircraft, domain.CapabilityAircraft),
+		Receiver: configuredHealth(upstream.Receiver, domain.CapabilityReceiver),
+		Stats:    configuredHealth(upstream.Stats, domain.CapabilityStatistics),
+	}
+	snapshot := engine.buildLocked()
+	engine.mu.Unlock()
+	engine.store(snapshot)
+}
+
+func configuredHealth(provider source.Provider, capability domain.Capability) domain.SourceHealth {
+	if provider == nil {
+		return domain.SourceHealth{Provider: domain.ProviderUnknown, Status: domain.HealthDisabled}
+	}
+	health := domain.SourceHealth{Provider: provider.ProviderID(), Status: domain.HealthUnknown}
+	if !provider.Capabilities().Supports(capability) {
+		health.Status = domain.HealthDisabled
+	}
+	return health
 }
 
 func poll(ctx context.Context, interval time.Duration, operation func(context.Context)) error {
@@ -112,8 +160,20 @@ func poll(ctx context.Context, interval time.Duration, operation func(context.Co
 func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], interval time.Duration) {
 	engine.mu.Lock()
 	engine.batch = frame.Value
+	provider := frame.Provider
+	if provider == domain.ProviderUnknown || provider == "" {
+		provider = engine.batch.Provider
+	}
+	if provider == domain.ProviderUnknown || provider == "" {
+		provider = engine.health.Aircraft.Provider
+	}
+	engine.batch.Provider = provider
+	for index := range engine.batch.Aircraft {
+		engine.batch.Aircraft[index].Provider = provider
+	}
 	engine.fetched = frame.FetchedAt
 	engine.health.Aircraft = successHealth(engine.health.Aircraft, frame.FetchedAt, frame.Value.GeneratedAt, interval)
+	engine.health.Aircraft.Provider = provider
 	snapshot := engine.buildLocked()
 	engine.mu.Unlock()
 	engine.store(snapshot)
@@ -123,6 +183,9 @@ func (engine *Engine) applyReceiver(frame source.Frame[domain.Receiver], interva
 	engine.mu.Lock()
 	engine.receiver = frame.Value
 	engine.health.Receiver = successHealth(engine.health.Receiver, frame.FetchedAt, frame.FetchedAt, interval)
+	if frame.Provider != domain.ProviderUnknown && frame.Provider != "" {
+		engine.health.Receiver.Provider = frame.Provider
+	}
 	snapshot := engine.buildLocked()
 	engine.mu.Unlock()
 	engine.store(snapshot)
@@ -132,6 +195,9 @@ func (engine *Engine) applyStats(frame source.Frame[domain.Statistics], interval
 	engine.mu.Lock()
 	engine.stats = frame.Value
 	engine.health.Stats = successHealth(engine.health.Stats, frame.FetchedAt, frame.Value.WindowEnd, interval)
+	if frame.Provider != domain.ProviderUnknown && frame.Provider != "" {
+		engine.health.Stats.Provider = frame.Provider
+	}
 	snapshot := engine.buildLocked()
 	engine.mu.Unlock()
 	engine.store(snapshot)
@@ -195,17 +261,20 @@ func (engine *Engine) buildLocked() *domain.Snapshot {
 		return leftKey < rightKey
 	})
 	return &domain.Snapshot{
-		Sequence:          engine.sequence,
-		SourceGeneratedAt: engine.batch.GeneratedAt,
-		FetchedAt:         engine.fetched,
-		PublishedAt:       engine.now(),
-		Receiver:          engine.receiver,
-		Statistics:        engine.stats,
-		ReceiverMessages:  engine.batch.Messages,
-		Aircraft:          aircraft,
-		ByICAO:            byICAO,
-		Search:            search,
-		Health:            engine.health,
+		Sequence:            engine.sequence,
+		ActiveProvider:      engine.batch.Provider,
+		Capabilities:        engine.capabilities,
+		SourceGeneratedAt:   engine.batch.GeneratedAt,
+		FetchedAt:           engine.fetched,
+		PublishedAt:         engine.now(),
+		Receiver:            engine.receiver,
+		Statistics:          engine.stats,
+		ReceiverMessages:    engine.batch.Messages,
+		MessageCounterValid: engine.batch.MessageCounterValid,
+		Aircraft:            aircraft,
+		ByICAO:              byICAO,
+		Search:              search,
+		Health:              engine.health,
 	}
 }
 
@@ -231,6 +300,7 @@ func successHealth(previous domain.SourceHealth, attemptedAt, generatedAt time.T
 		}
 	}
 	return domain.SourceHealth{
+		Provider:    previous.Provider,
 		Status:      status,
 		LastAttempt: attemptedAt,
 		LastSuccess: attemptedAt,

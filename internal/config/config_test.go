@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 func TestLoadWithDefaultsAndRedaction(t *testing.T) {
@@ -22,6 +24,12 @@ func TestLoadWithDefaultsAndRedaction(t *testing.T) {
 
 	if cfg.ADSB.AircraftPoll != time.Second || cfg.ADSB.MetadataPoll != 30*time.Second {
 		t.Fatalf("unexpected poll defaults: %#v", cfg.ADSB)
+	}
+	if len(cfg.ADSB.ProviderOrder) != 1 || cfg.ADSB.ProviderOrder[0] != domain.ProviderReadsb {
+		t.Fatalf("provider order = %v", cfg.ADSB.ProviderOrder)
+	}
+	if cfg.AirplanesLive.PublicAirportCode != "" || cfg.AirplanesLive.Latitude != nil || cfg.AirplanesLive.Longitude != nil {
+		t.Fatalf("airplanes.live center must default unset: %+v", cfg.AirplanesLive)
 	}
 	if cfg.ADSBDB.Enabled || cfg.ADSBDB.RouteEnabled {
 		t.Fatal("ADSBDB and route enrichment must default off")
@@ -41,6 +49,33 @@ func TestLoadWithDefaultsAndRedaction(t *testing.T) {
 	}
 	if strings.Contains(string(encoded), "synthetic") {
 		t.Fatal("JSON marshaling exposed the token")
+	}
+}
+
+func TestLoadWithExplicitAirplanesLiveFallback(t *testing.T) {
+	environment := validEnvironment()
+	environment["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb, airplanes-live"
+	environment["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "kxyz"
+	environment["SKYFEED_PUBLIC_CENTER_LATITUDE"] = "1.25"
+	environment["SKYFEED_PUBLIC_CENTER_LONGITUDE"] = "-2.5"
+	environment["SKYFEED_AIRPLANES_LIVE_RADIUS_NM"] = "75"
+	environment["SKYFEED_AIRPLANES_LIVE_TIMEOUT"] = "1500ms"
+	environment["SKYFEED_AIRPLANES_LIVE_POLL"] = "2s"
+
+	cfg, err := LoadWith(mapLookup(environment), func(string) ([]byte, error) { return []byte("token"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ADSB.ProviderOrder) != 2 || cfg.ADSB.ProviderOrder[1] != domain.ProviderAirplanesLive {
+		t.Fatalf("provider order = %v", cfg.ADSB.ProviderOrder)
+	}
+	if cfg.AirplanesLive.PublicAirportCode != "KXYZ" ||
+		cfg.AirplanesLive.Latitude == nil || *cfg.AirplanesLive.Latitude != 1.25 ||
+		cfg.AirplanesLive.Longitude == nil || *cfg.AirplanesLive.Longitude != -2.5 {
+		t.Fatalf("public center = %+v", cfg.AirplanesLive)
+	}
+	if cfg.AirplanesLive.RadiusNM != 75 || cfg.AirplanesLive.Timeout != 1500*time.Millisecond || cfg.AirplanesLive.Poll != 2*time.Second {
+		t.Fatalf("airplanes.live settings = %+v", cfg.AirplanesLive)
 	}
 }
 
@@ -66,6 +101,18 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 		{name: "missing guild", mutate: func(values map[string]string) { delete(values, "SKYFEED_DISCORD_GUILD_ID") }, wantError: "GUILD_ID"},
 		{name: "bad source path", mutate: func(values map[string]string) { values["SKYFEED_ADSB_BASE_URL"] = "http://receiver.invalid/not-data" }, wantError: "end in /data"},
 		{name: "fast polling", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_POLL"] = "1ms" }, wantError: "AIRCRAFT_POLL"},
+		{name: "unknown aircraft provider", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,other" }, wantError: "airplanes-live"},
+		{name: "reversed aircraft providers", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "airplanes-live,readsb" }, wantError: "start with readsb"},
+		{name: "fallback without public center", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live" }, wantError: "public center"},
+		{name: "center without fallback", mutate: func(values map[string]string) { values["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ" }, wantError: "require airplanes-live"},
+		{name: "fast airplanes live polling", mutate: func(values map[string]string) { values["SKYFEED_AIRPLANES_LIVE_POLL"] = "500ms" }, wantError: "AIRPLANES_LIVE_POLL"},
+		{name: "invalid airplanes live radius", mutate: func(values map[string]string) {
+			values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live"
+			values["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ"
+			values["SKYFEED_PUBLIC_CENTER_LATITUDE"] = "1"
+			values["SKYFEED_PUBLIC_CENTER_LONGITUDE"] = "2"
+			values["SKYFEED_AIRPLANES_LIVE_RADIUS_NM"] = "251"
+		}, wantError: "RADIUS_NM"},
 		{name: "route without provider", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_ROUTE_ENABLED"] = "true" }, wantError: "requires"},
 		{name: "unsafe aircraft ttl", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_AIRCRAFT_TTL"] = "1h" }, wantError: "AIRCRAFT_TTL"},
 		{name: "insecure ADSBDB", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_BASE_URL"] = "http://api.adsbdb.com/v0" }, wantError: "HTTPS"},
@@ -80,6 +127,21 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestLoadWithCoordinateParseErrorDoesNotEchoInput(t *testing.T) {
+	environment := validEnvironment()
+	environment["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live"
+	environment["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ"
+	environment["SKYFEED_PUBLIC_CENTER_LATITUDE"] = "private-coordinate-value"
+	environment["SKYFEED_PUBLIC_CENTER_LONGITUDE"] = "2"
+	_, err := LoadWith(mapLookup(environment), func(string) ([]byte, error) { return []byte("token"), nil })
+	if err == nil {
+		t.Fatal("invalid coordinate was accepted")
+	}
+	if strings.Contains(err.Error(), "private-coordinate-value") {
+		t.Fatalf("configuration error exposed coordinate input: %v", err)
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 
 	disgocord "github.com/disgoorg/disgo/discord"
 	"github.com/disgoorg/disgo/rest"
@@ -64,7 +65,10 @@ type commandAPI struct {
 }
 
 func syncCommands(api commandAPI) (RegistrationStats, error) {
-	desired := DesiredCommands()
+	return syncCommandSet(api, DesiredCommands())
+}
+
+func syncCommandSet(api commandAPI, desired []disgocord.ApplicationCommandCreate) (RegistrationStats, error) {
 	if err := validateDesiredCommands(desired); err != nil {
 		return RegistrationStats{}, err
 	}
@@ -125,10 +129,14 @@ func commandEquivalent(remote disgocord.ApplicationCommand, desired disgocord.Sl
 	if permissionsSet {
 		permissions = *desired.DefaultMemberPermissions.Value
 	}
+	nsfw := desired.NSFW != nil && *desired.NSFW
 	return slash.Name() == desired.Name &&
 		slash.Description == desired.Description &&
 		reflect.DeepEqual(slash.Options, desired.Options) &&
-		(!permissionsSet || slash.DefaultMemberPermissions() == permissions)
+		slash.DefaultMemberPermissions() == permissions &&
+		slices.Equal(slash.IntegrationTypes(), desired.IntegrationTypes) &&
+		slices.Equal(slash.Contexts(), desired.Contexts) &&
+		slash.NSFW() == nsfw
 }
 
 func slashUpdate(command disgocord.SlashCommandCreate) disgocord.SlashCommandUpdate {

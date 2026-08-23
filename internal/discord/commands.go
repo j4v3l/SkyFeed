@@ -7,8 +7,12 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 3
+const CommandSchemaVersion = 4
 
+// ownedCommandNames is permanent command ownership history. When a command is
+// removed from DesiredCommands, leave its name here as a deletion tombstone so
+// synchronization can remove the stale remote command without touching names
+// owned by another application feature.
 var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "watch": {}, "alerts": {},
 	"reports": {}, "feeder": {}, "settings": {}, "help": {},
@@ -20,7 +24,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	minAltitude, maxAltitude := -2_000, 100_000
 	minLimit, maxLimit := 1, 25
 	admin := disgocord.Permissions(disgocord.PermissionManageGuild)
-	return []disgocord.ApplicationCommandCreate{
+	commands := []disgocord.ApplicationCommandCreate{
 		disgocord.SlashCommandCreate{Name: "status", Description: "Show receiver, source, and SkyFeed health"},
 		disgocord.SlashCommandCreate{
 			Name: "nearby", Description: "Browse aircraft currently visible to this receiver",
@@ -51,6 +55,13 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 		},
 		disgocord.SlashCommandCreate{Name: "help", Description: "Show a permission-aware SkyFeed task guide"},
 	}
+	for index, command := range commands {
+		slash := command.(disgocord.SlashCommandCreate)
+		slash.IntegrationTypes = []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall}
+		slash.Contexts = []disgocord.InteractionContextType{disgocord.InteractionContextTypeGuild}
+		commands[index] = slash
+	}
+	return commands
 }
 
 func OwnedCommand(name string) bool {
@@ -67,6 +78,16 @@ func validateDesiredCommands(commands []disgocord.ApplicationCommandCreate) erro
 		}
 		if _, exists := seen[name]; exists {
 			return fmt.Errorf("duplicate command %q", name)
+		}
+		slash, ok := command.(disgocord.SlashCommandCreate)
+		if !ok {
+			return fmt.Errorf("command %q is not a slash command", name)
+		}
+		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
+			return fmt.Errorf("command %q must allow guild installation only", name)
+		}
+		if len(slash.Contexts) != 1 || slash.Contexts[0] != disgocord.InteractionContextTypeGuild {
+			return fmt.Errorf("command %q must allow guild interaction context only", name)
 		}
 		seen[name] = struct{}{}
 	}

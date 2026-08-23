@@ -63,6 +63,10 @@ func (monitor *FeederMonitor) Evaluate(guildID uint64, snapshot *domain.Snapshot
 	}
 	alerts := make([]domain.Alert, 0, 1)
 	for _, source := range sources {
+		if source.health.Status == domain.HealthDisabled {
+			delete(monitor.states, source.name)
+			continue
+		}
 		state := monitor.states[source.name]
 		if source.health.Status == domain.HealthOffline {
 			state.recoverySamples = 0

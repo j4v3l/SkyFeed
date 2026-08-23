@@ -14,8 +14,10 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/enrichment"
 	"github.com/j4v3l/SkyFeed/internal/enrichment/adsbdb"
 	"github.com/j4v3l/SkyFeed/internal/health"
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/report"
 	"github.com/j4v3l/SkyFeed/internal/rules"
+	"github.com/j4v3l/SkyFeed/internal/source/airplaneslive"
 	"github.com/j4v3l/SkyFeed/internal/source/readsb"
 	"github.com/j4v3l/SkyFeed/internal/state"
 	"github.com/j4v3l/SkyFeed/internal/storage"
@@ -26,6 +28,7 @@ import (
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	startedAt := time.Now()
 	healthState := health.NewState(startedAt)
+	healthState.SetPrivacyDisclosure(privacyDisclosure(cfg))
 	healthState.SetComponent("bootstrap", "healthy", "application initialized")
 	healthState.SetReady(false)
 	server := health.NewServer(cfg.HealthAddr, healthState, logger)
@@ -112,9 +115,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			age = time.Since(snapshot.FetchedAt)
 		}
 		metrics.ObserveSnapshot(len(snapshot.Aircraft), age)
-		healthState.SetComponent("aircraft_source", string(snapshot.Health.Aircraft.Status), snapshot.Health.Aircraft.ErrorClass)
-		healthState.SetComponent("receiver_source", string(snapshot.Health.Receiver.Status), snapshot.Health.Receiver.ErrorClass)
-		healthState.SetComponent("stats_source", string(snapshot.Health.Stats.Status), snapshot.Health.Stats.ErrorClass)
+		metrics.SetActiveAircraftProvider(snapshot.ActiveProvider)
+		metrics.SetSourceHealth(snapshot.Health)
+		healthState.SetComponent("aircraft_source", string(snapshot.Health.Aircraft.Status), sourceHealthMessage(snapshot.Health.Aircraft))
+		healthState.SetComponent("receiver_source", string(snapshot.Health.Receiver.Status), sourceHealthMessage(snapshot.Health.Receiver))
+		healthState.SetComponent("stats_source", string(snapshot.Health.Stats.Status), sourceHealthMessage(snapshot.Health.Stats))
 		sourceKnown.Store(sourcesInitialized(snapshot.Health))
 		setReadiness()
 		for _, alert := range feederMonitor.Evaluate(cfg.Discord.GuildID, snapshot) {
@@ -180,12 +185,23 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		metrics.SetQueues(emergencyDepth, normalDepth, alertQueue.Dropped(), persistenceDepth, enrichmentCache)
 	})
-	upstream := readsb.NewClient(cfg.ADSB.BaseURL, 2*time.Second)
-	upstream.SetObserver(func(observation readsb.Observation) {
-		metrics.ObserveSource(observation.Source, observation.Duration, observation.Bytes, observation.Success, observation.At)
+	upstreams, sourceErr := configureSources(cfg)
+	if sourceErr != nil {
+		return sourceErr
+	}
+	for _, provider := range upstreams.AircraftChecks {
+		metrics.SetProviderCapabilities(provider.ProviderID(), provider.Capabilities())
+	}
+	upstreams.Readsb.SetObserver(func(observation readsb.Observation) {
+		metrics.ObserveSource(observation.Provider, observation.Capability, observation.Duration, observation.Bytes, observation.Success, observation.At)
 	})
+	if upstreams.AirplanesLive != nil {
+		upstreams.AirplanesLive.SetObserver(func(observation airplaneslive.Observation) {
+			metrics.ObserveSource(observation.Provider, observation.Capability, observation.Duration, observation.Bytes, observation.Success, observation.At)
+		})
+	}
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
-	router := skydiscord.NewRouter(engine, sessions, startedAt)
+	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
 	ruleReload := make(chan struct{}, 1)
 	if repository != nil {
 		router.SetRepository(repository)
@@ -229,7 +245,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", Version)
 	services := []service{server.Run, func(serviceContext context.Context) error {
-		return engine.Run(serviceContext, upstream, cfg.ADSB.AircraftPoll, cfg.ADSB.MetadataPoll)
+		return engine.Run(serviceContext, upstreams.Set, cfg.ADSB.AircraftPoll, cfg.ADSB.MetadataPoll)
 	}, func(serviceContext context.Context) error {
 		sessions.RunCleanup(serviceContext.Done(), time.Minute)
 		return nil
@@ -312,6 +328,61 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 
 func sourcesInitialized(value domain.Health) bool {
 	return !value.Aircraft.LastSuccess.IsZero() &&
-		!value.Receiver.LastSuccess.IsZero() &&
-		!value.Stats.LastSuccess.IsZero()
+		sourceInitialized(value.Receiver) &&
+		sourceInitialized(value.Stats)
+}
+
+func sourceInitialized(value domain.SourceHealth) bool {
+	return value.Status == domain.HealthDisabled || !value.LastSuccess.IsZero()
+}
+
+func sourceHealthMessage(value domain.SourceHealth) string {
+	message := string(value.Provider)
+	if value.ErrorClass != "" {
+		if message != "" {
+			message += ": "
+		}
+		message += value.ErrorClass
+	}
+	return message
+}
+
+func privacyDisclosure(cfg config.Config) privacy.Disclosure {
+	providers := []string{"readsb"}
+	attribution := []privacy.Attribution{}
+	publicAirportCode := ""
+	radiusNM := 0
+	if airplanesLiveConfigured(cfg) {
+		providers = append(providers, "airplanes.live")
+		publicAirportCode = cfg.AirplanesLive.PublicAirportCode
+		radiusNM = cfg.AirplanesLive.RadiusNM
+		attribution = append(attribution, privacy.Attribution{
+			Provider: "airplanes.live",
+			Notice:   "Aircraft data provided by Airplanes.live",
+		})
+	}
+	if cfg.ADSBDB.Enabled {
+		providers = append(providers, "ADSBDB")
+		attribution = append(attribution, privacy.Attribution{Provider: "ADSBDB", Notice: "Aircraft and route data provided by ADSBDB"})
+	}
+	return privacy.NewDisclosure(
+		providers,
+		publicAirportCode,
+		radiusNM,
+		[]privacy.Retention{
+			{Category: "raw aircraft snapshots", Period: "memory only"},
+			{Category: "interaction sessions", Period: "15 minutes"},
+			{Category: "moderation cases", Period: "365 days"},
+		},
+		attribution,
+	)
+}
+
+func airplanesLiveConfigured(cfg config.Config) bool {
+	for _, provider := range cfg.ADSB.ProviderOrder {
+		if provider == domain.ProviderAirplanesLive {
+			return true
+		}
+	}
+	return false
 }

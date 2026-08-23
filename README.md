@@ -111,6 +111,13 @@ curl --fail http://127.0.0.1:9090/healthz
 curl --fail http://127.0.0.1:9090/metrics
 ```
 
+Health responses include the same typed privacy disclosure intended for the
+future `/privacy` command. Its public contract is limited to provider names, a
+public airport code, query radius in nautical miles, retention, and attribution;
+it has no coordinate, receiver URL, guild ID, or other deployment-identifier
+field. An empty airport code and zero radius mean no external point-query source
+is configured.
+
 Create a consistent SQLite backup inside the persistent volume:
 
 ```sh

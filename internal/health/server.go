@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/privacy"
 )
 
 type Component struct {
@@ -18,11 +20,13 @@ type Component struct {
 }
 
 type State struct {
-	started time.Time
-	live    atomic.Bool
-	ready   atomic.Bool
-	mu      sync.RWMutex
-	parts   map[string]Component
+	started    time.Time
+	live       atomic.Bool
+	ready      atomic.Bool
+	mu         sync.RWMutex
+	parts      map[string]Component
+	privacy    privacy.Disclosure
+	hasPrivacy bool
 }
 
 func NewState(now time.Time) *State {
@@ -48,6 +52,13 @@ func (s *State) SetComponent(name, status, message string) {
 	s.mu.Unlock()
 }
 
+func (s *State) SetPrivacyDisclosure(disclosure privacy.Disclosure) {
+	s.mu.Lock()
+	s.privacy = disclosure.Clone()
+	s.hasPrivacy = true
+	s.mu.Unlock()
+}
+
 func (s *State) healthy() bool {
 	if !s.live.Load() || !s.ready.Load() {
 		return false
@@ -70,6 +81,7 @@ type snapshot struct {
 	Ready         bool                 `json:"ready"`
 	UptimeSeconds float64              `json:"uptime_seconds"`
 	Components    map[string]Component `json:"components,omitempty"`
+	Privacy       *privacy.Disclosure  `json:"privacy,omitempty"`
 }
 
 func (s *State) Snapshot(now time.Time) snapshot {
@@ -77,6 +89,11 @@ func (s *State) Snapshot(now time.Time) snapshot {
 	components := make(map[string]Component, len(s.parts))
 	for name, component := range s.parts {
 		components[name] = component
+	}
+	var disclosure *privacy.Disclosure
+	if s.hasPrivacy {
+		value := s.privacy.Clone()
+		disclosure = &value
 	}
 	s.mu.RUnlock()
 
@@ -106,6 +123,7 @@ func (s *State) Snapshot(now time.Time) snapshot {
 		Ready:         ready,
 		UptimeSeconds: now.Sub(s.started).Seconds(),
 		Components:    components,
+		Privacy:       disclosure,
 	}
 }
 

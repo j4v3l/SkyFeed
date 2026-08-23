@@ -1,8 +1,11 @@
 package state
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,8 +27,11 @@ func TestEnginePublishesImmutableIndexedSnapshot(t *testing.T) {
 	}, 30*time.Second)
 	engine.applyAircraft(source.Frame[domain.AircraftBatch]{
 		FetchedAt: now,
+		Provider:  domain.ProviderReadsb,
 		Value: domain.AircraftBatch{
-			GeneratedAt: now,
+			GeneratedAt:         now,
+			Messages:            100,
+			MessageCounterValid: true,
 			Aircraft: []domain.Aircraft{
 				{ICAO: "DEF456", Callsign: "TEST45"},
 				{ICAO: "ABC123", Callsign: "SKY123", Latitude: 41, Longitude: -75, HasPosition: true},
@@ -41,6 +47,9 @@ func TestEnginePublishesImmutableIndexedSnapshot(t *testing.T) {
 	if first.Aircraft[0].ICAO != "ABC123" || first.Aircraft[1].ICAO != "DEF456" {
 		t.Fatalf("aircraft are not stably sorted: %#v", first.Aircraft)
 	}
+	if first.ActiveProvider != domain.ProviderReadsb || !first.MessageCounterValid || first.Aircraft[0].Provider != domain.ProviderReadsb {
+		t.Fatalf("provider state = provider %q counter_valid=%v aircraft=%q", first.ActiveProvider, first.MessageCounterValid, first.Aircraft[0].Provider)
+	}
 
 	engine.applyAircraft(source.Frame[domain.AircraftBatch]{
 		FetchedAt: now.Add(time.Second),
@@ -55,6 +64,130 @@ func TestEnginePublishesImmutableIndexedSnapshot(t *testing.T) {
 	if current, _ := engine.Current().LookupICAO("ABC123"); current.Callsign != "CHANGED" {
 		t.Fatalf("new snapshot missing update: %#v", current)
 	}
+}
+
+func TestEngineDoesNotPollUnsupportedMetadata(t *testing.T) {
+	upstream := &pollingSourceStub{aircraftFetched: make(chan struct{})}
+	engine := NewEngine(nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- engine.Run(ctx, source.Set{Aircraft: upstream, Receiver: upstream, Stats: upstream}, time.Hour, time.Hour)
+	}()
+
+	select {
+	case <-upstream.aircraftFetched:
+		cancel()
+	case <-time.After(time.Second):
+		cancel()
+		t.Fatal("aircraft source was not polled")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if upstream.receiverCalls.Load() != 0 || upstream.statsCalls.Load() != 0 {
+		t.Fatalf("unsupported polls receiver=%d stats=%d", upstream.receiverCalls.Load(), upstream.statsCalls.Load())
+	}
+	snapshot := engine.Current()
+	if snapshot.Health.Receiver.Status != domain.HealthDisabled || snapshot.Health.Stats.Status != domain.HealthDisabled {
+		t.Fatalf("metadata health = %+v", snapshot.Health)
+	}
+	if !snapshot.Capabilities.Supports(domain.CapabilityAircraft) ||
+		snapshot.Capabilities.Supports(domain.CapabilityReceiver) ||
+		snapshot.Capabilities.Supports(domain.CapabilityStatistics) {
+		t.Fatalf("capabilities = %08b", snapshot.Capabilities)
+	}
+}
+
+func TestEngineTreatsFallbackSuccessAsHealthy(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	primary := &aircraftProviderStub{
+		id:  domain.ProviderReadsb,
+		err: &source.FetchError{Endpoint: "aircraft.json", Class: source.ErrorNetwork, Err: errors.New("offline")},
+	}
+	fallback := &aircraftProviderStub{
+		id: domain.ProviderAirplanesLive,
+		frame: source.Frame[domain.AircraftBatch]{
+			FetchedAt: now,
+			Value: domain.AircraftBatch{
+				GeneratedAt: now,
+				Aircraft:    []domain.Aircraft{{ICAO: "ABC123"}},
+			},
+		},
+	}
+	failover, err := source.NewAircraftFailover(
+		[]source.AircraftSource{primary, fallback},
+		source.DefaultAircraftFailoverConfig(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	engine := NewEngine(func(snapshot *domain.Snapshot) {
+		if !snapshot.FetchedAt.IsZero() {
+			cancel()
+		}
+	})
+	if err := engine.Run(ctx, source.Set{Aircraft: failover}, time.Hour, time.Hour); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	snapshot := engine.Current()
+	if snapshot.Health.Aircraft.Status != domain.HealthHealthy ||
+		snapshot.Health.Aircraft.Provider != domain.ProviderAirplanesLive ||
+		snapshot.ActiveProvider != domain.ProviderAirplanesLive {
+		t.Fatalf("fallback health = %+v active=%q", snapshot.Health.Aircraft, snapshot.ActiveProvider)
+	}
+	if snapshot.Health.Receiver.Status != domain.HealthDisabled || snapshot.Health.Stats.Status != domain.HealthDisabled {
+		t.Fatalf("unsupported metadata health = %+v", snapshot.Health)
+	}
+}
+
+type aircraftProviderStub struct {
+	id    domain.ProviderID
+	frame source.Frame[domain.AircraftBatch]
+	err   error
+}
+
+func (stub *aircraftProviderStub) ProviderID() domain.ProviderID { return stub.id }
+func (*aircraftProviderStub) Capabilities() domain.Capabilities {
+	return domain.CapabilitiesOf(domain.CapabilityAircraft)
+}
+func (stub *aircraftProviderStub) FetchAircraft(context.Context) (source.Frame[domain.AircraftBatch], error) {
+	return stub.frame, stub.err
+}
+
+type pollingSourceStub struct {
+	once            sync.Once
+	aircraftFetched chan struct{}
+	receiverCalls   atomic.Int64
+	statsCalls      atomic.Int64
+}
+
+func (*pollingSourceStub) ProviderID() domain.ProviderID { return domain.ProviderReadsb }
+func (*pollingSourceStub) Capabilities() domain.Capabilities {
+	return domain.CapabilitiesOf(domain.CapabilityAircraft)
+}
+func (stub *pollingSourceStub) FetchAircraft(context.Context) (source.Frame[domain.AircraftBatch], error) {
+	now := time.Now()
+	stub.once.Do(func() { close(stub.aircraftFetched) })
+	return source.Frame[domain.AircraftBatch]{
+		FetchedAt: now,
+		Provider:  domain.ProviderReadsb,
+		Value: domain.AircraftBatch{
+			Provider:            domain.ProviderReadsb,
+			GeneratedAt:         now,
+			MessageCounterValid: true,
+		},
+	}, nil
+}
+func (stub *pollingSourceStub) FetchReceiver(context.Context) (source.Frame[domain.Receiver], error) {
+	stub.receiverCalls.Add(1)
+	return source.Frame[domain.Receiver]{}, nil
+}
+func (stub *pollingSourceStub) FetchStats(context.Context) (source.Frame[domain.Statistics], error) {
+	stub.statsCalls.Add(1)
+	return source.Frame[domain.Statistics]{}, nil
 }
 
 func TestFailureRetainsLastGoodAircraft(t *testing.T) {
