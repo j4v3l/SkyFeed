@@ -169,6 +169,49 @@ func TestStoreScopesUpdates(t *testing.T) {
 	}
 }
 
+func TestGuildSettingsPersistAlertPauseAndMutedSquawks(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	if err := store.UpsertGuildSettings(ctx, storage.GuildSettings{
+		GuildID: 7, Units: "aviation", Timezone: "UTC", AlertsPaused: true, MutedSquawks: "7700,7600", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := store.GuildSettings(ctx, 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !settings.AlertsPaused || settings.MutedSquawks != "7700,7600" {
+		t.Fatalf("settings = %+v", settings)
+	}
+}
+
+func TestDeleteMessageBindingRemovesDashboard(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertMessageBinding(ctx, storage.MessageBinding{GuildID: 9, Purpose: "dashboard", ChannelID: 1, MessageID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteMessageBinding(ctx, 9, "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.MessageBinding(ctx, 9, "dashboard"); err != nil || found {
+		t.Fatalf("found=%v err=%v", found, err)
+	}
+}
+
 func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
@@ -196,6 +239,9 @@ func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
 	}
 	if summary.DistinctICAOs != 3 {
 		t.Fatalf("peak tracked aircraft = %d, want 3", summary.DistinctICAOs)
+	}
+	if !summary.PeakHour.Equal(start) || summary.PeakAircraft != 3 {
+		t.Fatalf("peak hour = %+v", summary)
 	}
 }
 
@@ -227,6 +273,42 @@ func TestBackupCanBeOpenedAndRestored(t *testing.T) {
 	defer restored.Close()
 	if _, err := restored.GuildSettings(ctx, 123); err != nil {
 		t.Fatalf("restored settings: %v", err)
+	}
+}
+
+func TestPlaneAlertReferenceAndInterestingSeen(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplacePlaneAlertReference(ctx, []storage.PlaneAlertReference{{
+		ICAO: "AE1234", Operator: "USAF", FlightGroup: "Mil", CommitHash: "abc",
+	}}, "abc"); err != nil {
+		t.Fatal(err)
+	}
+	count, err := store.PlaneAlertReferenceCount(ctx)
+	if err != nil || count != 1 {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	hash, err := store.PlaneAlertCommitHash(ctx)
+	if err != nil || hash != "abc" {
+		t.Fatalf("hash=%q err=%v", hash, err)
+	}
+	now := time.Now().UTC()
+	if err := store.UpsertInterestingSeen(ctx, storage.InterestingSeen{GuildID: 5, ICAO: "AE1234", FirstSeenAt: now, Callsign: "RCH1", FlightGroup: "Mil"}); err != nil {
+		t.Fatal(err)
+	}
+	seen, err := store.InterestingSeenICAOs(ctx, 5)
+	if err != nil || len(seen) != 1 || seen[0] != "AE1234" {
+		t.Fatalf("seen=%v err=%v", seen, err)
+	}
+	if err := store.UpsertChannelBinding(ctx, storage.ChannelBinding{GuildID: 5, Purpose: "interesting", ChannelID: 77, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
 	}
 }
 

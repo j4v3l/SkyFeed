@@ -87,8 +87,10 @@ type Router struct {
 	ruleReload        func()
 	enrichment        EnrichmentProvider
 	routes            RouteProvider
+	weather           WeatherProvider
 	privacy           privacy.Disclosure
 	testSend          func(context.Context, uint64, string) error
+	dashboardReset    func(context.Context) error
 	moderation        ModerationExecutor
 }
 
@@ -97,6 +99,9 @@ func (router *Router) SetRuleReload(reload func())                 { router.rule
 func (router *Router) SetEnrichment(provider EnrichmentProvider)   { router.enrichment = provider }
 func (router *Router) SetTestSender(sender func(context.Context, uint64, string) error) {
 	router.testSend = sender
+}
+func (router *Router) SetDashboardReset(reset func(context.Context) error) {
+	router.dashboardReset = reset
 }
 func (router *Router) SetModeration(executor ModerationExecutor) { router.moderation = executor }
 
@@ -128,6 +133,10 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleAirport(request, responder)
 	case "squawk":
 		return router.handleSquawk(request, responder, snapshot)
+	case "emergency":
+		return router.handleEmergency(request, responder, snapshot)
+	case "traffic":
+		return router.handleTraffic(request, responder, snapshot)
 	case "top":
 		return router.handleTop(request, responder, snapshot)
 	case "privacy":
@@ -418,6 +427,18 @@ func (router *Router) updateSession(session Session, responder InteractionRespon
 		return responder.UpdateMessage(messageUpdate(message))
 	case "squawk":
 		message, err := router.squawkMessage(session, snapshot)
+		if err != nil {
+			return err
+		}
+		return responder.UpdateMessage(messageUpdate(message))
+	case "emergency":
+		message, err := router.emergencyMessage(session, snapshot)
+		if err != nil {
+			return err
+		}
+		return responder.UpdateMessage(messageUpdate(message))
+	case "traffic":
+		message, err := router.trafficMessage(session, snapshot)
 		if err != nil {
 			return err
 		}

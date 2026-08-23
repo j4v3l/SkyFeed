@@ -12,11 +12,11 @@ import (
 )
 
 const (
-	Radar     = 0x35D07F
-	Scope     = 0x37B5FF
-	Caution   = 0xF3B63A
-	Emergency = 0xF05252
-	Muted     = 0x6B7280
+	Radar          = 0x35D07F
+	Scope          = 0x37B5FF
+	Caution        = 0xF3B63A
+	EmergencyColor = 0xF05252
+	Muted          = 0x6B7280
 
 	footer = "Live readsb data • ADSBDB enrichment when shown"
 )
@@ -52,10 +52,24 @@ func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enri
 		messageRate = fmt.Sprintf("%.1f msg/s", snapshot.Statistics.MessageRate)
 		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
 	}
+	activeProvider := "Unknown"
+	if snapshot.ActiveProvider.Known() {
+		activeProvider = string(snapshot.ActiveProvider)
+	}
+	providerAge := "Never"
+	if !snapshot.ProviderChangedAt.IsZero() {
+		age := now.Sub(snapshot.ProviderChangedAt)
+		if age < 0 {
+			age = 0
+		}
+		providerAge = conciseDuration(age) + " ago"
+	}
 	embed.Fields = []discord.EmbedField{
 		{Name: "Tracked", Value: tracked, Inline: ptr(true)},
 		{Name: "Recent message rate", Value: messageRate, Inline: ptr(true)},
 		{Name: "Recent maximum range", Value: maximumRange, Inline: ptr(true)},
+		{Name: "Active aircraft provider", Value: PlainText(activeProvider), Inline: ptr(true)},
+		{Name: "Provider active since", Value: providerAge, Inline: ptr(true)},
 		{Name: "Aircraft source", Value: sourceLabel(snapshot.Health.Aircraft), Inline: ptr(true)},
 		{Name: "Receiver source", Value: sourceLabel(snapshot.Health.Receiver), Inline: ptr(true)},
 		{Name: "Statistics source", Value: sourceLabel(snapshot.Health.Stats), Inline: ptr(true)},
@@ -70,8 +84,12 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 		return base("Feeder", Muted, now).WithDescription("⚪ **UNKNOWN** — waiting for receiver diagnostics.")
 	}
 	status, color := overallHealth(snapshot.Health)
+	activeProvider := "unknown"
+	if snapshot.ActiveProvider.Known() {
+		activeProvider = string(snapshot.ActiveProvider)
+	}
 	embed := base("Feeder", color, snapshot.PublishedAt).
-		WithDescription(fmt.Sprintf("%s **%s** — independent readsb source diagnostics.", badge(status), strings.ToUpper(string(status))))
+		WithDescription(fmt.Sprintf("%s **%s** — active aircraft provider `%s`.", badge(status), strings.ToUpper(string(status)), PlainText(activeProvider)))
 	positionState := "Unavailable"
 	receiverAvailable := !snapshot.Health.Receiver.LastSuccess.IsZero()
 	statsAvailable := !snapshot.Health.Stats.LastSuccess.IsZero()
@@ -95,7 +113,12 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 		tracks = fmt.Sprintf("%d", snapshot.Statistics.TrackedAircraft)
 		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
 	}
+	providerField := "Unknown"
+	if snapshot.ActiveProvider.Known() {
+		providerField = string(snapshot.ActiveProvider)
+	}
 	embed.Fields = []discord.EmbedField{
+		{Name: "Active provider", Value: PlainText(providerField), Inline: ptr(true)},
 		{Name: "Receiver", Value: receiverVersion, Inline: ptr(true)},
 		{Name: "Refresh", Value: refresh, Inline: ptr(true)},
 		{Name: "Receiver position", Value: positionState, Inline: ptr(true)},
@@ -113,7 +136,7 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 func ModerationCase(value storage.ModerationCase) discord.Embed {
 	color := Radar
 	if value.Status == "failed" {
-		color = Emergency
+		color = EmergencyColor
 	} else if value.Status == "pending" {
 		color = Caution
 	}
@@ -177,6 +200,10 @@ func Route(route domain.Route, aircraft domain.Aircraft, now time.Time) discord.
 }
 
 func Airport(airport domain.Airport, now time.Time) discord.Embed {
+	return AirportWithWeather(airport, "", "", now)
+}
+
+func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time) discord.Embed {
 	title := PlainText(firstNonEmpty(airport.ICAO, airport.IATA, "Airport"))
 	embed := base("Airport • "+title, Scope, now)
 	location := strings.Join(nonEmpty(PlainText(airport.Municipality), PlainText(airport.CountryCode)), ", ")
@@ -194,8 +221,76 @@ func Airport(airport domain.Airport, now time.Time) discord.Embed {
 		{Name: "Location", Value: location, Inline: ptr(true)},
 		{Name: "Elevation", Value: elevation, Inline: ptr(true)},
 	}
+	if metar != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "METAR", Value: Truncate(PlainText(metar), 900)})
+	}
+	if taf != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "TAF", Value: Truncate(PlainText(taf), 900)})
+	}
 	if airport.Attribution != "" {
 		embed.Footer = &discord.EmbedFooter{Text: PlainText(airport.Attribution)}
+	}
+	return BoundEmbed(embed)
+}
+
+func LookingUp(kind, identity string, now time.Time) discord.Embed {
+	return BoundEmbed(base(kind, Muted, now).WithDescription(fmt.Sprintf("Looking up **%s**…", PlainText(identity))))
+}
+
+func Emergency(aircraft []domain.Aircraft, page, pageSize int, now time.Time) discord.Embed {
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if page < 0 {
+		page = 0
+	}
+	copyAircraft := append([]domain.Aircraft(nil), aircraft...)
+	start := page * pageSize
+	if start > len(copyAircraft) {
+		start = len(copyAircraft)
+	}
+	end := min(start+pageSize, len(copyAircraft))
+	embed := base("Emergency", EmergencyColor, now)
+	embed.Description = fmt.Sprintf("Active 7500 / 7600 / 7700 or emergency flags • showing %d–%d of %d", min(start+1, len(copyAircraft)), end, len(copyAircraft))
+	for _, item := range copyAircraft[start:end] {
+		name := PlainText(firstNonEmpty(item.Callsign, item.Registration, item.ICAO))
+		detail := squawkMeaning(item.Squawk)
+		if item.Emergency != "" && item.Emergency != "none" {
+			detail = strings.ToUpper(item.Emergency)
+		}
+		value := fmt.Sprintf("`%s` • squawk `%s` • %s • %s • %s", PlainText(item.ICAO), PlainText(valueOr(item.Squawk, "????")), detail, position(item), altitude(item))
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: name, Value: value})
+	}
+	if len(copyAircraft) == 0 {
+		embed.Description = "No emergency squawks or emergency flags are currently visible."
+		embed.Color = Radar
+	}
+	return BoundEmbed(embed)
+}
+
+func Traffic(aircraft []domain.Aircraft, airportCode string, radiusNM float64, page, pageSize int, now time.Time) discord.Embed {
+	if pageSize < 1 {
+		pageSize = 10
+	}
+	if page < 0 {
+		page = 0
+	}
+	copyAircraft := append([]domain.Aircraft(nil), aircraft...)
+	start := page * pageSize
+	if start > len(copyAircraft) {
+		start = len(copyAircraft)
+	}
+	end := min(start+pageSize, len(copyAircraft))
+	label := PlainText(valueOr(airportCode, "public airport"))
+	embed := base("Traffic • "+label, Scope, now)
+	embed.Description = fmt.Sprintf("Airport-area traffic near %s within %.0f NM of the configured public center • showing %d–%d of %d", label, radiusNM, min(start+1, len(copyAircraft)), end, len(copyAircraft))
+	for _, item := range copyAircraft[start:end] {
+		name := PlainText(firstNonEmpty(item.Callsign, item.Registration, item.ICAO))
+		value := fmt.Sprintf("`%s` • %s • %s • %s", PlainText(item.ICAO), position(item), altitude(item), groundSpeed(item))
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: name, Value: value})
+	}
+	if len(copyAircraft) == 0 {
+		embed.Description = fmt.Sprintf("No visible aircraft are currently within %.0f NM of %s.", radiusNM, label)
 	}
 	return BoundEmbed(embed)
 }
@@ -277,7 +372,7 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 	color := Scope
 	alert := "None"
 	if aircraft.Emergency != "" && aircraft.Emergency != "none" {
-		color = Emergency
+		color = EmergencyColor
 		alert = "🔴 " + strings.ToUpper(aircraft.Emergency)
 	}
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
@@ -316,6 +411,12 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 				discord.EmbedField{Name: "Aircraft metadata", Value: strings.Join(nonEmpty(PlainText(metadata.Manufacturer), PlainText(metadata.AircraftType), PlainText(metadata.Registration)), " • ")},
 				discord.EmbedField{Name: "Owner / operator", Value: strings.Join(nonEmpty(PlainText(metadata.Owner), PlainText(metadata.OwnerCountry)), " • ")},
 			)
+			if metadata.PhotoURL != "" {
+				embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Photo", Value: PlainText(metadata.PhotoURL)})
+			}
+			if metadata.ThumbnailURL != "" {
+				embed.Thumbnail = &discord.EmbedResource{URL: metadata.ThumbnailURL}
+			}
 		}
 		if route == nil && enrichment.Route != nil {
 			embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Route (ADSBDB)", Value: routeText(*enrichment.Route)})
@@ -358,16 +459,17 @@ func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) disco
 func Help(now time.Time, manageGuild bool) discord.Embed {
 	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Administrative actions respond privately.")
 	embed.Fields = []discord.EmbedField{
-		{Name: "/status", Value: "Receiver and bot health at a glance."},
-		{Name: "/nearby", Value: "A paginated nearby-aircraft view with radius, altitude, squawk, and sort filters."},
+		{Name: "/status", Value: "Receiver, active provider, and bot health at a glance."},
+		{Name: "/nearby and /traffic", Value: "Paginated nearby or public-airport-area aircraft views."},
 		{Name: "/aircraft", Value: "Look up a live aircraft by ICAO, registration, or callsign."},
-		{Name: "/route, /airport, /squawk, /top", Value: "Inspect filed routes, airports, transponder matches, and live rankings."},
+		{Name: "/route, /airport, /squawk, /top, /emergency", Value: "Routes, airports/METAR, squawks, rankings, and emergency drill-down."},
 		{Name: "/privacy", Value: "Review provider sharing, retention, and attribution for this server."},
 		{Name: "/watch and /alerts", Value: "Manage watch rules and notification behavior."},
-		{Name: "/reports and /feeder", Value: "Build summaries or inspect source diagnostics."},
+		{Name: "/reports and /feeder", Value: "Build summaries (including peak hour) or inspect source diagnostics."},
+		{Name: "Interesting aircraft channel", Value: "Configure `#interesting-aircraft` via `/settings channels` for plane-alert-db first sightings."},
 	}
 	if manageGuild {
-		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Configure channels and send permission-safe destination tests."})
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Channels, alert pause/mute, dashboard recreate, and destination tests."})
 	}
 	return BoundEmbed(embed)
 }
@@ -376,14 +478,48 @@ func Alert(alert domain.Alert) discord.Embed {
 	color := Caution
 	view := "Alert"
 	if alert.Priority == domain.AlertEmergency {
-		color = Emergency
+		color = EmergencyColor
 		view = "Emergency"
 	}
-	embed := base(view, color, alert.ObservedAt).WithDescription(alert.Description)
+	description := PlainText(alert.Description)
+	if alert.RouteSummary != "" {
+		description = description + "\nRoute: " + PlainText(alert.RouteSummary)
+	}
+	embed := base(view, color, alert.ObservedAt).WithDescription(description)
 	embed.Fields = []discord.EmbedField{
 		{Name: "Aircraft", Value: valueOr(alert.AircraftICAO, "Unknown"), Inline: ptr(true)},
+		{Name: "Callsign", Value: PlainText(valueOr(alert.Callsign, "Unknown")), Inline: ptr(true)},
 		{Name: "Rule", Value: string(alert.Type), Inline: ptr(true)},
 		{Name: "Priority", Value: map[bool]string{true: "EMERGENCY", false: "NORMAL"}[alert.Priority == domain.AlertEmergency], Inline: ptr(true)},
+	}
+	return BoundEmbed(embed)
+}
+
+func InterestingAlert(alert domain.Alert) discord.Embed {
+	description := PlainText(alert.Description)
+	if alert.RouteSummary != "" {
+		description = description + "\nRoute: " + PlainText(alert.RouteSummary)
+	}
+	embed := base("Interesting aircraft", Scope, alert.ObservedAt).WithDescription(description)
+	if alert.Title != "" {
+		embed = embed.WithTitle("SkyFeed • " + PlainText(alert.Title))
+	}
+	embed.Fields = []discord.EmbedField{
+		{Name: "ICAO", Value: valueOr(alert.AircraftICAO, "Unknown"), Inline: ptr(true)},
+		{Name: "Callsign", Value: PlainText(valueOr(alert.Callsign, "Unknown")), Inline: ptr(true)},
+		{Name: "Group", Value: PlainText(valueOr(alert.InterestingGroup, "Unknown")), Inline: ptr(true)},
+	}
+	if alert.InterestingOperator != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Operator", Value: PlainText(alert.InterestingOperator), Inline: ptr(false)})
+	}
+	if alert.InterestingTags != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Tags", Value: PlainText(alert.InterestingTags), Inline: ptr(false)})
+	}
+	if alert.InterestingLink != "" {
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Reference", Value: PlainText(alert.InterestingLink), Inline: ptr(false)})
+	}
+	if alert.InterestingImage != "" {
+		embed.Thumbnail = &discord.EmbedResource{URL: alert.InterestingImage}
 	}
 	return BoundEmbed(embed)
 }
@@ -397,6 +533,11 @@ func Report(summary storage.ReportSummary) discord.Embed {
 		{Name: "Messages", Value: fmt.Sprintf("%d", summary.Messages), Inline: ptr(true)},
 		{Name: "Emergency observations", Value: fmt.Sprintf("%d", summary.Emergencies), Inline: ptr(true)},
 		{Name: "Maximum range", Value: fmt.Sprintf("%.1f NM", summary.MaximumRangeNM), Inline: ptr(true)},
+	}
+	if !summary.PeakHour.IsZero() {
+		embed.Fields = append(embed.Fields, discord.EmbedField{
+			Name: "Busiest hour", Value: fmt.Sprintf("<t:%d:f> • %d peak tracked", summary.PeakHour.Unix(), summary.PeakAircraft), Inline: ptr(false),
+		})
 	}
 	return BoundEmbed(embed)
 }
@@ -417,7 +558,7 @@ func overallHealth(health domain.Health) (domain.HealthStatus, int) {
 	statuses := []domain.HealthStatus{health.Aircraft.Status, health.Receiver.Status, health.Stats.Status}
 	for _, status := range statuses {
 		if status == domain.HealthOffline {
-			return status, Emergency
+			return status, EmergencyColor
 		}
 	}
 	for _, status := range statuses {

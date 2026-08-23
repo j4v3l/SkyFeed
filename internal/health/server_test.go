@@ -104,6 +104,38 @@ func TestMetricsHandlerIsOptional(t *testing.T) {
 	}
 }
 
+func TestRootPrivacyPageOmitsCoordinates(t *testing.T) {
+	state := NewState(time.Now())
+	state.SetReady(true)
+	state.SetPrivacyDisclosure(privacy.NewDisclosure(
+		[]string{"readsb", "airplanes.live", "aviationweather.gov"},
+		"KPBI",
+		50,
+		nil,
+		nil,
+	))
+	server := NewServer("127.0.0.1:0", state, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("content type = %q", contentType)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{"SkyFeed", "KPBI", "within 50 NM", "aviationweather.gov", "/healthz"} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("body missing %q: %s", expected, body)
+		}
+	}
+	for _, forbidden := range []string{"latitude", "longitude", "26.6832", "-80.0956"} {
+		if strings.Contains(strings.ToLower(body), forbidden) {
+			t.Fatalf("body exposed %q: %s", forbidden, body)
+		}
+	}
+}
+
 func assertStatus(t *testing.T, handler http.Handler, path string, want int) {
 	t.Helper()
 	request := httptest.NewRequest(http.MethodGet, path, nil)

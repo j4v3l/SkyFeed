@@ -208,6 +208,33 @@ func TestRouterTopRanksByMetric(t *testing.T) {
 	}
 }
 
+func TestRouterEmergencyAndTrafficViews(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	snapshot.Aircraft[0].Squawk = "7700"
+	snapshot.Aircraft[0].Emergency = "general"
+	snapshot.Aircraft[1].HasDistance = true
+	snapshot.Aircraft[1].DistanceNM = 12
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), 2, now)
+	router.SetPrivacyDisclosure(privacy.NewDisclosure([]string{"readsb"}, "KPBI", 50, nil, nil))
+
+	emergency := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "emergency", UserID: 1, GuildID: 2, ChannelID: 3}, emergency); err != nil {
+		t.Fatal(err)
+	}
+	if len(emergency.created) != 1 || !strings.Contains(emergency.created[0].Embeds[0].Title, "Emergency") {
+		t.Fatalf("emergency = %#v", emergency.created)
+	}
+
+	traffic := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "traffic", UserID: 1, GuildID: 2, ChannelID: 3, Floats: map[string]float64{"radius-nm": 20}}, traffic); err != nil {
+		t.Fatal(err)
+	}
+	if len(traffic.created) != 1 || !strings.Contains(traffic.created[0].Embeds[0].Title, "Traffic") {
+		t.Fatalf("traffic = %#v", traffic.created)
+	}
+}
+
 func assertPrivateRejection(t *testing.T, recorder *responseRecorder) {
 	t.Helper()
 	if len(recorder.created) != 1 || recorder.created[0].Flags&disgocord.MessageFlagEphemeral == 0 {

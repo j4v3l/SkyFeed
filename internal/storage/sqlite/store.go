@@ -72,21 +72,25 @@ func (store *Store) UpsertGuildSettings(ctx context.Context, settings storage.Gu
 	if created.IsZero() {
 		created = now
 	}
-	_, err := store.db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?)
-ON CONFLICT(guild_id) DO UPDATE SET units=excluded.units, timezone=excluded.timezone, updated_at=excluded.updated_at`, settings.GuildID, valueOr(settings.Units, "aviation"), valueOr(settings.Timezone, "UTC"), formatTime(created), formatTime(now))
+	_, err := store.db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, alerts_paused, muted_squawks, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(guild_id) DO UPDATE SET units=excluded.units, timezone=excluded.timezone, alerts_paused=excluded.alerts_paused, muted_squawks=excluded.muted_squawks, updated_at=excluded.updated_at`,
+		settings.GuildID, valueOr(settings.Units, "aviation"), valueOr(settings.Timezone, "UTC"), boolToInt(settings.AlertsPaused), settings.MutedSquawks, formatTime(created), formatTime(now))
 	return wrap("upsert guild settings", err)
 }
 
 func (store *Store) GuildSettings(ctx context.Context, guildID uint64) (storage.GuildSettings, error) {
 	var settings storage.GuildSettings
 	var created, updated string
-	err := store.db.QueryRowContext(ctx, `SELECT guild_id, units, timezone, created_at, updated_at FROM guild_settings WHERE guild_id=?`, guildID).Scan(&settings.GuildID, &settings.Units, &settings.Timezone, &created, &updated)
+	var paused int
+	err := store.db.QueryRowContext(ctx, `SELECT guild_id, units, timezone, alerts_paused, muted_squawks, created_at, updated_at FROM guild_settings WHERE guild_id=?`, guildID).
+		Scan(&settings.GuildID, &settings.Units, &settings.Timezone, &paused, &settings.MutedSquawks, &created, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storage.GuildSettings{}, ErrNotFound
 	}
 	if err != nil {
 		return storage.GuildSettings{}, fmt.Errorf("get guild settings: %w", err)
 	}
+	settings.AlertsPaused = paused == 1
 	settings.CreatedAt, err = parseTime(created)
 	if err == nil {
 		settings.UpdatedAt, err = parseTime(updated)
@@ -423,6 +427,21 @@ FROM report_rollups WHERE guild_id=? AND bucket_start>=? AND bucket_start<?`, gu
 	if err != nil {
 		return storage.ReportSummary{}, fmt.Errorf("report summary: %w", err)
 	}
+	var peakBucket sql.NullString
+	var peakAircraft sql.NullInt64
+	err = store.db.QueryRowContext(ctx, `SELECT bucket_start, distinct_icaos FROM report_rollups
+WHERE guild_id=? AND bucket_start>=? AND bucket_start<?
+ORDER BY distinct_icaos DESC, bucket_start ASC LIMIT 1`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&peakBucket, &peakAircraft)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return storage.ReportSummary{}, fmt.Errorf("report peak hour: %w", err)
+	}
+	if peakBucket.Valid {
+		result.PeakHour, err = parseTime(peakBucket.String)
+		if err != nil {
+			return storage.ReportSummary{}, err
+		}
+		result.PeakAircraft = peakAircraft.Int64
+	}
 	return result, nil
 }
 
@@ -434,6 +453,119 @@ func (store *Store) UpsertMessageBinding(ctx context.Context, value storage.Mess
 	_, err := store.db.ExecContext(ctx, `INSERT INTO message_bindings(guild_id, purpose, channel_id, message_id, updated_at) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(guild_id, purpose) DO UPDATE SET channel_id=excluded.channel_id, message_id=excluded.message_id, updated_at=excluded.updated_at`, value.GuildID, value.Purpose, value.ChannelID, value.MessageID, formatTime(now))
 	return wrap("upsert message binding", err)
+}
+
+func (store *Store) DeleteMessageBinding(ctx context.Context, guildID uint64, purpose string) error {
+	_, err := store.db.ExecContext(ctx, `DELETE FROM message_bindings WHERE guild_id=? AND purpose=?`, guildID, purpose)
+	return wrap("delete message binding", err)
+}
+
+func (store *Store) PlaneAlertReferenceCount(ctx context.Context) (int, error) {
+	var count int
+	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plane_alert_reference`).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count plane alert reference: %w", err)
+	}
+	return count, nil
+}
+
+func (store *Store) PlaneAlertCommitHash(ctx context.Context) (string, error) {
+	var hash string
+	err := store.db.QueryRowContext(ctx, `SELECT commit_hash FROM plane_alert_reference LIMIT 1`).Scan(&hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get plane alert commit hash: %w", err)
+	}
+	return hash, nil
+}
+
+func (store *Store) ReplacePlaneAlertReference(ctx context.Context, records []storage.PlaneAlertReference, commitHash string) error {
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin plane alert reference replace: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `DELETE FROM plane_alert_reference`); err != nil {
+		_ = transaction.Rollback()
+		return fmt.Errorf("clear plane alert reference: %w", err)
+	}
+	now := formatTime(time.Now().UTC())
+	statement := `INSERT INTO plane_alert_reference(
+		icao, registration, operator, aircraft_type, icao_type, flight_group, tag1, tag2, tag3, category, link,
+		image_link_1, image_link_2, image_link_3, image_link_4, commit_hash, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	for _, record := range records {
+		hash := record.CommitHash
+		if hash == "" {
+			hash = commitHash
+		}
+		updated := now
+		if !record.UpdatedAt.IsZero() {
+			updated = formatTime(record.UpdatedAt.UTC())
+		}
+		if _, err := transaction.ExecContext(ctx, statement,
+			record.ICAO, record.Registration, record.Operator, record.AircraftType, record.ICAOType, record.FlightGroup,
+			record.Tag1, record.Tag2, record.Tag3, record.Category, record.Link,
+			record.ImageLink1, record.ImageLink2, record.ImageLink3, record.ImageLink4, hash, updated,
+		); err != nil {
+			_ = transaction.Rollback()
+			return fmt.Errorf("insert plane alert reference: %w", err)
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit plane alert reference replace: %w", err)
+	}
+	return nil
+}
+
+func (store *Store) PlaneAlertReferences(ctx context.Context) ([]storage.PlaneAlertReference, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT icao, registration, operator, aircraft_type, icao_type, flight_group, tag1, tag2, tag3, category, link, image_link_1, image_link_2, image_link_3, image_link_4, commit_hash, updated_at FROM plane_alert_reference`)
+	if err != nil {
+		return nil, fmt.Errorf("list plane alert references: %w", err)
+	}
+	defer rows.Close()
+	result := make([]storage.PlaneAlertReference, 0, 1024)
+	for rows.Next() {
+		var reference storage.PlaneAlertReference
+		var updated string
+		if err := rows.Scan(&reference.ICAO, &reference.Registration, &reference.Operator, &reference.AircraftType, &reference.ICAOType, &reference.FlightGroup, &reference.Tag1, &reference.Tag2, &reference.Tag3, &reference.Category, &reference.Link, &reference.ImageLink1, &reference.ImageLink2, &reference.ImageLink3, &reference.ImageLink4, &reference.CommitHash, &updated); err != nil {
+			return nil, fmt.Errorf("scan plane alert reference: %w", err)
+		}
+		reference.UpdatedAt, err = parseTime(updated)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, reference)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) InterestingSeenICAOs(ctx context.Context, guildID uint64) ([]string, error) {
+	rows, err := store.db.QueryContext(ctx, `SELECT icao FROM interesting_aircraft_seen WHERE guild_id=?`, guildID)
+	if err != nil {
+		return nil, fmt.Errorf("list interesting seen: %w", err)
+	}
+	defer rows.Close()
+	result := make([]string, 0, 256)
+	for rows.Next() {
+		var icao string
+		if err := rows.Scan(&icao); err != nil {
+			return nil, fmt.Errorf("scan interesting seen: %w", err)
+		}
+		result = append(result, icao)
+	}
+	return result, rows.Err()
+}
+
+func (store *Store) UpsertInterestingSeen(ctx context.Context, value storage.InterestingSeen) error {
+	seenAt := value.FirstSeenAt.UTC()
+	if seenAt.IsZero() {
+		seenAt = time.Now().UTC()
+	}
+	_, err := store.db.ExecContext(ctx, `INSERT INTO interesting_aircraft_seen(guild_id, icao, first_seen_at, callsign, flight_group) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, icao) DO NOTHING`, value.GuildID, value.ICAO, formatTime(seenAt), value.Callsign, value.FlightGroup)
+	return wrap("upsert interesting seen", err)
 }
 
 func (store *Store) MessageBinding(ctx context.Context, guildID uint64, purpose string) (storage.MessageBinding, bool, error) {
@@ -627,6 +759,14 @@ ON CONFLICT(rule_id, aircraft_icao, condition_fingerprint) DO UPDATE SET last_fi
 			value := event.Rollup
 			_, err = transaction.ExecContext(ctx, `INSERT INTO report_rollups(guild_id, bucket_start, aircraft_seen, messages, emergencies, maximum_range, distinct_icaos) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_seen=aircraft_seen+excluded.aircraft_seen, messages=messages+excluded.messages, emergencies=emergencies+excluded.emergencies, maximum_range=MAX(maximum_range, excluded.maximum_range), distinct_icaos=MAX(distinct_icaos, excluded.distinct_icaos)`, value.GuildID, formatTime(value.BucketStart.UTC()), value.AircraftSeen, value.Messages, value.Emergencies, value.MaximumRange, value.DistinctICAOs)
+		case storage.WriteInterestingSeen:
+			value := event.Interesting
+			seenAt := value.FirstSeenAt.UTC()
+			if seenAt.IsZero() {
+				seenAt = time.Now().UTC()
+			}
+			_, err = transaction.ExecContext(ctx, `INSERT INTO interesting_aircraft_seen(guild_id, icao, first_seen_at, callsign, flight_group) VALUES (?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, icao) DO NOTHING`, value.GuildID, value.ICAO, formatTime(seenAt), value.Callsign, value.FlightGroup)
 		default:
 			err = fmt.Errorf("unsupported persistence event kind %d", event.Kind)
 		}
@@ -767,6 +907,13 @@ func valueOr(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func formatTime(value time.Time) string { return value.UTC().Format(time.RFC3339Nano) }

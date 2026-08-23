@@ -63,13 +63,18 @@ func TestSourcesInitializedRequiresSuccessfulFetches(t *testing.T) {
 
 func TestPrivacyDisclosureReflectsEnabledProvidersWithoutCoordinates(t *testing.T) {
 	disclosure := privacyDisclosure(config.Config{ADSBDB: config.ADSBDB{Enabled: true}})
-	if len(disclosure.Providers) != 2 || disclosure.Providers[0] != "readsb" || disclosure.Providers[1] != "ADSBDB" {
+	if len(disclosure.Providers) != 3 ||
+		disclosure.Providers[0] != "readsb" ||
+		disclosure.Providers[1] != "ADSBDB" ||
+		disclosure.Providers[2] != "aviationweather.gov" {
 		t.Fatalf("providers = %v", disclosure.Providers)
 	}
 	if disclosure.PublicAirportCode != "" || disclosure.RadiusNM != 0 {
 		t.Fatalf("unexpected point-query disclosure: %+v", disclosure)
 	}
-	if len(disclosure.Attribution) != 1 || disclosure.Attribution[0].Provider != "ADSBDB" {
+	if len(disclosure.Attribution) != 2 ||
+		disclosure.Attribution[0].Provider != "ADSBDB" ||
+		disclosure.Attribution[1].Provider != "aviationweather.gov" {
 		t.Fatalf("attribution = %+v", disclosure.Attribution)
 	}
 }
@@ -90,16 +95,17 @@ func TestPrivacyDisclosureIncludesExplicitPublicPointProvider(t *testing.T) {
 		ADSBDB: config.ADSBDB{Enabled: true},
 	}
 	disclosure := privacyDisclosure(cfg)
-	if len(disclosure.Providers) != 3 ||
+	if len(disclosure.Providers) != 4 ||
 		disclosure.Providers[0] != "readsb" ||
 		disclosure.Providers[1] != "airplanes.live" ||
-		disclosure.Providers[2] != "ADSBDB" {
+		disclosure.Providers[2] != "ADSBDB" ||
+		disclosure.Providers[3] != "aviationweather.gov" {
 		t.Fatalf("providers = %v", disclosure.Providers)
 	}
 	if disclosure.PublicAirportCode != "KXYZ" || disclosure.RadiusNM != 50 {
 		t.Fatalf("point-query disclosure = %+v", disclosure)
 	}
-	if len(disclosure.Attribution) != 2 || disclosure.Attribution[0].Provider != "airplanes.live" {
+	if len(disclosure.Attribution) != 3 || disclosure.Attribution[0].Provider != "airplanes.live" {
 		t.Fatalf("attribution = %+v", disclosure.Attribution)
 	}
 }

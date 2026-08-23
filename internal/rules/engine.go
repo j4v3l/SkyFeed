@@ -228,7 +228,7 @@ func (engine *Engine) evaluateEmergency(aircraft domain.Aircraft, now time.Time,
 		record.state = domain.AlertState{RuleID: -1, AircraftICAO: aircraft.ICAO, ConditionFingerprint: fingerprint, LastFiredAt: now, ConsecutiveMatches: 1, Active: true}
 		updates = append(updates, record.state)
 		alerts = append(alerts, domain.Alert{
-			ID: "emergency:" + aircraft.ICAO + ":" + strconv.FormatInt(now.Unix(), 10), AircraftICAO: aircraft.ICAO, ConditionFingerprint: fingerprint,
+			ID: "emergency:" + aircraft.ICAO + ":" + strconv.FormatInt(now.Unix(), 10), AircraftICAO: aircraft.ICAO, Callsign: aircraft.Callsign, ConditionFingerprint: fingerprint,
 			Type: domain.RuleEmergency, Priority: domain.AlertEmergency, Title: "Emergency aircraft", Description: emergencyDescription(aircraft), ObservedAt: now,
 		})
 	}
@@ -239,7 +239,7 @@ func (engine *Engine) evaluateEmergency(aircraft domain.Aircraft, now time.Time,
 func buildAlert(rule compiledRule, aircraft domain.Aircraft, now time.Time) domain.Alert {
 	return domain.Alert{
 		ID: strconv.FormatInt(rule.rule.ID, 10) + ":" + aircraft.ICAO + ":" + strconv.FormatInt(now.Unix(), 10), RuleID: rule.rule.ID,
-		GuildID: rule.rule.GuildID, UserID: rule.rule.UserID, AircraftICAO: aircraft.ICAO, ConditionFingerprint: rule.fingerprint,
+		GuildID: rule.rule.GuildID, UserID: rule.rule.UserID, AircraftICAO: aircraft.ICAO, Callsign: aircraft.Callsign, ConditionFingerprint: rule.fingerprint,
 		Type: rule.rule.Type, Priority: domain.AlertNormal, Title: "Watch rule matched", Description: string(rule.rule.Type) + " matched " + aircraft.ICAO, ObservedAt: now, Cooldown: rule.rule.Cooldown,
 	}
 }

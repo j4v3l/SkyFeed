@@ -18,6 +18,7 @@ const (
 	RuleOperator       RuleType = "operator"
 	RuleOwner          RuleType = "owner"
 	RuleAircraftType   RuleType = "aircraft-type"
+	RuleInteresting    RuleType = "interesting"
 )
 
 type WatchRule struct {
@@ -50,11 +51,18 @@ type Alert struct {
 	GuildID              uint64
 	UserID               uint64
 	AircraftICAO         string
+	Callsign             string
 	ConditionFingerprint string
 	Type                 RuleType
 	Priority             AlertPriority
 	Title                string
 	Description          string
+	RouteSummary         string
+	InterestingGroup     string
+	InterestingOperator  string
+	InterestingTags      string
+	InterestingLink      string
+	InterestingImage     string
 	ObservedAt           time.Time
 	Cooldown             time.Duration
 }

@@ -67,4 +67,34 @@ func TestAdministrativeCommandsPersistAndAuthorize(t *testing.T) {
 	if tested != "alerts" || len(response.created) != 1 {
 		t.Fatalf("tested=%q responses=%d", tested, len(response.created))
 	}
+
+	paused := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "settings", Subcommand: "pause-alerts", UserID: 7, GuildID: 42, ManageGuild: true, RoleIDs: []uint64{88}}, paused); err != nil {
+		t.Fatal(err)
+	}
+	settingsValue, err := repository.GuildSettings(context.Background(), 42)
+	if err != nil || !settingsValue.AlertsPaused {
+		t.Fatalf("paused settings=%+v err=%v", settingsValue, err)
+	}
+	muted := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "settings", Subcommand: "mute-squawk", UserID: 7, GuildID: 42, ManageGuild: true, RoleIDs: []uint64{88}, Strings: map[string]string{"code": "1200"}}, muted); err != nil {
+		t.Fatal(err)
+	}
+	settingsValue, err = repository.GuildSettings(context.Background(), 42)
+	if err != nil || settingsValue.MutedSquawks != "1200" {
+		t.Fatalf("muted settings=%+v err=%v", settingsValue, err)
+	}
+
+	resetCalled := false
+	router.SetDashboardReset(func(context.Context) error {
+		resetCalled = true
+		return nil
+	})
+	reset := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "settings", Subcommand: "recreate-dashboard", UserID: 7, GuildID: 42, ManageGuild: true, RoleIDs: []uint64{88}}, reset); err != nil {
+		t.Fatal(err)
+	}
+	if !resetCalled || len(reset.created) != 1 {
+		t.Fatalf("resetCalled=%v responses=%d", resetCalled, len(reset.created))
+	}
 }

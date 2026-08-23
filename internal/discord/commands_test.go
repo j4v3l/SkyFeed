@@ -8,7 +8,7 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 15 {
+	if len(commands) != 17 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {
@@ -84,6 +84,38 @@ func TestSettingsDefaultsToManageGuild(t *testing.T) {
 			}
 			return
 		}
+	}
+	t.Fatal("settings command not found")
+}
+
+func TestEmergencyAndTrafficCommandsExist(t *testing.T) {
+	found := map[string]bool{}
+	for _, command := range DesiredCommands() {
+		found[command.CommandName()] = true
+	}
+	for _, name := range []string{"emergency", "traffic"} {
+		if !found[name] {
+			t.Fatalf("%s command missing", name)
+		}
+	}
+}
+
+func TestSettingsIncludesOpsControls(t *testing.T) {
+	for _, command := range DesiredCommands() {
+		if command.CommandName() != "settings" {
+			continue
+		}
+		slash := command.(disgocord.SlashCommandCreate)
+		names := map[string]bool{}
+		for _, option := range slash.Options {
+			names[option.OptionName()] = true
+		}
+		for _, name := range []string{"pause-alerts", "resume-alerts", "mute-squawk", "unmute-squawk", "recreate-dashboard"} {
+			if !names[name] {
+				t.Fatalf("settings missing %s", name)
+			}
+		}
+		return
 	}
 	t.Fatal("settings command not found")
 }

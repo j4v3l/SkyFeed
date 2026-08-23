@@ -229,7 +229,107 @@ func (router *Router) handleSettings(request CommandRequest, responder Interacti
 		}
 		return responder.CreateMessage(infoMessage("Destination test queued", "The outbound scheduler accepted the test with mentions disabled."))
 	}
-	return responder.CreateMessage(errorMessage("Choose a settings subcommand."))
+	return router.handleOpsSettings(ctx, request, responder)
+}
+
+func (router *Router) handleOpsSettings(ctx context.Context, request CommandRequest, responder InteractionResponder) error {
+	settings, err := router.repository.GuildSettings(ctx, request.GuildID)
+	if err != nil {
+		return responder.CreateMessage(errorMessage("Server settings are temporarily unavailable."))
+	}
+	switch request.Subcommand {
+	case "pause-alerts":
+		settings.AlertsPaused = true
+		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {
+			return responder.CreateMessage(errorMessage("Alert pause could not be saved."))
+		}
+		return responder.CreateMessage(infoMessage("Alerts paused", "Non-emergency alert delivery is paused until `/settings resume-alerts`."))
+	case "resume-alerts":
+		settings.AlertsPaused = false
+		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {
+			return responder.CreateMessage(errorMessage("Alert resume could not be saved."))
+		}
+		return responder.CreateMessage(infoMessage("Alerts resumed", "Alert delivery is active again."))
+	case "mute-squawk":
+		code := strings.TrimSpace(request.Strings["code"])
+		if !squawkPattern.MatchString(code) {
+			return responder.CreateMessage(errorMessage("Squawk codes must be exactly four octal digits (0–7)."))
+		}
+		settings.MutedSquawks = joinMutedSquawk(settings.MutedSquawks, code)
+		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {
+			return responder.CreateMessage(errorMessage("Muted squawk could not be saved."))
+		}
+		return responder.CreateMessage(infoMessage("Squawk muted", fmt.Sprintf("Alerts for squawk `%s` are muted.", code)))
+	case "unmute-squawk":
+		code := strings.TrimSpace(request.Strings["code"])
+		if !squawkPattern.MatchString(code) {
+			return responder.CreateMessage(errorMessage("Squawk codes must be exactly four octal digits (0–7)."))
+		}
+		settings.MutedSquawks = removeMutedSquawk(settings.MutedSquawks, code)
+		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {
+			return responder.CreateMessage(errorMessage("Muted squawk could not be updated."))
+		}
+		return responder.CreateMessage(infoMessage("Squawk unmuted", fmt.Sprintf("Alerts for squawk `%s` are active again.", code)))
+	case "recreate-dashboard":
+		if router.dashboardReset == nil {
+			return responder.CreateMessage(errorMessage("Dashboard recreation is not ready."))
+		}
+		if err := router.dashboardReset(ctx); err != nil {
+			return responder.CreateMessage(errorMessage("The live dashboard could not be recreated."))
+		}
+		return responder.CreateMessage(infoMessage("Dashboard reset", "The stored dashboard binding was cleared. SkyFeed will post a fresh live message on the next refresh."))
+	default:
+		return responder.CreateMessage(errorMessage("Choose a settings subcommand."))
+	}
+}
+
+func joinMutedSquawk(existing, code string) string {
+	parts := splitMutedSquawks(existing)
+	for _, part := range parts {
+		if part == code {
+			return strings.Join(parts, ",")
+		}
+	}
+	parts = append(parts, code)
+	return strings.Join(parts, ",")
+}
+
+func removeMutedSquawk(existing, code string) string {
+	parts := splitMutedSquawks(existing)
+	next := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part != code {
+			next = append(next, part)
+		}
+	}
+	return strings.Join(next, ",")
+}
+
+func splitMutedSquawks(raw string) []string {
+	parts := strings.Split(raw, ",")
+	result := make([]string, 0, len(parts))
+	seen := make(map[string]struct{})
+	for _, part := range parts {
+		code := strings.TrimSpace(part)
+		if !squawkPattern.MatchString(code) {
+			continue
+		}
+		if _, exists := seen[code]; exists {
+			continue
+		}
+		seen[code] = struct{}{}
+		result = append(result, code)
+	}
+	return result
+}
+
+func mutedSquawkSet(raw string) map[string]struct{} {
+	parts := splitMutedSquawks(raw)
+	result := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		result[part] = struct{}{}
+	}
+	return result
 }
 
 func (router *Router) handleRoleSettings(ctx context.Context, request CommandRequest, responder InteractionResponder) error {

@@ -120,7 +120,7 @@ func (router *Router) confirmModeration(execution ModerationExecution, responder
 	if err != nil {
 		return err
 	}
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Confirm moderation").WithColor(render.Emergency).
+	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Confirm moderation").WithColor(render.EmergencyColor).
 		WithDescription(fmt.Sprintf("Confirm **%s** for user ID `%d`. This private control expires <t:%d:R>.", execution.Action, execution.TargetUserID, session.ExpiresAt.Unix())).
 		AddFields(disgocord.EmbedField{Name: "Reason", Value: render.Truncate(render.PlainText(execution.Reason), 400)})
 	message := render.SafeMessage(render.BoundEmbed(embed), true).

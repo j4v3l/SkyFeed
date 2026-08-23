@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -199,6 +201,13 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		s.writeStatus(writer, s.state.healthy())
 	})
+	mux.HandleFunc("GET /", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" {
+			http.NotFound(writer, request)
+			return
+		}
+		s.writePrivacyPage(writer)
+	})
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics)
 	}
@@ -212,4 +221,57 @@ func (s *Server) writeStatus(writer http.ResponseWriter, ok bool) {
 		writer.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_ = json.NewEncoder(writer).Encode(s.state.Snapshot(time.Now()))
+}
+
+func (s *Server) writePrivacyPage(writer http.ResponseWriter) {
+	snapshot := s.state.Snapshot(time.Now())
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(http.StatusOK)
+	_, _ = writer.Write([]byte(privacyHTML(snapshot)))
+}
+
+func privacyHTML(snapshot snapshot) string {
+	providers := "readsb"
+	airport := "not configured"
+	radius := 0
+	if snapshot.Privacy != nil {
+		if len(snapshot.Privacy.Providers) > 0 {
+			providers = strings.Join(snapshot.Privacy.Providers, ", ")
+		}
+		if snapshot.Privacy.PublicAirportCode != "" {
+			airport = snapshot.Privacy.PublicAirportCode
+		}
+		radius = snapshot.Privacy.RadiusNM
+	}
+	var builder strings.Builder
+	builder.WriteString("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">")
+	builder.WriteString("<title>SkyFeed</title><style>body{font-family:ui-sans-serif,system-ui,sans-serif;margin:2rem;max-width:40rem;line-height:1.5;color:#111}h1{font-size:1.5rem}code{background:#f3f4f6;padding:.1rem .3rem;border-radius:.25rem}</style></head><body>")
+	builder.WriteString("<h1>SkyFeed</h1>")
+	builder.WriteString("<p>Privacy-safe status page. Receiver coordinates and external query center coordinates are never shown.</p>")
+	builder.WriteString("<p><strong>Status:</strong> ")
+	builder.WriteString(htmlEscape(snapshot.Status))
+	builder.WriteString(" • live=")
+	builder.WriteString(fmt.Sprintf("%t", snapshot.Live))
+	builder.WriteString(" • ready=")
+	builder.WriteString(fmt.Sprintf("%t", snapshot.Ready))
+	builder.WriteString("</p>")
+	builder.WriteString("<p><strong>Providers:</strong> ")
+	builder.WriteString(htmlEscape(providers))
+	builder.WriteString("</p>")
+	builder.WriteString("<p><strong>Public airport center:</strong> <code>")
+	builder.WriteString(htmlEscape(airport))
+	builder.WriteString("</code>")
+	if radius > 0 {
+		builder.WriteString(fmt.Sprintf(" within %d NM", radius))
+	}
+	builder.WriteString("</p>")
+	builder.WriteString("<p>JSON diagnostics: <a href=\"/healthz\">/healthz</a> • <a href=\"/readyz\">/readyz</a> • <a href=\"/livez\">/livez</a></p>")
+	builder.WriteString("</body></html>")
+	return builder.String()
+}
+
+func htmlEscape(value string) string {
+	replacer := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", "\"", "&quot;")
+	return replacer.Replace(value)
 }

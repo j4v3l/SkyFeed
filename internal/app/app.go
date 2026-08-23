@@ -15,6 +15,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/enrichment/adsbdb"
 	"github.com/j4v3l/SkyFeed/internal/enrichment/adsblol"
 	"github.com/j4v3l/SkyFeed/internal/health"
+	"github.com/j4v3l/SkyFeed/internal/planealert"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/report"
 	"github.com/j4v3l/SkyFeed/internal/rules"
@@ -24,6 +25,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/storage"
 	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
 	"github.com/j4v3l/SkyFeed/internal/telemetry"
+	"github.com/j4v3l/SkyFeed/internal/weather/aviationweather"
 )
 
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
@@ -92,6 +94,28 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		feederMonitor.Restore(fingerprints)
 	}
 	reportAggregator := report.NewAggregator()
+	var planeAlertIndex *planealert.Index
+	interestingMonitor := rules.NewInterestingMonitor(nil)
+	if cfg.PlaneAlert.Enabled && repository != nil {
+		planeAlertURL := cfg.PlaneAlert.URL
+		if planeAlertURL == "" {
+			planeAlertURL = planealert.DefaultCSVURL
+		}
+		planeAlertIndex = planealert.NewIndex(planealert.NewLoader(planeAlertURL, cfg.PlaneAlert.Timeout), repository, cfg.PlaneAlert.Refresh, logger)
+		interestingMonitor = rules.NewInterestingMonitor(planeAlertIndex.Lookup)
+		restoreContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+		seenICAOs, restoreErr := repository.InterestingSeenICAOs(restoreContext, cfg.Discord.GuildID)
+		cancel()
+		if restoreErr != nil {
+			return restoreErr
+		}
+		interestingMonitor.Restore(seenICAOs)
+		healthState.SetComponent("planealert", "healthy", "plane-alert-db interesting aircraft matching enabled")
+	} else if !cfg.PlaneAlert.Enabled {
+		healthState.SetComponent("planealert", "disabled", "interesting aircraft matching disabled")
+	} else {
+		healthState.SetComponent("planealert", "disabled", "database required for interesting aircraft matching")
+	}
 	var lastAircraftFetch atomic.Int64
 	var enrichmentService *enrichment.Service
 	var routeService *enrichment.RouteService
@@ -150,6 +174,22 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		rulesStarted := time.Now()
 		alerts, stateUpdates := ruleEngine.Evaluate(snapshot)
+		if interestingMonitor != nil && planeAlertIndex != nil {
+			for _, alert := range interestingMonitor.Evaluate(cfg.Discord.GuildID, snapshot) {
+				alerts = append(alerts, alert)
+				if persistence != nil {
+					if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteInterestingSeen, Interesting: storage.InterestingSeen{
+						GuildID:     cfg.Discord.GuildID,
+						ICAO:        alert.AircraftICAO,
+						FirstSeenAt: alert.ObservedAt,
+						Callsign:    alert.Callsign,
+						FlightGroup: alert.InterestingGroup,
+					}}); err != nil {
+						logger.Error("interesting seen persistence failed", "component", "storage", "event", "write_drop", "error", err)
+					}
+				}
+			}
+		}
 		metrics.ObserveRules(time.Since(rulesStarted), len(alerts))
 		for _, alert := range alerts {
 			if alert.Priority == domain.AlertEmergency && alert.GuildID == 0 {
@@ -276,6 +316,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if routeService != nil {
 		router.SetRoutes(routeService)
 	}
+	weatherClient, weatherErr := aviationweather.NewClient(2 * time.Second)
+	if weatherErr != nil {
+		return weatherErr
+	}
+	router.SetWeather(weatherClient)
+	healthState.SetComponent("weather", "healthy", "aviationweather.gov METAR/TAF")
 
 	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", Version)
 	services := []service{server.Run, func(serviceContext context.Context) error {
@@ -314,6 +360,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	if routeService != nil {
 		services = append(services, routeService.Run)
 	}
+	if planeAlertIndex != nil {
+		services = append(services, planeAlertIndex.Run)
+	}
 	if cfg.Discord.ApplicationID != 0 {
 		gateway := skydiscord.NewGatewayService(cfg.Discord, router, logger, func(ready bool) {
 			discordReady.Store(ready)
@@ -329,6 +378,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
+		if repository != nil {
+			router.SetDashboardReset(func(resetContext context.Context) error {
+				if err := repository.DeleteMessageBinding(resetContext, cfg.Discord.GuildID, "dashboard"); err != nil {
+					return err
+				}
+				gateway.EnqueueDashboard()
+				return nil
+			})
+		}
 		services = append(services, gateway.Run, func(serviceContext context.Context) error {
 			for {
 				alert, ok := alertQueue.Pop(serviceContext)
@@ -406,6 +464,11 @@ func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 		providers = append(providers, "ADSBDB")
 		attribution = append(attribution, privacy.Attribution{Provider: "ADSBDB", Notice: "Aircraft and route data provided by ADSBDB"})
 	}
+	providers = append(providers, "aviationweather.gov")
+	attribution = append(attribution, privacy.Attribution{Provider: "aviationweather.gov", Notice: aviationweather.Attribution})
+	if cfg.PlaneAlert.Enabled {
+		attribution = append(attribution, privacy.Attribution{Provider: "plane-alert-db", Notice: planealert.Attribution})
+	}
 	return privacy.NewDisclosure(
 		providers,
 		publicAirportCode,
@@ -413,6 +476,8 @@ func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 		[]privacy.Retention{
 			{Category: "raw aircraft snapshots", Period: "memory only"},
 			{Category: "route and airport enrichment", Period: "in-memory TTL cache only"},
+			{Category: "plane-alert-db reference", Period: "SQLite reference table, refreshed periodically"},
+			{Category: "interesting aircraft sightings", Period: "SQLite, one row per ICAO per guild"},
 			{Category: "interaction sessions", Period: "15 minutes"},
 			{Category: "moderation cases", Period: "365 days"},
 		},

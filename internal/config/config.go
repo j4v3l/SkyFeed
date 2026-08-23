@@ -44,6 +44,13 @@ type AdsbLol struct {
 	Timeout time.Duration
 }
 
+type PlaneAlert struct {
+	Enabled bool
+	URL     string
+	Timeout time.Duration
+	Refresh time.Duration
+}
+
 type ADSBDB struct {
 	Enabled      bool
 	RouteEnabled bool
@@ -62,6 +69,7 @@ type Config struct {
 	ADSB              ADSB
 	AirplanesLive     AirplanesLive
 	AdsbLol           AdsbLol
+	PlaneAlert        PlaneAlert
 	ADSBDB            ADSBDB
 	DatabasePath      string
 	DashboardInterval time.Duration
@@ -104,6 +112,11 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		AdsbLol: AdsbLol{
 			Enabled: true,
 			Timeout: 4 * time.Second,
+		},
+		PlaneAlert: PlaneAlert{
+			Enabled: true,
+			Timeout: 30 * time.Second,
+			Refresh: 24 * time.Hour,
 		},
 		DatabasePath:      "/var/lib/skyfeed/skyfeed.db",
 		DashboardInterval: 15 * time.Second,
@@ -188,6 +201,16 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.AdsbLol.Timeout, err = parseDuration(lookup, "SKYFEED_ADSBLOL_TIMEOUT", cfg.AdsbLol.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.PlaneAlert.Enabled, err = parseBool(lookup, "SKYFEED_PLANE_ALERT_ENABLED", cfg.PlaneAlert.Enabled); err != nil {
+		return Config{}, err
+	}
+	cfg.PlaneAlert.URL = env(lookup, "SKYFEED_PLANE_ALERT_URL", "")
+	if cfg.PlaneAlert.Timeout, err = parseDuration(lookup, "SKYFEED_PLANE_ALERT_TIMEOUT", cfg.PlaneAlert.Timeout); err != nil {
+		return Config{}, err
+	}
+	if cfg.PlaneAlert.Refresh, err = parseDuration(lookup, "SKYFEED_PLANE_ALERT_REFRESH", cfg.PlaneAlert.Refresh); err != nil {
 		return Config{}, err
 	}
 

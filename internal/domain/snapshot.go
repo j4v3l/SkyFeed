@@ -54,6 +54,7 @@ type Statistics struct {
 type Snapshot struct {
 	Sequence            uint64
 	ActiveProvider      ProviderID
+	ProviderChangedAt   time.Time
 	Capabilities        Capabilities
 	SourceGeneratedAt   time.Time
 	FetchedAt           time.Time

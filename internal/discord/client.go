@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -291,6 +292,10 @@ func (service *GatewayService) runDashboard(ctx context.Context) {
 	}
 }
 
+func (service *GatewayService) EnqueueDashboard() {
+	service.enqueueDashboard()
+}
+
 func (service *GatewayService) enqueueDashboard() {
 	if err := service.outbound.Enqueue(context.Background(), OutboundJob{Key: "dashboard", Priority: PriorityDashboard, Retryable: true, Run: service.updateDashboard}); err != nil {
 		service.logger.Warn("dashboard refresh coalesced or dropped", "component", "discord", "event", "dashboard_enqueue", "error", err)
@@ -472,6 +477,34 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if client == nil || service.repository == nil {
 		return errors.New("discord alert delivery is not ready")
 	}
+	settings, err := service.repository.GuildSettings(ctx, alert.GuildID)
+	if err == nil {
+		if settings.AlertsPaused && alert.Priority != domain.AlertEmergency {
+			return nil
+		}
+		muted := mutedSquawkSet(settings.MutedSquawks)
+		if len(muted) > 0 {
+			if _, ok := muted[extractAlertSquawk(alert)]; ok && alert.Priority != domain.AlertEmergency {
+				return nil
+			}
+			// Still allow emergencies unless the mute is specifically for that emergency squawk and operator muted it intentionally.
+			if alert.Priority == domain.AlertEmergency {
+				if code := extractAlertSquawk(alert); code != "" {
+					if _, ok := muted[code]; ok {
+						return nil
+					}
+				}
+			}
+		}
+	}
+	if service.router != nil && service.router.routes != nil && alert.RouteSummary == "" {
+		callsign := strings.ToUpper(strings.TrimSpace(alert.Callsign))
+		if callsign != "" {
+			if route, found, routeErr := service.router.routes.CachedRoute(callsign); routeErr == nil && found {
+				alert.RouteSummary = routeSummary(route)
+			}
+		}
+	}
 	bindings, err := service.repository.ChannelBindings(ctx, alert.GuildID)
 	if err != nil {
 		return err
@@ -481,6 +514,9 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if alert.Priority == domain.AlertEmergency {
 		purpose = "emergencies"
 		category = "emergency"
+	} else if alert.Type == domain.RuleInteresting {
+		purpose = "interesting"
+		category = "interesting"
 	} else if alert.Type == domain.RuleFeeder {
 		category = "feeder"
 	}
@@ -516,12 +552,35 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if alert.Priority != domain.AlertEmergency && cooldown > 0 && service.inCooldown(cooldownKey, alert.ObservedAt, cooldown) {
 		return nil
 	}
-	message := render.SafeMessage(render.Alert(alert), false).WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
+	message := render.SafeMessage(render.Alert(alert), false)
+	if alert.Type == domain.RuleInteresting {
+		message = render.SafeMessage(render.InterestingAlert(alert), false)
+	}
+	message = message.WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
 	_, err = client.Rest.CreateMessage(snowflake.ID(destination), message, rest.WithCtx(ctx))
 	if err == nil && alert.Priority != domain.AlertEmergency && cooldown > 0 {
 		service.markDelivered(cooldownKey, alert.ObservedAt)
 	}
 	return err
+}
+
+func extractAlertSquawk(alert domain.Alert) string {
+	if alert.Type == domain.RuleSquawk {
+		parts := strings.Split(alert.ConditionFingerprint, ":")
+		if len(parts) > 0 {
+			code := parts[len(parts)-1]
+			if squawkPattern.MatchString(code) {
+				return code
+			}
+		}
+	}
+	if strings.HasPrefix(alert.ConditionFingerprint, "emergency:") {
+		parts := strings.Split(alert.ConditionFingerprint, ":")
+		if len(parts) >= 2 && squawkPattern.MatchString(parts[1]) {
+			return parts[1]
+		}
+	}
+	return ""
 }
 
 func boundedNonce(value string) string {
@@ -578,10 +637,14 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 		}
 		service.observeInteraction(started)
 		observed = true
-		responder.create = func(message disgocord.MessageCreate, opts ...rest.RequestOpt) error {
-			_, err := event.Client().Rest.UpdateInteractionResponse(event.ApplicationID(), event.Token(), messageUpdate(message), opts...)
+		updateResponse := func(update disgocord.MessageUpdate, opts ...rest.RequestOpt) error {
+			_, err := event.Client().Rest.UpdateInteractionResponse(event.ApplicationID(), event.Token(), update, opts...)
 			return err
 		}
+		responder.create = func(message disgocord.MessageCreate, opts ...rest.RequestOpt) error {
+			return updateResponse(messageUpdate(message), opts...)
+		}
+		responder.update = updateResponse
 	}
 	if err := service.router.HandleCommand(request, responder); err != nil {
 		service.logInteractionError("command", data.CommandName(), err)

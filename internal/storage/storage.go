@@ -8,11 +8,13 @@ import (
 )
 
 type GuildSettings struct {
-	GuildID   uint64
-	Units     string
-	Timezone  string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	GuildID      uint64
+	Units        string
+	Timezone     string
+	AlertsPaused bool
+	MutedSquawks string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type ChannelBinding struct {
@@ -98,6 +100,36 @@ type ReportSummary struct {
 	Emergencies    int64
 	MaximumRangeNM float64
 	DistinctICAOs  int64
+	PeakHour       time.Time
+	PeakAircraft   int64
+}
+
+type PlaneAlertReference struct {
+	ICAO         string
+	Registration string
+	Operator     string
+	AircraftType string
+	ICAOType     string
+	FlightGroup  string
+	Tag1         string
+	Tag2         string
+	Tag3         string
+	Category     string
+	Link         string
+	ImageLink1   string
+	ImageLink2   string
+	ImageLink3   string
+	ImageLink4   string
+	CommitHash   string
+	UpdatedAt    time.Time
+}
+
+type InterestingSeen struct {
+	GuildID     uint64
+	ICAO        string
+	FirstSeenAt time.Time
+	Callsign    string
+	FlightGroup string
 }
 
 type MessageBinding struct {
@@ -136,6 +168,13 @@ type Repository interface {
 	ReportSummary(context.Context, uint64, time.Time, time.Time) (ReportSummary, error)
 	UpsertMessageBinding(context.Context, MessageBinding) error
 	MessageBinding(context.Context, uint64, string) (MessageBinding, bool, error)
+	DeleteMessageBinding(context.Context, uint64, string) error
+	PlaneAlertReferenceCount(context.Context) (int, error)
+	PlaneAlertCommitHash(context.Context) (string, error)
+	ReplacePlaneAlertReference(context.Context, []PlaneAlertReference, string) error
+	PlaneAlertReferences(context.Context) ([]PlaneAlertReference, error)
+	InterestingSeenICAOs(context.Context, uint64) ([]string, error)
+	UpsertInterestingSeen(context.Context, InterestingSeen) error
 	CreateModerationCase(context.Context, ModerationCase) (ModerationCase, error)
 	CompleteModerationCase(context.Context, int64, uint64, string, string, string, time.Time) error
 	ModerationCase(context.Context, int64, uint64) (ModerationCase, error)
@@ -152,13 +191,15 @@ const (
 	WriteAlertState WriteKind = iota
 	WriteFeederEvent
 	WriteReportRollup
+	WriteInterestingSeen
 )
 
 type WriteEvent struct {
-	Kind       WriteKind
-	AlertState domain.AlertState
-	Feeder     FeederEvent
-	Rollup     ReportRollup
+	Kind        WriteKind
+	AlertState  domain.AlertState
+	Feeder      FeederEvent
+	Rollup      ReportRollup
+	Interesting InterestingSeen
 }
 
 type BatchSink interface {

@@ -7,14 +7,14 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 5
+const CommandSchemaVersion = 7
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
 // synchronization can remove the stale remote command without touching names
 // owned by another application feature.
 var ownedCommandNames = map[string]struct{}{
-	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "top": {}, "privacy": {},
+	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
 	"watch": {}, "alerts": {}, "reports": {}, "feeder": {}, "settings": {}, "help": {},
 	"moderation": {},
 }
@@ -62,6 +62,19 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			Name: "squawk", Description: "List visible aircraft matching a transponder code",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+			},
+		},
+		disgocord.SlashCommandCreate{
+			Name: "emergency", Description: "Browse currently visible emergency squawks and flags",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft per page", MinValue: &minLimit, MaxValue: &maxLimit},
+			},
+		},
+		disgocord.SlashCommandCreate{
+			Name: "traffic", Description: "Browse aircraft near the configured public airport center",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionFloat{Name: "radius-nm", Description: "Maximum distance from the public airport area in nautical miles", MinValue: &minRadius, MaxValue: &maxRadius},
+				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft per page", MinValue: &minLimit, MaxValue: &maxLimit},
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -146,7 +159,7 @@ func alertsOptions() []disgocord.ApplicationCommandOption {
 		disgocord.ApplicationCommandOptionSubCommand{Name: "view", Description: "View alert categories and cooldowns"},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "configure", Description: "Configure an alert category", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "category", Description: "Alert category", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"},
+				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"}, {Name: "Interesting aircraft", Value: "interesting"},
 			}},
 			disgocord.ApplicationCommandOptionBool{Name: "enabled", Description: "Whether this category is enabled", Required: true},
 			disgocord.ApplicationCommandOptionInt{Name: "cooldown-minutes", Description: "Minimum time between duplicate alerts", MinValue: intPtr(0), MaxValue: intPtr(1440)},
@@ -176,7 +189,7 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 	return []disgocord.ApplicationCommandOption{
 		disgocord.ApplicationCommandOptionSubCommand{Name: "channels", Description: "Configure a durable channel binding", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "purpose", Description: "Channel purpose", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Live dashboard", Value: "live"}, {Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"}, {Name: "Moderation log", Value: "moderation"},
+				{Name: "Live dashboard", Value: "live"}, {Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"}, {Name: "Moderation log", Value: "moderation"},
 			}},
 			disgocord.ApplicationCommandOptionChannel{Name: "channel", Description: "Discord channel", Required: true},
 		}},
@@ -192,9 +205,18 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "test", Description: "Test a configured destination", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "purpose", Description: "Destination purpose", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"},
+				{Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"},
 			}},
 		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "pause-alerts", Description: "Temporarily pause all non-emergency alert delivery"},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "resume-alerts", Description: "Resume alert delivery after a pause"},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "mute-squawk", Description: "Mute alert delivery for a squawk code", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "unmute-squawk", Description: "Remove a muted squawk code", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "recreate-dashboard", Description: "Clear the live dashboard binding so SkyFeed posts a fresh message"},
 	}
 }
 

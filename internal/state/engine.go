@@ -22,13 +22,14 @@ type Engine struct {
 	now     func() time.Time
 	publish PublishFunc
 
-	sequence     uint64
-	batch        domain.AircraftBatch
-	fetched      time.Time
-	receiver     domain.Receiver
-	stats        domain.Statistics
-	health       domain.Health
-	capabilities domain.Capabilities
+	sequence          uint64
+	batch             domain.AircraftBatch
+	fetched           time.Time
+	receiver          domain.Receiver
+	stats             domain.Statistics
+	health            domain.Health
+	capabilities      domain.Capabilities
+	providerChangedAt time.Time
 }
 
 func NewEngine(publish PublishFunc) *Engine {
@@ -167,9 +168,21 @@ func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], in
 	if provider == domain.ProviderUnknown || provider == "" {
 		provider = engine.health.Aircraft.Provider
 	}
+	previous := engine.batch.Provider
 	engine.batch.Provider = provider
 	for index := range engine.batch.Aircraft {
 		engine.batch.Aircraft[index].Provider = provider
+	}
+	if previous.Known() && previous != provider {
+		engine.providerChangedAt = frame.FetchedAt
+		if engine.providerChangedAt.IsZero() {
+			engine.providerChangedAt = engine.now()
+		}
+	} else if engine.providerChangedAt.IsZero() && provider.Known() {
+		engine.providerChangedAt = frame.FetchedAt
+		if engine.providerChangedAt.IsZero() {
+			engine.providerChangedAt = engine.now()
+		}
 	}
 	engine.fetched = frame.FetchedAt
 	engine.health.Aircraft = successHealth(engine.health.Aircraft, frame.FetchedAt, frame.Value.GeneratedAt, interval)
@@ -263,6 +276,7 @@ func (engine *Engine) buildLocked() *domain.Snapshot {
 	return &domain.Snapshot{
 		Sequence:            engine.sequence,
 		ActiveProvider:      engine.batch.Provider,
+		ProviderChangedAt:   engine.providerChangedAt,
 		Capabilities:        engine.capabilities,
 		SourceGeneratedAt:   engine.batch.GeneratedAt,
 		FetchedAt:           engine.fetched,
