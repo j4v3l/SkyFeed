@@ -69,7 +69,7 @@ func (client *Client) SetObserver(observer func(Observation)) { client.observer 
 
 func (client *Client) FetchAircraft(ctx context.Context) (source.Frame[domain.AircraftBatch], error) {
 	var response aircraftResponse
-	fetchedAt, err := fetchJSON(ctx, client, aircraftPath, maxAircraftBytes, &response)
+	fetchedAt, err := fetchJSON(ctx, client, aircraftPath, maxAircraftBytes, &response, validateAircraftResponse)
 	if err != nil {
 		return source.Frame[domain.AircraftBatch]{}, err
 	}
@@ -78,7 +78,7 @@ func (client *Client) FetchAircraft(ctx context.Context) (source.Frame[domain.Ai
 
 func (client *Client) FetchReceiver(ctx context.Context) (source.Frame[domain.Receiver], error) {
 	var response receiverResponse
-	fetchedAt, err := fetchJSON(ctx, client, receiverPath, maxReceiverBytes, &response)
+	fetchedAt, err := fetchJSON(ctx, client, receiverPath, maxReceiverBytes, &response, validateReceiverResponse)
 	if err != nil {
 		return source.Frame[domain.Receiver]{}, err
 	}
@@ -87,14 +87,14 @@ func (client *Client) FetchReceiver(ctx context.Context) (source.Frame[domain.Re
 
 func (client *Client) FetchStats(ctx context.Context) (source.Frame[domain.Statistics], error) {
 	var response statsResponse
-	fetchedAt, err := fetchJSON(ctx, client, statsPath, maxStatsBytes, &response)
+	fetchedAt, err := fetchJSON(ctx, client, statsPath, maxStatsBytes, &response, validateStatsResponse)
 	if err != nil {
 		return source.Frame[domain.Statistics]{}, err
 	}
 	return source.Frame[domain.Statistics]{FetchedAt: fetchedAt, Value: normalizeStats(response, fetchedAt)}, nil
 }
 
-func fetchJSON[T any](ctx context.Context, client *Client, endpoint string, maximum int64, output *T) (time.Time, error) {
+func fetchJSON[T any](ctx context.Context, client *Client, endpoint string, maximum int64, output *T, validate func(T) error) (time.Time, error) {
 	started := time.Now()
 	observation := Observation{Source: sourceName(endpoint)}
 	defer func() {
@@ -142,6 +142,11 @@ func fetchJSON[T any](ctx context.Context, client *Client, endpoint string, maxi
 	}
 	if err := json.Unmarshal(data, output); err != nil {
 		return time.Time{}, &source.FetchError{Endpoint: endpoint, Class: source.ErrorPayload, Err: fmt.Errorf("decode JSON: %w", err)}
+	}
+	if validate != nil {
+		if err := validate(*output); err != nil {
+			return time.Time{}, &source.FetchError{Endpoint: endpoint, Class: source.ErrorPayload, Err: fmt.Errorf("validate JSON: %w", err)}
+		}
 	}
 	observation.Success = true
 	return fetchedAt, nil

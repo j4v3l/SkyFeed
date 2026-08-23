@@ -25,6 +25,31 @@ func TestHealthEndpointsTrackReadiness(t *testing.T) {
 	assertStatus(t, server.Handler(), "/healthz", http.StatusOK)
 }
 
+func TestHealthEndpointReflectsComponentFailures(t *testing.T) {
+	state := NewState(time.Now())
+	state.SetReady(true)
+	state.SetComponent("aircraft_source", "healthy", "")
+	state.SetComponent("receiver_source", "healthy", "")
+	state.SetComponent("stats_source", "degraded", "timeout")
+	server := NewServer("127.0.0.1:0", state, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	assertStatus(t, server.Handler(), "/readyz", http.StatusOK)
+	assertStatus(t, server.Handler(), "/healthz", http.StatusServiceUnavailable)
+
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if !strings.Contains(response.Body.String(), `"status":"degraded"`) {
+		t.Fatalf("health body = %q", response.Body.String())
+	}
+
+	state.SetComponent("stats_source", "offline", "repeated timeout")
+	response = httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if !strings.Contains(response.Body.String(), `"status":"offline"`) {
+		t.Fatalf("health body = %q", response.Body.String())
+	}
+}
+
 func TestCheck(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/healthz" {

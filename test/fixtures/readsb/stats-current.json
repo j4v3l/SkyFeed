@@ -1,0 +1,25 @@
+{
+  "now": 1787414405.0,
+  "aircraft_with_pos": 4,
+  "aircraft_without_pos": 2,
+  "aircraft_count_by_type": {
+    "adsb_icao": 4,
+    "mode_s": 2
+  },
+  "last1min": {
+    "start": 1787414340.0,
+    "end": 1787414400.0,
+    "messages": 1800,
+    "max_distance": 203720.0,
+    "tracks": {
+      "all": 7,
+      "single_message": 1
+    }
+  },
+  "last5min": {
+    "start": 1787414100.0,
+    "end": 1787414400.0,
+    "messages": 8700,
+    "max_distance": 222240.0
+  }
+}

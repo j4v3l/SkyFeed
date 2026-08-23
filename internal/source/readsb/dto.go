@@ -76,14 +76,19 @@ type receiverResponse struct {
 }
 
 type statsResponse struct {
-	Latest statsPeriod `json:"latest"`
+	Now                     float64     `json:"now"`
+	AircraftWithPosition    *int        `json:"aircraft_with_pos"`
+	AircraftWithoutPosition *int        `json:"aircraft_without_pos"`
+	Latest                  statsPeriod `json:"latest"`
+	Last1Min                statsPeriod `json:"last1min"`
 }
 
 type statsPeriod struct {
-	Start               float64 `json:"start"`
-	End                 float64 `json:"end"`
-	Messages            uint64  `json:"messages"`
-	MaxDistanceInMetres float64 `json:"max_distance_in_metres"`
+	Start               float64  `json:"start"`
+	End                 float64  `json:"end"`
+	Messages            uint64   `json:"messages"`
+	MaxDistance         *float64 `json:"max_distance"`
+	MaxDistanceInMetres *float64 `json:"max_distance_in_metres"`
 	Tracks              struct {
 		All           int `json:"all"`
 		SingleMessage int `json:"single_message"`

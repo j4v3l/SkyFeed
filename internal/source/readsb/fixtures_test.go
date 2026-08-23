@@ -43,6 +43,24 @@ func TestNormalizeSyntheticFixtures(t *testing.T) {
 	}
 }
 
+func TestNormalizeCurrentStatsFixture(t *testing.T) {
+	var payload statsResponse
+	decodeFixture(t, "stats-current.json", &payload)
+	if err := validateStatsResponse(payload); err != nil {
+		t.Fatalf("validate current stats: %v", err)
+	}
+	statistics := normalizeStats(payload, time.Unix(1787414405, 0))
+	if statistics.Messages != 1800 || statistics.MessageRate != 30 || statistics.MaxRangeNM != 110 {
+		t.Fatalf("unexpected current statistics: %#v", statistics)
+	}
+	if statistics.TrackedAircraft != 6 || statistics.SingleMessageOnly != 1 {
+		t.Fatalf("unexpected current track counts: %#v", statistics)
+	}
+	if got := statistics.WindowEnd.Unix(); got != 1787414400 {
+		t.Fatalf("window end = %d", got)
+	}
+}
+
 func TestClientUsesOnlyFixedPaths(t *testing.T) {
 	fixtures := map[string]string{
 		"/data/aircraft.json": "aircraft.json",
@@ -101,6 +119,64 @@ func TestClientRejectsEmptyAndInvalidJSON(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = NewClient(baseURL, time.Second).FetchAircraft(context.Background())
+			if err == nil || source.ClassifyError(err) != source.ErrorPayload {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+}
+
+func TestClientRejectsSemanticallyInvalidJSON(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		body     string
+		fetch    func(*Client) error
+	}{
+		{
+			name:     "aircraft missing array",
+			endpoint: "/data/aircraft.json",
+			body:     `{"now":1787414400,"messages":1}`,
+			fetch: func(client *Client) error {
+				_, err := client.FetchAircraft(context.Background())
+				return err
+			},
+		},
+		{
+			name:     "receiver missing refresh",
+			endpoint: "/data/receiver.json",
+			body:     `{"version":"synthetic"}`,
+			fetch: func(client *Client) error {
+				_, err := client.FetchReceiver(context.Background())
+				return err
+			},
+		},
+		{
+			name:     "stats missing period",
+			endpoint: "/data/stats.json",
+			body:     `{}`,
+			fetch: func(client *Client) error {
+				_, err := client.FetchStats(context.Background())
+				return err
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path != test.endpoint {
+					t.Errorf("path = %q, want %q", request.URL.Path, test.endpoint)
+					http.NotFound(writer, request)
+					return
+				}
+				_, _ = writer.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			baseURL, err := url.Parse(server.URL + "/data")
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = test.fetch(NewClient(baseURL, time.Second))
 			if err == nil || source.ClassifyError(err) != source.ErrorPayload {
 				t.Fatalf("error = %v", err)
 			}

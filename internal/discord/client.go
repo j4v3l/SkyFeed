@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -237,7 +238,7 @@ func (service *GatewayService) deliverModerationLogs(now time.Time) {
 			continue
 		}
 		message := render.SafeMessage(render.ModerationCase(pending.Case), false).
-			WithNonce(fmt.Sprintf("skyfeed-moderation-%d", pending.Case.ID)).WithEnforceNonce(true)
+			WithNonce(boundedNonce(fmt.Sprintf("skyfeed-moderation-%d", pending.Case.ID))).WithEnforceNonce(true)
 		if _, err := client.Rest.CreateMessage(snowflake.ID(channelID), message, rest.WithCtx(ctx)); err != nil {
 			service.deferModerationLog(ctx, pending, err, now.Add(moderationLogBackoff(pending.Attempts)))
 			continue
@@ -357,21 +358,33 @@ func reportPeriodStart(cadence string, now time.Time) time.Time {
 	}
 }
 
+func completedReportPeriod(cadence string, now time.Time) (time.Time, time.Time) {
+	to := reportPeriodStart(cadence, now)
+	switch cadence {
+	case "daily":
+		return to.AddDate(0, 0, -1), to
+	case "weekly":
+		return to.AddDate(0, 0, -7), to
+	default:
+		return time.Time{}, time.Time{}
+	}
+}
+
 func (service *GatewayService) sendScheduledReport(ctx context.Context, schedule storage.ReportSchedule, now time.Time) error {
 	client := service.client.Load()
 	if client == nil {
 		return errors.New("discord report delivery is not ready")
 	}
-	period := 24 * time.Hour
-	if schedule.Cadence == "weekly" {
-		period = 7 * 24 * time.Hour
+	from, to := completedReportPeriod(schedule.Cadence, now)
+	if from.IsZero() || to.IsZero() {
+		return fmt.Errorf("unsupported report cadence %q", schedule.Cadence)
 	}
-	summary, err := service.repository.ReportSummary(ctx, schedule.GuildID, now.Add(-period), now)
+	summary, err := service.repository.ReportSummary(ctx, schedule.GuildID, from, to)
 	if err != nil {
 		return err
 	}
 	message := render.SafeMessage(render.Report(summary), false).
-		WithNonce(fmt.Sprintf("skyfeed-report-%d-%d", schedule.ID, reportPeriodStart(schedule.Cadence, now).Unix())).
+		WithNonce(boundedNonce(fmt.Sprintf("skyfeed-report-%d-%d", schedule.ID, reportPeriodStart(schedule.Cadence, now).Unix()))).
 		WithEnforceNonce(true)
 	if _, err := client.Rest.CreateMessage(snowflake.ID(schedule.Destination), message, rest.WithCtx(ctx)); err != nil {
 		return err
@@ -430,14 +443,28 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 	}
 	if found && binding.ChannelID == channel {
 		_, err = client.Rest.UpdateMessage(snowflake.ID(channel), snowflake.ID(binding.MessageID), messageUpdate(message), rest.WithCtx(ctx))
-		return err
+		if err == nil {
+			return nil
+		}
+		if !isUnknownDiscordMessage(err) {
+			return err
+		}
 	}
-	message = message.WithNonce(fmt.Sprintf("skyfeed-dashboard-%d", guildID)).WithEnforceNonce(true)
+	nonceKey := fmt.Sprintf("skyfeed-dashboard-%d", guildID)
+	if found {
+		nonceKey = fmt.Sprintf("%s-%d", nonceKey, binding.MessageID)
+	}
+	message = message.WithNonce(boundedNonce(nonceKey)).WithEnforceNonce(true)
 	created, err := client.Rest.CreateMessage(snowflake.ID(channel), message, rest.WithCtx(ctx))
 	if err != nil {
 		return err
 	}
 	return service.repository.UpsertMessageBinding(ctx, storage.MessageBinding{GuildID: guildID, Purpose: "dashboard", ChannelID: channel, MessageID: uint64(created.ID)})
+}
+
+func isUnknownDiscordMessage(err error) bool {
+	var discordError *rest.Error
+	return errors.As(err, &discordError) && discordError.Code == rest.JSONErrorCodeUnknownMessage
 }
 
 func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert) error {
@@ -489,12 +516,17 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if alert.Priority != domain.AlertEmergency && cooldown > 0 && service.inCooldown(cooldownKey, alert.ObservedAt, cooldown) {
 		return nil
 	}
-	message := render.SafeMessage(render.Alert(alert), false).WithNonce(alert.ID).WithEnforceNonce(true)
+	message := render.SafeMessage(render.Alert(alert), false).WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
 	_, err = client.Rest.CreateMessage(snowflake.ID(destination), message, rest.WithCtx(ctx))
 	if err == nil && alert.Priority != domain.AlertEmergency && cooldown > 0 {
 		service.markDelivered(cooldownKey, alert.ObservedAt)
 	}
 	return err
+}
+
+func boundedNonce(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("%x", digest[:12])
 }
 
 func (service *GatewayService) inCooldown(key string, now time.Time, cooldown time.Duration) bool {

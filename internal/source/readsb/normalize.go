@@ -1,6 +1,8 @@
 package readsb
 
 import (
+	"errors"
+	"math"
 	"strings"
 	"time"
 
@@ -8,6 +10,16 @@ import (
 )
 
 const metresPerNauticalMile = 1852.0
+
+func validateAircraftResponse(response aircraftResponse) error {
+	if !validUnixSeconds(response.Now) {
+		return errors.New("aircraft payload has no valid generation time")
+	}
+	if response.Aircraft == nil {
+		return errors.New("aircraft payload is missing the aircraft array")
+	}
+	return nil
+}
 
 func normalizeAircraft(response aircraftResponse) domain.AircraftBatch {
 	batch := domain.AircraftBatch{
@@ -69,6 +81,22 @@ func normalizeAircraft(response aircraftResponse) domain.AircraftBatch {
 	return batch
 }
 
+func validateReceiverResponse(response receiverResponse) error {
+	if strings.TrimSpace(response.Version) == "" {
+		return errors.New("receiver payload is missing the version")
+	}
+	if response.Refresh <= 0 {
+		return errors.New("receiver payload has no valid refresh interval")
+	}
+	if (response.Latitude == nil) != (response.Longitude == nil) {
+		return errors.New("receiver payload has an incomplete position")
+	}
+	if response.Latitude != nil && !validPosition(*response.Latitude, *response.Longitude) {
+		return errors.New("receiver payload has an invalid position")
+	}
+	return nil
+}
+
 func normalizeReceiver(response receiverResponse, fetchedAt time.Time) domain.Receiver {
 	receiver := domain.Receiver{
 		Version:     strings.TrimSpace(response.Version),
@@ -88,8 +116,31 @@ func validPosition(latitude, longitude float64) bool {
 	return latitude >= -90 && latitude <= 90 && longitude >= -180 && longitude <= 180
 }
 
+func validateStatsResponse(response statsResponse) error {
+	period, ok := selectStatsPeriod(response)
+	if !ok {
+		return errors.New("stats payload has no valid latest or last1min period")
+	}
+	if distance := statsDistanceMetres(period); math.IsNaN(distance) || math.IsInf(distance, 0) || distance < 0 {
+		return errors.New("stats payload has an invalid maximum distance")
+	}
+	if period.Tracks.All < 0 || period.Tracks.SingleMessage < 0 {
+		return errors.New("stats payload has a negative track count")
+	}
+	if response.AircraftWithPosition != nil && *response.AircraftWithPosition < 0 {
+		return errors.New("stats payload has a negative positioned-aircraft count")
+	}
+	if response.AircraftWithoutPosition != nil && *response.AircraftWithoutPosition < 0 {
+		return errors.New("stats payload has a negative unpositioned-aircraft count")
+	}
+	return nil
+}
+
 func normalizeStats(response statsResponse, fetchedAt time.Time) domain.Statistics {
-	period := response.Latest
+	period, ok := selectStatsPeriod(response)
+	if !ok {
+		return domain.Statistics{FetchedAt: fetchedAt}
+	}
 	start := unixFloat(period.Start)
 	end := unixFloat(period.End)
 	duration := end.Sub(start).Seconds()
@@ -97,16 +148,54 @@ func normalizeStats(response statsResponse, fetchedAt time.Time) domain.Statisti
 	if duration > 0 {
 		rate = float64(period.Messages) / duration
 	}
+	trackedAircraft := period.Tracks.All
+	if response.AircraftWithPosition != nil || response.AircraftWithoutPosition != nil {
+		trackedAircraft = 0
+		if response.AircraftWithPosition != nil {
+			trackedAircraft += *response.AircraftWithPosition
+		}
+		if response.AircraftWithoutPosition != nil {
+			trackedAircraft += *response.AircraftWithoutPosition
+		}
+	}
 	return domain.Statistics{
 		WindowStart:       start,
 		WindowEnd:         end,
 		Messages:          period.Messages,
 		MessageRate:       rate,
-		MaxRangeNM:        period.MaxDistanceInMetres / metresPerNauticalMile,
-		TrackedAircraft:   period.Tracks.All,
+		MaxRangeNM:        statsDistanceMetres(period) / metresPerNauticalMile,
+		TrackedAircraft:   trackedAircraft,
 		SingleMessageOnly: period.Tracks.SingleMessage,
 		FetchedAt:         fetchedAt,
 	}
+}
+
+func selectStatsPeriod(response statsResponse) (statsPeriod, bool) {
+	if validStatsPeriod(response.Latest) {
+		return response.Latest, true
+	}
+	if validStatsPeriod(response.Last1Min) {
+		return response.Last1Min, true
+	}
+	return statsPeriod{}, false
+}
+
+func validStatsPeriod(period statsPeriod) bool {
+	return validUnixSeconds(period.Start) && validUnixSeconds(period.End) && period.End > period.Start
+}
+
+func statsDistanceMetres(period statsPeriod) float64 {
+	if period.MaxDistance != nil {
+		return *period.MaxDistance
+	}
+	if period.MaxDistanceInMetres != nil {
+		return *period.MaxDistanceInMetres
+	}
+	return 0
+}
+
+func validUnixSeconds(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func unixFloat(value float64) time.Time {

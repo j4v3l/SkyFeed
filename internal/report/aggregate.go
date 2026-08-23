@@ -15,10 +15,9 @@ type Aggregator struct {
 	mu           sync.Mutex
 	lastMessages uint64
 	hasMessages  bool
-	emergencies  map[string]struct{}
 }
 
-func NewAggregator() *Aggregator { return &Aggregator{emergencies: make(map[string]struct{})} }
+func NewAggregator() *Aggregator { return &Aggregator{} }
 
 func (aggregator *Aggregator) Observe(guildID uint64, snapshot *domain.Snapshot) storage.ReportRollup {
 	aggregator.mu.Lock()
@@ -32,19 +31,14 @@ func (aggregator *Aggregator) Observe(guildID uint64, snapshot *domain.Snapshot)
 		rollup.Messages = int64(snapshot.ReceiverMessages - aggregator.lastMessages)
 	}
 	aggregator.lastMessages, aggregator.hasMessages = snapshot.ReceiverMessages, true
-	nextEmergencies := make(map[string]struct{})
 	for _, aircraft := range snapshot.Aircraft {
 		if aircraft.HasDistance && aircraft.DistanceNM > rollup.MaximumRange {
 			rollup.MaximumRange = aircraft.DistanceNM
 		}
 		if isEmergency(aircraft) {
-			nextEmergencies[aircraft.ICAO] = struct{}{}
-			if _, active := aggregator.emergencies[aircraft.ICAO]; !active {
-				rollup.Emergencies++
-			}
+			rollup.Emergencies++
 		}
 	}
-	aggregator.emergencies = nextEmergencies
 	return rollup
 }
 

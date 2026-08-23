@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/config"
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 func TestRunStopsAfterCancellation(t *testing.T) {
@@ -35,5 +36,23 @@ func TestRunStopsAfterCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("application did not stop after cancellation")
+	}
+}
+
+func TestSourcesInitializedRequiresSuccessfulFetches(t *testing.T) {
+	now := time.Unix(1_787_414_400, 0)
+	health := domain.Health{
+		Aircraft: domain.SourceHealth{Status: domain.HealthDegraded},
+		Receiver: domain.SourceHealth{Status: domain.HealthDegraded},
+		Stats:    domain.SourceHealth{Status: domain.HealthDegraded},
+	}
+	if sourcesInitialized(health) {
+		t.Fatal("startup failures incorrectly initialized the sources")
+	}
+	health.Aircraft.LastSuccess = now
+	health.Receiver.LastSuccess = now
+	health.Stats.LastSuccess = now
+	if !sourcesInitialized(health) {
+		t.Fatal("successful source observations did not initialize the sources")
 	}
 }

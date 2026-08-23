@@ -30,20 +30,31 @@ func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enri
 		return base("Status", Muted, now).WithDescription("⚪ **UNKNOWN** — waiting for the first receiver payload.")
 	}
 	status, color := overallHealth(snapshot.Health)
-	age := now.Sub(snapshot.FetchedAt)
-	if age < 0 {
-		age = 0
+	description := fmt.Sprintf("%s **%s** — waiting for the first aircraft payload.", badge(status), strings.ToUpper(string(status)))
+	if !snapshot.FetchedAt.IsZero() {
+		age := now.Sub(snapshot.FetchedAt)
+		if age < 0 {
+			age = 0
+		}
+		description = fmt.Sprintf("%s **%s** — live state refreshed %s ago.", badge(status), strings.ToUpper(string(status)), conciseDuration(age))
 	}
-	description := fmt.Sprintf("%s **%s** — live state refreshed %s ago.", badge(status), strings.ToUpper(string(status)), conciseDuration(age))
 	embed := base("Status", color, snapshot.PublishedAt).WithDescription(description)
 	enrichmentStatus := "Disabled"
 	if enrichmentEnabled {
 		enrichmentStatus = "Enabled • presentation-only cache"
 	}
+	tracked, messageRate, maximumRange := "Unavailable", "Unavailable", "Unavailable"
+	if !snapshot.Health.Aircraft.LastSuccess.IsZero() {
+		tracked = fmt.Sprintf("%d aircraft", len(snapshot.Aircraft))
+	}
+	if !snapshot.Health.Stats.LastSuccess.IsZero() {
+		messageRate = fmt.Sprintf("%.1f msg/s", snapshot.Statistics.MessageRate)
+		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
+	}
 	embed.Fields = []discord.EmbedField{
-		{Name: "Tracked", Value: fmt.Sprintf("%d aircraft", len(snapshot.Aircraft)), Inline: ptr(true)},
-		{Name: "Message rate", Value: fmt.Sprintf("%.1f msg/s", snapshot.Statistics.MessageRate), Inline: ptr(true)},
-		{Name: "Maximum range", Value: fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM), Inline: ptr(true)},
+		{Name: "Tracked", Value: tracked, Inline: ptr(true)},
+		{Name: "Recent message rate", Value: messageRate, Inline: ptr(true)},
+		{Name: "Recent maximum range", Value: maximumRange, Inline: ptr(true)},
 		{Name: "Aircraft source", Value: sourceLabel(snapshot.Health.Aircraft), Inline: ptr(true)},
 		{Name: "Receiver source", Value: sourceLabel(snapshot.Health.Receiver), Inline: ptr(true)},
 		{Name: "Statistics source", Value: sourceLabel(snapshot.Health.Stats), Inline: ptr(true)},
@@ -61,25 +72,36 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 	embed := base("Feeder", color, snapshot.PublishedAt).
 		WithDescription(fmt.Sprintf("%s **%s** — independent readsb source diagnostics.", badge(status), strings.ToUpper(string(status))))
 	positionState := "Unavailable"
-	if snapshot.Receiver.HasPosition {
+	receiverAvailable := !snapshot.Health.Receiver.LastSuccess.IsZero()
+	statsAvailable := !snapshot.Health.Stats.LastSuccess.IsZero()
+	if receiverAvailable && snapshot.Receiver.HasPosition {
 		positionState = "Configured"
 	}
 	refresh := "Unavailable"
-	if snapshot.Receiver.Refresh > 0 {
+	if receiverAvailable && snapshot.Receiver.Refresh > 0 {
 		refresh = conciseDuration(snapshot.Receiver.Refresh)
 	}
 	window := "Unavailable"
-	if !snapshot.Statistics.WindowStart.IsZero() && !snapshot.Statistics.WindowEnd.IsZero() {
+	if statsAvailable && !snapshot.Statistics.WindowStart.IsZero() && !snapshot.Statistics.WindowEnd.IsZero() {
 		window = fmt.Sprintf("<t:%d:T>–<t:%d:T>", snapshot.Statistics.WindowStart.Unix(), snapshot.Statistics.WindowEnd.Unix())
 	}
+	receiverVersion, messages, tracks, maximumRange := "Version unavailable", "Unavailable", "Unavailable", "Unavailable"
+	if receiverAvailable {
+		receiverVersion = valueOr(snapshot.Receiver.Version, "Version unavailable")
+	}
+	if statsAvailable {
+		messages = fmt.Sprintf("%d", snapshot.Statistics.Messages)
+		tracks = fmt.Sprintf("%d", snapshot.Statistics.TrackedAircraft)
+		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
+	}
 	embed.Fields = []discord.EmbedField{
-		{Name: "Receiver", Value: valueOr(snapshot.Receiver.Version, "Version unavailable"), Inline: ptr(true)},
+		{Name: "Receiver", Value: receiverVersion, Inline: ptr(true)},
 		{Name: "Refresh", Value: refresh, Inline: ptr(true)},
 		{Name: "Receiver position", Value: positionState, Inline: ptr(true)},
 		{Name: "Statistics window", Value: window, Inline: ptr(true)},
-		{Name: "Messages", Value: fmt.Sprintf("%d", snapshot.Statistics.Messages), Inline: ptr(true)},
-		{Name: "Tracked in stats", Value: fmt.Sprintf("%d", snapshot.Statistics.TrackedAircraft), Inline: ptr(true)},
-		{Name: "Maximum range", Value: fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM), Inline: ptr(true)},
+		{Name: "Messages in window", Value: messages, Inline: ptr(true)},
+		{Name: "Tracks reported", Value: tracks, Inline: ptr(true)},
+		{Name: "Max range in window", Value: maximumRange, Inline: ptr(true)},
 		{Name: "Aircraft JSON", Value: sourceLabel(snapshot.Health.Aircraft), Inline: ptr(true)},
 		{Name: "Receiver JSON", Value: sourceLabel(snapshot.Health.Receiver), Inline: ptr(true)},
 		{Name: "Stats JSON", Value: sourceLabel(snapshot.Health.Stats), Inline: ptr(true)},
@@ -229,9 +251,9 @@ func Report(summary storage.ReportSummary) discord.Embed {
 		WithDescription(fmt.Sprintf("<t:%d:f> to <t:%d:f>", summary.From.Unix(), summary.To.Unix()))
 	embed.Fields = []discord.EmbedField{
 		{Name: "Aircraft observations", Value: fmt.Sprintf("%d", summary.AircraftSeen), Inline: ptr(true)},
-		{Name: "Distinct aircraft", Value: fmt.Sprintf("%d", summary.DistinctICAOs), Inline: ptr(true)},
+		{Name: "Peak tracked aircraft", Value: fmt.Sprintf("%d", summary.DistinctICAOs), Inline: ptr(true)},
 		{Name: "Messages", Value: fmt.Sprintf("%d", summary.Messages), Inline: ptr(true)},
-		{Name: "Emergencies", Value: fmt.Sprintf("%d", summary.Emergencies), Inline: ptr(true)},
+		{Name: "Emergency observations", Value: fmt.Sprintf("%d", summary.Emergencies), Inline: ptr(true)},
 		{Name: "Maximum range", Value: fmt.Sprintf("%.1f NM", summary.MaximumRangeNM), Inline: ptr(true)},
 	}
 	return BoundEmbed(embed)

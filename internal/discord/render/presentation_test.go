@@ -102,6 +102,70 @@ func TestFeederShowsUnknownRefresh(t *testing.T) {
 	}
 }
 
+func TestInitialSnapshotShowsUnavailableMeasurements(t *testing.T) {
+	now := time.Unix(1_787_414_400, 0)
+	snapshot := &domain.Snapshot{
+		Aircraft: []domain.Aircraft{},
+		Health: domain.Health{
+			Aircraft: domain.SourceHealth{Status: domain.HealthDegraded},
+			Receiver: domain.SourceHealth{Status: domain.HealthDegraded},
+			Stats:    domain.SourceHealth{Status: domain.HealthDegraded},
+		},
+	}
+	for _, embed := range []discord.Embed{Status(snapshot, time.Minute, now, false), Feeder(snapshot, now)} {
+		for _, field := range embed.Fields {
+			switch field.Name {
+			case "Tracked", "Recent message rate", "Recent maximum range", "Messages in window", "Tracks reported", "Max range in window":
+				if field.Value != "Unavailable" {
+					t.Fatalf("%s = %q, want Unavailable", field.Name, field.Value)
+				}
+			}
+		}
+	}
+	status := Status(snapshot, time.Minute, now, false)
+	if strings.Contains(status.Description, "2562047") || !strings.Contains(status.Description, "waiting for the first aircraft payload") {
+		t.Fatalf("status description = %q", status.Description)
+	}
+}
+
+func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
+	now := time.Unix(1_787_414_400, 0)
+	snapshot := &domain.Snapshot{
+		FetchedAt: now,
+		Aircraft:  make([]domain.Aircraft, 6),
+		Health: domain.Health{
+			Aircraft: domain.SourceHealth{Status: domain.HealthHealthy, LastSuccess: now},
+			Receiver: domain.SourceHealth{Status: domain.HealthHealthy, LastSuccess: now},
+			Stats:    domain.SourceHealth{Status: domain.HealthHealthy, LastSuccess: now},
+		},
+		Statistics: domain.Statistics{
+			WindowStart:     now.Add(-time.Minute),
+			WindowEnd:       now,
+			Messages:        1800,
+			MessageRate:     30,
+			MaxRangeNM:      110,
+			TrackedAircraft: 6,
+		},
+	}
+	status := Status(snapshot, time.Minute, now, false)
+	statusFields := make(map[string]string, len(status.Fields))
+	for _, field := range status.Fields {
+		statusFields[field.Name] = field.Value
+	}
+	if statusFields["Recent message rate"] != "30.0 msg/s" || statusFields["Recent maximum range"] != "110.0 NM" {
+		t.Fatalf("status fields = %#v", statusFields)
+	}
+
+	feeder := Feeder(snapshot, now)
+	feederFields := make(map[string]string, len(feeder.Fields))
+	for _, field := range feeder.Fields {
+		feederFields[field.Name] = field.Value
+	}
+	if feederFields["Messages in window"] != "1800" || feederFields["Tracks reported"] != "6" || feederFields["Max range in window"] != "110.0 NM" {
+		t.Fatalf("feeder fields = %#v", feederFields)
+	}
+}
+
 func BenchmarkRenderAircraft(b *testing.B) {
 	aircraft := domain.Aircraft{ICAO: "ABC123", Callsign: "SKY123", Registration: "N123SF", HasDistance: true, DistanceNM: 12.3, BearingDegrees: 42, HasAltitude: true, AltitudeFeet: 32000, HasGroundSpeed: true, GroundSpeedKts: 441}
 	now := time.Unix(1_700_000_000, 0)

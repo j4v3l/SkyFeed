@@ -38,3 +38,13 @@ func TestReportPeriodStartUsesMondayForWeeks(t *testing.T) {
 		t.Fatalf("weekly start = %s, want %s", got, want)
 	}
 }
+
+func TestCompletedReportPeriodIgnoresSchedulerDelay(t *testing.T) {
+	now := time.Date(2026, time.August, 24, 10, 0, 0, 0, time.UTC) // Monday, delayed until 10:00.
+	from, to := completedReportPeriod("weekly", now)
+	wantFrom := time.Date(2026, time.August, 17, 0, 0, 0, 0, time.UTC)
+	wantTo := time.Date(2026, time.August, 24, 0, 0, 0, 0, time.UTC)
+	if !from.Equal(wantFrom) || !to.Equal(wantTo) {
+		t.Fatalf("period = [%s, %s), want [%s, %s)", from, to, wantFrom, wantTo)
+	}
+}

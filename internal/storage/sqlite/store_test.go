@@ -169,6 +169,36 @@ func TestStoreScopesUpdates(t *testing.T) {
 	}
 }
 
+func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 1); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, time.August, 22, 9, 0, 0, 0, time.UTC)
+	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start, AircraftSeen: 10, DistinctICAOs: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start.Add(time.Hour), AircraftSeen: 1, DistinctICAOs: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	summary, err := store.ReportSummary(ctx, 1, start.Add(time.Minute), start.Add(time.Hour+time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.From.Equal(start) || !summary.To.Equal(start.Add(time.Hour)) || summary.AircraftSeen != 10 {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if summary.DistinctICAOs != 3 {
+		t.Fatalf("peak tracked aircraft = %d, want 3", summary.DistinctICAOs)
+	}
+}
+
 func TestBackupCanBeOpenedAndRestored(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()

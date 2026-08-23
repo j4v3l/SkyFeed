@@ -115,9 +115,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		healthState.SetComponent("aircraft_source", string(snapshot.Health.Aircraft.Status), snapshot.Health.Aircraft.ErrorClass)
 		healthState.SetComponent("receiver_source", string(snapshot.Health.Receiver.Status), snapshot.Health.Receiver.ErrorClass)
 		healthState.SetComponent("stats_source", string(snapshot.Health.Stats.Status), snapshot.Health.Stats.ErrorClass)
-		sourceKnown.Store(snapshot.Health.Aircraft.Status != domain.HealthUnknown &&
-			snapshot.Health.Receiver.Status != domain.HealthUnknown &&
-			snapshot.Health.Stats.Status != domain.HealthUnknown)
+		sourceKnown.Store(sourcesInitialized(snapshot.Health))
 		setReadiness()
 		for _, alert := range feederMonitor.Evaluate(cfg.Discord.GuildID, snapshot) {
 			enqueueContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -310,4 +308,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	healthState.SetLive(false)
 	logger.Info("SkyFeed stopped", "component", "app", "event", "stop")
 	return err
+}
+
+func sourcesInitialized(value domain.Health) bool {
+	return !value.Aircraft.LastSuccess.IsZero() &&
+		!value.Receiver.LastSuccess.IsZero() &&
+		!value.Stats.LastSuccess.IsZero()
 }

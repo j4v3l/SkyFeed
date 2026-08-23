@@ -48,6 +48,22 @@ func (s *State) SetComponent(name, status, message string) {
 	s.mu.Unlock()
 }
 
+func (s *State) healthy() bool {
+	if !s.live.Load() || !s.ready.Load() {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, component := range s.parts {
+		switch component.Status {
+		case "healthy", "disabled":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 type snapshot struct {
 	Status        string               `json:"status"`
 	Live          bool                 `json:"live"`
@@ -71,6 +87,18 @@ func (s *State) Snapshot(now time.Time) snapshot {
 		status = "offline"
 	} else if !ready {
 		status = "not_ready"
+	} else {
+		for _, component := range components {
+			switch component.Status {
+			case "offline":
+				status = "offline"
+			case "healthy", "disabled":
+			default:
+				if status == "healthy" {
+					status = "degraded"
+				}
+			}
+		}
 	}
 	return snapshot{
 		Status:        status,
@@ -151,7 +179,7 @@ func (s *Server) routes() http.Handler {
 		s.writeStatus(writer, s.state.ready.Load())
 	})
 	mux.HandleFunc("GET /healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		s.writeStatus(writer, s.state.live.Load() && s.state.ready.Load())
+		s.writeStatus(writer, s.state.healthy())
 	})
 	if s.metrics != nil {
 		mux.Handle("GET /metrics", s.metrics)

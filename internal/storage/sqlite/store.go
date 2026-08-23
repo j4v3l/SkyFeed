@@ -413,6 +413,10 @@ func (store *Store) MarkReportScheduleRun(ctx context.Context, id int64, guildID
 }
 
 func (store *Store) ReportSummary(ctx context.Context, guildID uint64, from, to time.Time) (storage.ReportSummary, error) {
+	// Rollups are hour buckets. Report only complete buckets and make the
+	// displayed range match the data that was actually queried.
+	from = from.UTC().Truncate(time.Hour)
+	to = to.UTC().Truncate(time.Hour)
 	result := storage.ReportSummary{From: from, To: to}
 	err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(aircraft_seen), 0), COALESCE(SUM(messages), 0), COALESCE(SUM(emergencies), 0), COALESCE(MAX(maximum_range), 0), COALESCE(MAX(distinct_icaos), 0)
 FROM report_rollups WHERE guild_id=? AND bucket_start>=? AND bucket_start<?`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&result.AircraftSeen, &result.Messages, &result.Emergencies, &result.MaximumRangeNM, &result.DistinctICAOs)
