@@ -7,7 +7,7 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 9
+const CommandSchemaVersion = 10
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
@@ -19,11 +19,23 @@ var ownedCommandNames = map[string]struct{}{
 	"moderation": {},
 }
 
+// Discord command-picker visibility uses native permission bits only (not custom
+// SkyFeed roles). Keep these aligned with scripts/setup-discord-governance.py:
+//
+//	Viewer   — no DefaultMemberPermissions (everyone)
+//	Operator — Manage Server (server watch / alert configure / report schedule are runtime-gated)
+//	Moderator — Moderate Members (+ Kick/Ban as needed at runtime)
+//	Admin    — Manage Roles so only the Admin staff role sees /settings among SkyFeed roles
+//
+// Discord Administrators always see every command. Bot DMs ignore these bits;
+// DM use is still Admin-only at runtime.
 func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	minRadius, maxRadius := 1.0, 250.0
 	minAltitude, maxAltitude := -2_000, 100_000
 	minLimit, maxLimit := 1, 25
-	admin := disgocord.Permissions(disgocord.PermissionManageGuild)
+	operator := disgocord.Permissions(disgocord.PermissionManageGuild)
+	moderator := disgocord.Permissions(disgocord.PermissionModerateMembers)
+	admin := disgocord.Permissions(disgocord.PermissionManageRoles)
 	commands := []disgocord.ApplicationCommandCreate{
 		disgocord.SlashCommandCreate{Name: "status", Description: "Show receiver, source, and SkyFeed health"},
 		disgocord.SlashCommandCreate{
@@ -89,10 +101,19 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 		},
 		disgocord.SlashCommandCreate{Name: "privacy", Description: "Show how SkyFeed shares provider data in this server"},
 		disgocord.SlashCommandCreate{Name: "watch", Description: "Manage personal or server aircraft watch rules", Options: watchOptions()},
-		disgocord.SlashCommandCreate{Name: "alerts", Description: "View or configure alert delivery", Options: alertsOptions()},
-		disgocord.SlashCommandCreate{Name: "reports", Description: "Generate reports or manage schedules", Options: reportOptions()},
+		disgocord.SlashCommandCreate{
+			Name: "alerts", Description: "View or configure alert delivery", DefaultMemberPermissions: omit.NewPtr(operator),
+			Options: alertsOptions(),
+		},
+		disgocord.SlashCommandCreate{
+			Name: "reports", Description: "Generate reports or manage schedules", DefaultMemberPermissions: omit.NewPtr(operator),
+			Options: reportOptions(),
+		},
 		disgocord.SlashCommandCreate{Name: "feeder", Description: "Show receiver, statistics, range, and source diagnostics"},
-		disgocord.SlashCommandCreate{Name: "moderation", Description: "Moderate server members with durable private case records", Options: moderationOptions()},
+		disgocord.SlashCommandCreate{
+			Name: "moderation", Description: "Moderate server members with durable private case records", DefaultMemberPermissions: omit.NewPtr(moderator),
+			Options: moderationOptions(),
+		},
 		disgocord.SlashCommandCreate{
 			Name: "settings", Description: "Configure SkyFeed for this server", DefaultMemberPermissions: omit.NewPtr(admin),
 			Options: settingsOptions(),

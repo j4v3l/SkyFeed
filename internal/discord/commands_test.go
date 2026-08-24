@@ -80,17 +80,39 @@ func TestAircraftUsesAutocomplete(t *testing.T) {
 	t.Fatal("aircraft command not found")
 }
 
-func TestSettingsDefaultsToManageGuild(t *testing.T) {
+func TestSettingsDefaultsToManageRoles(t *testing.T) {
 	for _, command := range DesiredCommands() {
 		if command.CommandName() == "settings" {
 			settings := command.(disgocord.SlashCommandCreate)
-			if !settings.DefaultMemberPermissions.OK || settings.DefaultMemberPermissions.Value == nil || *settings.DefaultMemberPermissions.Value != disgocord.PermissionManageGuild {
+			if !settings.DefaultMemberPermissions.OK || settings.DefaultMemberPermissions.Value == nil || *settings.DefaultMemberPermissions.Value != disgocord.PermissionManageRoles {
 				t.Fatalf("settings permissions = %+v", settings.DefaultMemberPermissions)
 			}
 			return
 		}
 	}
 	t.Fatal("settings command not found")
+}
+
+func TestCommandPickerPermissionsMatchAccessTiers(t *testing.T) {
+	want := map[string]disgocord.Permissions{
+		"alerts":     disgocord.PermissionManageGuild,
+		"reports":    disgocord.PermissionManageGuild,
+		"moderation": disgocord.PermissionModerateMembers,
+		"settings":   disgocord.PermissionManageRoles,
+	}
+	for _, command := range DesiredCommands() {
+		slash := command.(disgocord.SlashCommandCreate)
+		expected, privileged := want[slash.Name]
+		if !privileged {
+			if slash.DefaultMemberPermissions.OK && slash.DefaultMemberPermissions.Value != nil && *slash.DefaultMemberPermissions.Value != 0 {
+				t.Fatalf("%s should be visible to viewers, got %+v", slash.Name, slash.DefaultMemberPermissions)
+			}
+			continue
+		}
+		if !slash.DefaultMemberPermissions.OK || slash.DefaultMemberPermissions.Value == nil || *slash.DefaultMemberPermissions.Value != expected {
+			t.Fatalf("%s permissions = %+v want %d", slash.Name, slash.DefaultMemberPermissions, expected)
+		}
+	}
 }
 
 func TestEmergencyAndTrafficCommandsExist(t *testing.T) {

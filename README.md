@@ -110,13 +110,17 @@ Discord so admins can assign Operator and Moderator roles to members.
 /settings channels purpose:Interesting aircraft channel:#interesting-aircraft
 ```
 
-Viewer commands remain public. Operators manage server watch rules, alerts,
-and report schedules. Moderators can warn, timeout, remove timeouts, kick, ban,
-unban, and inspect bounded case history. Kicks and bans require a private,
-invoker-bound confirmation that expires after 60 seconds. Every attempted
-action creates a durable case; warning DM delivery and Discord failures are
-recorded. Moderation log delivery retries from a bounded SQLite outbox across
-restarts, and cases expire after 365 days in bounded purge batches.
+Viewer commands remain public. Operators see `/alerts` and `/reports` (Manage
+Server) and manage server watch rules. Moderators see `/moderation` (Moderate
+Members). Admins see `/settings` (Manage Roles) and every lower-tier command.
+Discord Administrators always see the full command list. Bot DMs stay Admin-only
+at runtime even though Discord shows the command picker there. Moderators can
+warn, timeout, remove timeouts, kick, ban, unban, and inspect bounded case
+history. Kicks and bans require a private, invoker-bound confirmation that
+expires after 60 seconds. Every attempted action creates a durable case; warning
+DM delivery and Discord failures are recorded. Moderation log delivery retries
+from a bounded SQLite outbox across restarts, and cases expire after 365 days in
+bounded purge batches.
 
 Configure durable channel IDs with `/settings channels`. Names such as
 `#adsb-alerts` and `#interesting-aircraft` are documentation only and are never

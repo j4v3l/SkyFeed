@@ -457,19 +457,15 @@ func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) disco
 }
 
 func Help(now time.Time, manageGuild bool) discord.Embed {
-	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Administrative actions respond privately.")
+	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Privileged commands appear only for members with the matching Discord permission and SkyFeed role.")
 	embed.Fields = []discord.EmbedField{
-		{Name: "/status", Value: "Receiver, active provider, and bot health at a glance."},
-		{Name: "/nearby and /traffic", Value: "Paginated nearby or public-airport-area aircraft views."},
-		{Name: "/aircraft", Value: "Look up a live aircraft by ICAO, registration, or callsign."},
-		{Name: "/route, /airport, /squawk, /top, /emergency", Value: "Routes, airports/METAR, squawks, rankings, and emergency drill-down."},
-		{Name: "/privacy", Value: "Review provider sharing, retention, and attribution for this server."},
-		{Name: "/watch and /alerts", Value: "Manage watch rules and notification behavior."},
-		{Name: "/reports and /feeder", Value: "Build summaries (including peak hour) or inspect source diagnostics."},
-		{Name: "Interesting aircraft channel", Value: "Configure `#interesting-aircraft` via `/settings channels` for plane-alert-db first sightings."},
+		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`"},
+		{Name: "Operator (+ Manage Server)", Value: "`/alerts` `/reports` plus server-scoped `/watch` rules."},
+		{Name: "Moderator (+ Moderate Members)", Value: "`/moderation` warn, timeout, kick, ban, and case history."},
+		{Name: "Admin (+ Manage Roles)", Value: "`/settings` channels, roles, alert pause/mute, dashboard recreate, and destination tests. Admins also see every lower-tier command."},
 	}
 	if manageGuild {
-		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Channels, alert pause/mute, dashboard recreate, and destination tests."})
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Channels, role bindings, alert pause/mute, dashboard recreate, and destination tests."})
 	}
 	return BoundEmbed(embed)
 }
