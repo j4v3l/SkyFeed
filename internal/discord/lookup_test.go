@@ -7,12 +7,22 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
-func TestExtractAircraftQueryFromSkyFeedEmbed(t *testing.T) {
+func TestExtractAircraftQueryFromDescriptionOnly(t *testing.T) {
 	message := disgocord.Message{
 		Embeds: []disgocord.Embed{{
-			Title:       "SkyFeed • Aircraft • SKY123",
-			Description: "`ABC123` • N123SF • B738",
-			Fields:      []disgocord.EmbedField{{Name: "ICAO", Value: "`ABC123`"}},
+			Title:       "SkyFeed • Aircraft • AAL1147",
+			Description: "`A0FAF3` · N162UW · A321 · source readsb\n**Live** 12.3 NM • 042° · 32000 ft · 441 kt · track 090° · +0 ft/min",
+		}},
+	}
+	if got := extractAircraftQuery(message); got != "A0FAF3" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestExtractAircraftQueryFromAlertDescription(t *testing.T) {
+	message := disgocord.Message{
+		Embeds: []disgocord.Embed{{
+			Description: "Emergency squawk observed\n`ABC123` · SKY123 · emergency · EMERGENCY",
 		}},
 	}
 	if got := extractAircraftQuery(message); got != "ABC123" {

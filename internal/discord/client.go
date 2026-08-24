@@ -602,7 +602,7 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	}
 	message := render.SafeMessage(render.Alert(alert), false)
 	if alert.Type == domain.RuleInteresting {
-		message = render.SafeMessage(render.InterestingAlert(alert), false)
+		message = render.InterestingAlertMessage(alert, false)
 	}
 	message = message.WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
 	_, err = client.Rest.CreateMessage(snowflake.ID(destination), message, rest.WithCtx(ctx))

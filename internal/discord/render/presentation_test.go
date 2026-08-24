@@ -96,10 +96,9 @@ func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 
 func TestFeederShowsUnknownRefresh(t *testing.T) {
 	embed := Feeder(&domain.Snapshot{}, time.Unix(1_700_000_000, 0))
-	for _, field := range embed.Fields {
-		if field.Name == "Refresh" && field.Value != "Unavailable" {
-			t.Fatalf("refresh = %q, want Unavailable", field.Value)
-		}
+	fields := fieldMap(embed)
+	if !strings.Contains(fields["Receiver"], "refresh Unavailable") {
+		t.Fatalf("receiver field = %q", fields["Receiver"])
 	}
 }
 
@@ -113,19 +112,19 @@ func TestInitialSnapshotShowsUnavailableMeasurements(t *testing.T) {
 			Stats:    domain.SourceHealth{Status: domain.HealthDegraded},
 		},
 	}
-	for _, embed := range []discord.Embed{Status(snapshot, time.Minute, now, false), Feeder(snapshot, now)} {
-		for _, field := range embed.Fields {
-			switch field.Name {
-			case "Tracked", "Recent message rate", "Recent maximum range", "Messages in window", "Tracks reported", "Max range in window":
-				if field.Value != "Unavailable" {
-					t.Fatalf("%s = %q, want Unavailable", field.Name, field.Value)
-				}
-			}
-		}
-	}
 	status := Status(snapshot, time.Minute, now, false)
+	if !strings.Contains(fieldMap(status)["Live"], "Unavailable") {
+		t.Fatalf("status live = %q", fieldMap(status)["Live"])
+	}
 	if strings.Contains(status.Description, "2562047") || !strings.Contains(status.Description, "waiting for the first aircraft payload") {
 		t.Fatalf("status description = %q", status.Description)
+	}
+	feeder := fieldMap(Feeder(snapshot, now))
+	if !strings.Contains(feeder["Receiver"], "refresh Unavailable") {
+		t.Fatalf("feeder receiver = %q", feeder["Receiver"])
+	}
+	if !strings.Contains(feeder["Window"], "Unavailable msgs") || !strings.Contains(feeder["Window"], "Unavailable tracks") || !strings.Contains(feeder["Window"], "max Unavailable") {
+		t.Fatalf("feeder window = %q", feeder["Window"])
 	}
 }
 
@@ -148,23 +147,23 @@ func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
 			TrackedAircraft: 6,
 		},
 	}
-	status := Status(snapshot, time.Minute, now, false)
-	statusFields := make(map[string]string, len(status.Fields))
-	for _, field := range status.Fields {
-		statusFields[field.Name] = field.Value
-	}
-	if statusFields["Recent message rate"] != "30.0 msg/s" || statusFields["Recent maximum range"] != "110.0 NM" {
-		t.Fatalf("status fields = %#v", statusFields)
+	status := fieldMap(Status(snapshot, time.Minute, now, false))
+	if !strings.Contains(status["Live"], "30.0 msg/s") || !strings.Contains(status["Live"], "110.0 NM") {
+		t.Fatalf("status live = %q", status["Live"])
 	}
 
-	feeder := Feeder(snapshot, now)
-	feederFields := make(map[string]string, len(feeder.Fields))
-	for _, field := range feeder.Fields {
-		feederFields[field.Name] = field.Value
+	feeder := fieldMap(Feeder(snapshot, now))
+	if !strings.Contains(feeder["Window"], "1800 msgs") || !strings.Contains(feeder["Window"], "6 tracks") || !strings.Contains(feeder["Window"], "max 110.0 NM") {
+		t.Fatalf("feeder window = %q", feeder["Window"])
 	}
-	if feederFields["Messages in window"] != "1800" || feederFields["Tracks reported"] != "6" || feederFields["Max range in window"] != "110.0 NM" {
-		t.Fatalf("feeder fields = %#v", feederFields)
+}
+
+func fieldMap(embed discord.Embed) map[string]string {
+	fields := make(map[string]string, len(embed.Fields))
+	for _, field := range embed.Fields {
+		fields[field.Name] = field.Value
 	}
+	return fields
 }
 
 func TestPrivacyRendererOmitsCoordinates(t *testing.T) {
@@ -202,13 +201,79 @@ func TestRouteRendererSanitizesProviderText(t *testing.T) {
 	}
 }
 
-func TestAircraftPhotoUsesEmbedImage(t *testing.T) {
-	embed := AircraftWithEnrichment(domain.Aircraft{ICAO: "ABC123"}, nil, &domain.Enrichment{
-		Found:    true,
-		Aircraft: &domain.AircraftMetadata{PhotoURL: "https://www.planespotters.net/photo/1", ThumbnailURL: "https://www.planespotters.net/photo/1/thumb"},
+func TestInterestingAlertMessageUsesLinkButtonForHTTPSReference(t *testing.T) {
+	alert := domain.Alert{
+		Description:     "Interesting aircraft sighting",
+		AircraftICAO:    "AE1234",
+		Callsign:        "RCH123",
+		InterestingGroup: "Mil",
+		InterestingLink: "https://w.wiki/CzEu",
+		ObservedAt:      time.Unix(1_700_000_000, 0),
+	}
+	embed := InterestingAlert(alert)
+	for _, field := range embed.Fields {
+		if field.Name == "Reference" {
+			t.Fatalf("reference field should be omitted for https links: %#v", embed.Fields)
+		}
+	}
+	message := InterestingAlertMessage(alert, false)
+	if len(message.Components) != 1 {
+		t.Fatalf("components=%d", len(message.Components))
+	}
+	row, ok := message.Components[0].(discord.ActionRowComponent)
+	if !ok || len(row.Components) != 1 {
+		t.Fatalf("action row=%#v", message.Components)
+	}
+	button, ok := row.Components[0].(discord.ButtonComponent)
+	if !ok || button.Style != discord.ButtonStyleLink || button.URL != "https://w.wiki/CzEu" {
+		t.Fatalf("button=%#v", row.Components[0])
+	}
+	if button.Label != "w.wiki" {
+		t.Fatalf("label=%q", button.Label)
+	}
+}
+
+func TestInterestingAlertKeepsPlainReferenceForInvalidURL(t *testing.T) {
+	alert := domain.Alert{
+		Description:     "Interesting aircraft sighting",
+		InterestingLink: "see local notes",
+		ObservedAt:      time.Unix(1_700_000_000, 0),
+	}
+	embed := InterestingAlert(alert)
+	found := false
+	for _, field := range embed.Fields {
+		if field.Name == "Reference" {
+			found = true
+			if strings.Contains(field.Value, "https[:]//") {
+				t.Fatalf("unexpected escaped url in %q", field.Value)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("missing reference field for non-url text")
+	}
+	if len(InterestingAlertMessage(alert, false).Components) != 0 {
+		t.Fatal("invalid reference should not add link button")
+	}
+}
+
+func TestAircraftUsesSectionFieldsNotInlineColumns(t *testing.T) {
+	embed := Aircraft(domain.Aircraft{
+		ICAO: "ABC123", Callsign: "SKY123", Registration: "N123SF",
+		HasDistance: true, DistanceNM: 12.3, BearingDegrees: 42,
+		HasAltitude: true, AltitudeFeet: 32000, HasGroundSpeed: true, GroundSpeedKts: 441,
+		HasTrack: true, TrackDegrees: 90, Squawk: "1200",
 	}, nil, time.Unix(1_700_000_000, 0))
-	if embed.Image == nil || embed.Image.URL != "https://www.planespotters.net/photo/1" {
-		t.Fatalf("image=%#v", embed.Image)
+	if !strings.Contains(embed.Description, "`ABC123`") {
+		t.Fatalf("description = %q", embed.Description)
+	}
+	if len(embed.Fields) == 0 || embed.Fields[0].Name != "Live" {
+		t.Fatalf("fields = %#v", embed.Fields)
+	}
+	for _, field := range embed.Fields {
+		if field.Inline != nil && *field.Inline {
+			t.Fatalf("field %q should be full-width for mobile readability", field.Name)
+		}
 	}
 }
 
