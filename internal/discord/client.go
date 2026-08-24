@@ -27,18 +27,19 @@ import (
 type ReadyFunc func(bool)
 
 type GatewayService struct {
-	config            config.Discord
-	router            *Router
-	logger            *slog.Logger
-	onReady           ReadyFunc
-	repository        storage.Repository
-	outbound          *OutboundScheduler
-	client            atomic.Pointer[bot.Client]
-	dashboardInterval time.Duration
-	reportInterval    time.Duration
-	interactionMetric func(time.Duration)
-	cooldownMu        sync.Mutex
-	lastDelivered     map[string]time.Time
+	config             config.Discord
+	router             *Router
+	logger             *slog.Logger
+	onReady            ReadyFunc
+	repository         storage.Repository
+	outbound           *OutboundScheduler
+	client             atomic.Pointer[bot.Client]
+	dashboardInterval  time.Duration
+	reportInterval     time.Duration
+	adminDigestInterval time.Duration
+	interactionMetric  func(time.Duration)
+	cooldownMu         sync.Mutex
+	lastDelivered      map[string]time.Time
 }
 
 func NewGatewayService(cfg config.Discord, router *Router, logger *slog.Logger, onReady ReadyFunc) *GatewayService {
@@ -85,6 +86,10 @@ func (service *GatewayService) SetDashboardInterval(interval time.Duration) {
 
 func (service *GatewayService) SetReportInterval(interval time.Duration) {
 	service.reportInterval = interval
+}
+
+func (service *GatewayService) SetAdminDigestInterval(interval time.Duration) {
+	service.adminDigestInterval = interval
 }
 
 func (service *GatewayService) SetInteractionObserver(observer func(time.Duration)) {
@@ -212,6 +217,11 @@ func (service *GatewayService) Run(ctx context.Context) error {
 		service.runReportScheduler(ctx)
 		close(reportsDone)
 	}()
+	digestDone := make(chan struct{})
+	go func() {
+		service.runAdminDigestScheduler(ctx)
+		close(digestDone)
+	}()
 	moderationDone := make(chan struct{})
 	go func() {
 		service.runModerationMaintenance(ctx)
@@ -221,6 +231,7 @@ func (service *GatewayService) Run(ctx context.Context) error {
 	err = <-outboundDone
 	<-dashboardDone
 	<-reportsDone
+	<-digestDone
 	<-moderationDone
 	return err
 }
@@ -364,6 +375,107 @@ func (service *GatewayService) runReportScheduler(ctx context.Context) {
 			service.enqueueDueReports(now.UTC())
 		}
 	}
+}
+
+func (service *GatewayService) runAdminDigestScheduler(ctx context.Context) {
+	if service.adminDigestInterval <= 0 || service.repository == nil || service.router == nil {
+		<-ctx.Done()
+		return
+	}
+	checkEvery := time.Minute
+	if service.adminDigestInterval < time.Hour {
+		checkEvery = service.adminDigestInterval / 4
+		if checkEvery < 15*time.Second {
+			checkEvery = 15 * time.Second
+		}
+	}
+	ticker := time.NewTicker(checkEvery)
+	defer ticker.Stop()
+	service.enqueueDueAdminDigest(time.Now().UTC())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			service.enqueueDueAdminDigest(now.UTC())
+		}
+	}
+}
+
+func (service *GatewayService) enqueueDueAdminDigest(now time.Time) {
+	if service.adminDigestInterval <= 0 || service.config.GuildID == 0 {
+		return
+	}
+	periodStart := adminDigestPeriodStart(now, service.adminDigestInterval)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	lastRun, err := service.repository.AdminDigestLastRun(ctx, service.config.GuildID)
+	cancel()
+	if err != nil {
+		service.logger.Error("admin digest last run could not be loaded", "component", "discord", "event", "admin_digest_load_failure", "error", err)
+		return
+	}
+	if !lastRun.IsZero() && !lastRun.Before(periodStart) {
+		return
+	}
+	ctx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+	bindings, err := service.repository.ChannelBindings(ctx, service.config.GuildID)
+	cancel()
+	if err != nil {
+		service.logger.Error("admin digest bindings could not be loaded", "component", "discord", "event", "admin_digest_bindings_failure", "error", err)
+		return
+	}
+	var destination uint64
+	for _, binding := range bindings {
+		if binding.Purpose == "admin" {
+			destination = binding.ChannelID
+			break
+		}
+	}
+	if destination == 0 {
+		return
+	}
+	period := periodStart
+	dest := destination
+	if err := service.outbound.Enqueue(context.Background(), OutboundJob{
+		Key:      fmt.Sprintf("admin-digest:%d:%d", service.config.GuildID, period.Unix()),
+		Priority: PriorityReport, Retryable: true,
+		Run: func(jobContext context.Context) error {
+			return service.sendAdminDigest(jobContext, dest, period, now)
+		},
+	}); err != nil {
+		service.logger.Warn("admin digest was coalesced or dropped", "component", "discord", "event", "admin_digest_enqueue", "error", err)
+	}
+}
+
+func adminDigestPeriodStart(now time.Time, interval time.Duration) time.Time {
+	now = now.UTC()
+	if interval <= 0 {
+		return now
+	}
+	unix := now.Unix()
+	seconds := int64(interval / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	return time.Unix((unix/seconds)*seconds, 0).UTC()
+}
+
+func (service *GatewayService) sendAdminDigest(ctx context.Context, channelID uint64, periodStart, now time.Time) error {
+	client := service.client.Load()
+	if client == nil || service.router == nil || service.repository == nil {
+		return errors.New("discord admin digest delivery is not ready")
+	}
+	audit, err := service.router.buildSystemAudit(ctx, service.config.GuildID)
+	if err != nil {
+		return err
+	}
+	message := render.SafeMessage(render.AdminDigest(audit, service.adminDigestInterval), false).
+		WithNonce(boundedNonce(fmt.Sprintf("skyfeed-admin-digest-%d-%d", service.config.GuildID, periodStart.Unix()))).
+		WithEnforceNonce(true)
+	if _, err := client.Rest.CreateMessage(snowflake.ID(channelID), message, rest.WithCtx(ctx)); err != nil {
+		return err
+	}
+	return service.repository.MarkAdminDigestRun(ctx, service.config.GuildID, now.UTC())
 }
 
 func (service *GatewayService) enqueueDueReports(now time.Time) {
@@ -811,7 +923,7 @@ func shouldDeferCommand(request CommandRequest) bool {
 
 func deferCommand(request CommandRequest) bool {
 	switch request.Name {
-	case "watch", "alerts", "settings", "reports", "moderation", "route", "airport", "aircraft", "airline":
+	case "watch", "alerts", "settings", "reports", "audit", "moderation", "route", "airport", "aircraft", "airline":
 		return true
 	default:
 		return false
@@ -820,7 +932,7 @@ func deferCommand(request CommandRequest) bool {
 
 func deferredEphemeral(request CommandRequest) bool {
 	switch request.Name {
-	case "privacy", "watch", "alerts", "settings", "moderation":
+	case "privacy", "watch", "alerts", "settings", "moderation", "audit":
 		return true
 	case "reports":
 		return request.Subcommand != "generate"

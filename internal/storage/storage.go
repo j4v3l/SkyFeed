@@ -183,6 +183,16 @@ type Repository interface {
 	MarkModerationLogDelivered(context.Context, int64, time.Time) error
 	MarkModerationLogFailed(context.Context, int64, string, time.Time) error
 	PurgeModerationCases(context.Context, time.Time, int) (int64, error)
+	RecordRouteSightings(context.Context, RouteSightingsBatch) error
+	TopRouteRankings(context.Context, uint64, string, string, int, string) ([]RouteRankingRow, error)
+	RouteTrafficCounts(context.Context, uint64, time.Time) (RouteTrafficCounts, error)
+	AdminDigestLastRun(context.Context, uint64) (time.Time, error)
+	MarkAdminDigestRun(context.Context, uint64, time.Time) error
+}
+
+type RouteTrafficCounts struct {
+	CatalogEntries int64
+	Sightings      int64
 }
 
 type WriteKind uint8
@@ -192,6 +202,7 @@ const (
 	WriteFeederEvent
 	WriteReportRollup
 	WriteInterestingSeen
+	WriteRouteSightings
 )
 
 type WriteEvent struct {
@@ -200,6 +211,7 @@ type WriteEvent struct {
 	Feeder      FeederEvent
 	Rollup      ReportRollup
 	Interesting InterestingSeen
+	RouteBatch  RouteSightingsBatch
 }
 
 type BatchSink interface {

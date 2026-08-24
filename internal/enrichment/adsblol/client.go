@@ -123,8 +123,8 @@ func (client *Client) LookupRoutes(ctx context.Context, requests []enrichment.Ro
 		return nil, err
 	}
 
-	var payload []routeDTO
-	if err := decode(response.Body, maxResponseBytes, &payload); err != nil {
+	payload, err := decodeRoutes(response.Body)
+	if err != nil {
 		return nil, fmt.Errorf("decode adsb.lol routes response: %w", err)
 	}
 	routes := make(map[string]domain.Route, len(payload))
@@ -231,7 +231,7 @@ func normalizeRequests(requests []enrichment.RouteRequest) ([]planeDTO, map[stri
 	for _, request := range requests {
 		callsign, ok := enrichment.NormalizeCallsign(request.Callsign)
 		if !ok || !validPosition(request.Latitude, request.Longitude) {
-			return nil, nil, errors.New("route request contains an invalid callsign or aircraft position")
+			continue
 		}
 		if _, duplicate := requested[callsign]; duplicate {
 			continue
@@ -361,6 +361,25 @@ func parseRetryAfter(raw string, now time.Time) time.Duration {
 		delay = value.Sub(now)
 	}
 	return min(delay, maxRetryAfter)
+}
+
+func decodeRoutes(reader io.Reader) ([]routeDTO, error) {
+	limited := io.LimitReader(reader, maxResponseBytes+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if len(body) > maxResponseBytes {
+		return nil, errors.New("adsb.lol routes response is too large")
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, nil
+	}
+	var payload []routeDTO
+	if err := decode(bytes.NewReader(body), maxResponseBytes, &payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func decode(reader io.Reader, maxBytes int64, destination any) error {

@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,6 +11,8 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/enrichment"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
+	"github.com/j4v3l/SkyFeed/internal/storage"
+	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
 )
 
 type snapshotStub struct{ snapshot *domain.Snapshot }
@@ -257,6 +260,45 @@ func TestRouterTopRanksByMetric(t *testing.T) {
 	}
 	if !strings.Contains(recorder.created[0].Embeds[0].Fields[0].Name, "SKY456") {
 		t.Fatalf("top ranking = %#v", recorder.created[0].Embeds[0].Fields)
+	}
+}
+
+func TestRouterTopRouteRankings(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	if err := repository.EnsureGuild(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	batch := storage.RouteSightingsBatch{
+		GuildID:     2,
+		BucketStart: now.UTC().Truncate(time.Hour),
+		Observations: []storage.RouteSightingsObservation{{
+			ICAO: "ABC123", Callsign: "SKY123",
+			Route: storage.RouteCatalog{
+				Callsign: "SKY123", AirlineName: "Sky", AirlineICAO: "SKY",
+				OriginIATA: "JFK", OriginName: "JFK", OriginCountryISO: "US",
+				DestinationIATA: "PBI", DestinationName: "PBI", DestinationCountryISO: "US",
+				Plausible: true, UpdatedAt: now,
+			},
+		}},
+	}
+	if err := repository.RecordRouteSightings(context.Background(), batch); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 2, now)
+	router.SetRepository(repository)
+	router.SetRoutes(catalogRouteStub{})
+	router.SetDomesticCountryISO("US")
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "top", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "routes", "period": "all"}, Ints: map[string]int{"limit": 5}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || !strings.Contains(recorder.created[0].Embeds[0].Title, "routes") {
+		t.Fatalf("response=%#v", recorder.created[0].Embeds[0])
 	}
 }
 

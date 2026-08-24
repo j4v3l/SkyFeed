@@ -273,8 +273,32 @@ func (router *Router) handleTraffic(request CommandRequest, responder Interactio
 func (router *Router) handleTop(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {
 	metric := normalizedTopMetric(request.Strings["metric"])
 	limit := boundedInt(request.Ints["limit"], 1, 25, 10)
+	if isRouteRankingMetric(metric) {
+		return router.handleRouteTop(request, responder, metric, limit)
+	}
 	aircraft := topAircraft(snapshot, metric, limit)
 	return responder.CreateMessage(render.SafeMessage(render.Top(aircraft, metric, limit, router.now()), false))
+}
+
+func (router *Router) handleRouteTop(request CommandRequest, responder InteractionResponder, metric string, limit int) error {
+	if router.repository == nil {
+		return router.respondError(responder, "Route rankings require SQLite persistence to be enabled.")
+	}
+	if router.routes == nil {
+		return router.respondError(responder, "Route rankings require adsb.lol route enrichment to be enabled.")
+	}
+	period := normalizedRouteRankingPeriod(request.Strings["period"])
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	rows, err := router.repository.TopRouteRankings(ctx, request.GuildID, metric, period, limit, router.domesticCountryISO)
+	if err != nil {
+		return router.respondError(responder, err.Error())
+	}
+	return responder.CreateMessage(render.SafeMessage(render.TopRouteRankings(metric, period, rows, limit, router.now()), false))
+}
+
+func (router *Router) respondError(responder InteractionResponder, description string) error {
+	return responder.CreateMessage(render.SafeMessage(disgocord.NewEmbed().WithTitle("SkyFeed • Error").WithDescription(render.PlainText(description)).WithColor(render.Caution), false))
 }
 
 func (router *Router) handlePrivacy(responder InteractionResponder) error {
@@ -379,10 +403,32 @@ func topAircraft(snapshot *domain.Snapshot, metric string, limit int) []domain.A
 
 func normalizedTopMetric(value string) string {
 	switch value {
-	case "altitude", "speed", "messages", "signal":
+	case "altitude", "speed", "messages", "signal", "routes", "origin-countries", "destination-countries", "airlines", "domestic-airports", "international-airports":
 		return value
 	default:
 		return "distance"
+	}
+}
+
+func isRouteRankingMetric(metric string) bool {
+	switch metric {
+	case "routes", "origin-countries", "destination-countries", "airlines", "domestic-airports", "international-airports":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizedRouteRankingPeriod(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "7d", "week":
+		return "7d"
+	case "30d", "month":
+		return "30d"
+	case "all", "all-time":
+		return "all"
+	default:
+		return "24h"
 	}
 }
 

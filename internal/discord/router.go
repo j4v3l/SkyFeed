@@ -105,13 +105,20 @@ type Router struct {
 	weather           WeatherProvider
 	directory         DirectoryProvider
 	privacy           privacy.Disclosure
-	testSend          func(context.Context, uint64, string) error
-	dashboardReset    func(context.Context) error
-	moderation        ModerationExecutor
+	testSend            func(context.Context, uint64, string) error
+	dashboardReset      func(context.Context) error
+	moderation          ModerationExecutor
+	domesticCountryISO  string
+	health              HealthViewer
+	enrichmentAudit     EnrichmentAuditor
+	routeAudit          RouteAuditor
 }
 
 func (router *Router) SetRepository(repository storage.Repository) { router.repository = repository }
-func (router *Router) SetRuleReload(reload func())                 { router.ruleReload = reload }
+func (router *Router) SetDomesticCountryISO(countryISO string) {
+	router.domesticCountryISO = strings.ToUpper(strings.TrimSpace(countryISO))
+}
+func (router *Router) SetRuleReload(reload func()) { router.ruleReload = reload }
 func (router *Router) SetEnrichment(provider EnrichmentProvider)   { router.enrichment = provider }
 func (router *Router) SetTestSender(sender func(context.Context, uint64, string) error) {
 	router.testSend = sender
@@ -179,6 +186,8 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleAlerts(request, responder)
 	case "reports":
 		return router.handleReports(request, responder)
+	case "audit":
+		return router.handleAudit(request, responder)
 	case "feeder":
 		return responder.CreateMessage(render.SafeMessage(render.Feeder(snapshot, router.now()), false))
 	case "airline":

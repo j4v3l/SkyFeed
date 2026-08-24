@@ -33,12 +33,13 @@ type ADSB struct {
 }
 
 type AirplanesLive struct {
-	PublicAirportCode string
-	Latitude          *float64
-	Longitude         *float64
-	RadiusNM          int
-	Timeout           time.Duration
-	Poll              time.Duration
+	PublicAirportCode  string
+	DomesticCountryISO string
+	Latitude           *float64
+	Longitude          *float64
+	RadiusNM           int
+	Timeout            time.Duration
+	Poll               time.Duration
 }
 
 type AdsbLol struct {
@@ -76,6 +77,7 @@ type Config struct {
 	ADSBDB            ADSBDB
 	DatabasePath      string
 	DashboardInterval time.Duration
+	AdminDigestInterval time.Duration
 	HealthAddr        string
 	PprofAddr         string
 	LogLevel          string
@@ -123,6 +125,7 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		},
 		DatabasePath:      "/var/lib/skyfeed/skyfeed.db",
 		DashboardInterval: 15 * time.Second,
+		AdminDigestInterval: 6 * time.Hour,
 		HealthAddr:        "0.0.0.0:9090",
 		LogLevel:          "info",
 		LogFormat:         "json",
@@ -200,6 +203,9 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 	if cfg.DashboardInterval, err = parseDuration(lookup, "SKYFEED_DASHBOARD_INTERVAL", cfg.DashboardInterval); err != nil {
 		return Config{}, err
 	}
+	if cfg.AdminDigestInterval, err = parseDuration(lookup, "SKYFEED_ADMIN_DIGEST_INTERVAL", cfg.AdminDigestInterval); err != nil {
+		return Config{}, err
+	}
 	if cfg.ADSBDB.Workers, err = parseInt(lookup, "SKYFEED_ADSBDB_WORKERS", cfg.ADSBDB.Workers); err != nil {
 		return Config{}, err
 	}
@@ -245,6 +251,10 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		}
 	}
 	cfg.AirplanesLive.PublicAirportCode = strings.ToUpper(env(lookup, "SKYFEED_PUBLIC_CENTER_AIRPORT_CODE", ""))
+	cfg.AirplanesLive.DomesticCountryISO = strings.ToUpper(strings.TrimSpace(env(lookup, "SKYFEED_DOMESTIC_COUNTRY_ISO", "")))
+	if cfg.AirplanesLive.DomesticCountryISO == "" {
+		cfg.AirplanesLive.DomesticCountryISO = InferDomesticCountryISO(cfg.AirplanesLive.PublicAirportCode)
+	}
 	if zone := env(lookup, "SKYFEED_TIMEZONE", "UTC"); zone != "UTC" {
 		cfg.Timezone, err = time.LoadLocation(zone)
 		if err != nil {

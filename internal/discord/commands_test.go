@@ -8,7 +8,7 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 19 {
+	if len(commands) != 20 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {
@@ -108,6 +108,7 @@ func TestCommandPickerPermissionsMatchAccessTiers(t *testing.T) {
 	want := map[string]disgocord.Permissions{
 		"alerts":     disgocord.PermissionManageGuild,
 		"reports":    disgocord.PermissionManageGuild,
+		"audit":      disgocord.PermissionManageRoles,
 		"moderation": disgocord.PermissionModerateMembers,
 		"settings":   disgocord.PermissionManageRoles,
 	}

@@ -348,6 +348,64 @@ func Top(aircraft []domain.Aircraft, metric string, limit int, now time.Time) di
 	return BoundEmbed(embed)
 }
 
+func TopRouteRankings(metric, period string, rows []storage.RouteRankingRow, limit int, now time.Time) discord.Embed {
+	title := "Top " + routeRankingTitle(metric)
+	embed := base(title, Scope, now)
+	embed.Description = fmt.Sprintf("%s · %s", routeRankingTitle(metric), routeRankingPeriodLabel(period))
+	if len(rows) == 0 {
+		embed.Description = embed.Description + "\nNo ranked route traffic is recorded for this window yet."
+		embed.Footer = &discord.EmbedFooter{Text: "Rankings use cached adsb.lol and ADSBDB routes from visible aircraft sightings"}
+		return BoundEmbed(embed)
+	}
+	fields := make([]discord.EmbedField, 0, min(limit, len(rows)))
+	for index, row := range rows {
+		if index >= limit {
+			break
+		}
+		name := fmt.Sprintf("%d. %s", index+1, PlainText(row.Label))
+		value := fmt.Sprintf("%d flights", row.Count)
+		if detail := strings.TrimSpace(row.Detail); detail != "" {
+			value = PlainText(detail) + "\n" + value
+		}
+		fields = append(fields, section(name, value))
+	}
+	embed.Fields = fields
+	embed.Footer = &discord.EmbedFooter{Text: "Rankings use cached adsb.lol and ADSBDB routes from visible aircraft sightings"}
+	return BoundEmbed(embed)
+}
+
+func routeRankingTitle(metric string) string {
+	switch metric {
+	case "routes":
+		return "routes"
+	case "origin-countries":
+		return "origin countries"
+	case "destination-countries":
+		return "destination countries"
+	case "airlines":
+		return "airlines"
+	case "domestic-airports":
+		return "domestic airports"
+	case "international-airports":
+		return "international airports"
+	default:
+		return metric
+	}
+}
+
+func routeRankingPeriodLabel(period string) string {
+	switch period {
+	case "7d":
+		return "last 7 days"
+	case "30d":
+		return "last 30 days"
+	case "all":
+		return "all time"
+	default:
+		return "last 24 hours"
+	}
+}
+
 func Privacy(disclosure privacy.Disclosure) discord.Embed {
 	embed := base("Privacy", Scope, time.Now())
 	providers := "readsb only"
@@ -467,13 +525,14 @@ func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) disco
 func Help(now time.Time, manageGuild bool) discord.Embed {
 	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Privileged commands appear only for members with the matching Discord permission and SkyFeed role.")
 	embed.Fields = []discord.EmbedField{
-		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/airline` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`. Right-click a SkyFeed message → Apps → Lookup aircraft."},
+		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/airline` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`. `/top` also ranks route traffic (routes, countries, airlines, airports). Right-click a SkyFeed message → Apps → Lookup aircraft."},
 		{Name: "Operator (+ Manage Server)", Value: "`/alerts` `/reports` plus server-scoped `/watch` rules."},
 		{Name: "Moderator (+ Moderate Members)", Value: "`/moderation` warn, timeout, kick, ban, and case history."},
-		{Name: "Admin (+ Manage Roles)", Value: "`/settings` channels, roles, alert pause/mute, dashboard recreate, and destination tests. Admins also see every lower-tier command."},
+		{Name: "Admin (+ Manage Roles)", Value: "`/settings` channels, roles, alert pause/mute, dashboard recreate, destination tests, and `/audit` for a private full-system snapshot. Admins also see every lower-tier command. Bind purpose Administration for scheduled digests."},
 	}
 	if manageGuild {
 		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Channels, role bindings, alert pause/mute, dashboard recreate, and destination tests."})
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/audit", Value: "Ephemeral system audit: health components, bindings, 24h traffic, route stats, and enrichment circuits."})
 	}
 	return BoundEmbed(embed)
 }

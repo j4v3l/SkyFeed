@@ -95,6 +95,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		feederMonitor.Restore(fingerprints)
 	}
 	reportAggregator := report.NewAggregator()
+	routeStatsCollector := report.NewRouteStatsCollector()
 	var planeAlertIndex *planealert.Index
 	interestingMonitor := rules.NewInterestingMonitor(nil)
 	if cfg.PlaneAlert.Enabled && repository != nil {
@@ -221,6 +222,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: reportAggregator.Observe(cfg.Discord.GuildID, snapshot)}); err != nil {
 				logger.Error("persistence queue admission failed", "component", "storage", "event", "write_drop", "kind", "report_rollup", "error", err)
 			}
+			if routeService != nil || enrichmentService != nil {
+				lookup := report.RouteStatsLookup{AdsbLol: routeService, AdsbDB: enrichmentService}
+				if batch := routeStatsCollector.Observe(cfg.Discord.GuildID, snapshot, lookup, snapshot.PublishedAt); len(batch.Observations) > 0 {
+					if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteRouteSightings, RouteBatch: batch}); err != nil {
+						logger.Error("persistence queue admission failed", "component", "storage", "event", "write_drop", "kind", "route_sightings", "error", err)
+					}
+				}
+			}
 		}
 		if enrichmentService != nil {
 			lastCallsignsMu.Lock()
@@ -284,6 +293,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
 	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
 	router.SetPrivacyDisclosure(privacyDisclosure(cfg))
+	router.SetDomesticCountryISO(cfg.AirplanesLive.DomesticCountryISO)
 	ruleReload := make(chan struct{}, 1)
 	if repository != nil {
 		router.SetRepository(repository)
@@ -296,6 +306,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	if enrichmentService != nil {
 		router.SetEnrichment(enrichmentService)
+		router.SetEnrichmentAuditor(enrichmentService)
 		enrichmentService.SetObserver(func(value domain.Enrichment, lookupErr error) {
 			if lookupErr != nil && !errors.Is(lookupErr, enrichment.ErrNotFound) {
 				return
@@ -329,6 +340,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	if routeService != nil {
 		router.SetRoutes(routeService)
+		router.SetRouteAuditor(routeService)
 	}
 	weatherClient, weatherErr := aviationweather.NewClient(2 * time.Second)
 	if weatherErr != nil {
@@ -389,10 +401,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		})
 		gateway.SetRepository(repository)
 		gateway.SetDashboardInterval(cfg.DashboardInterval)
+		gateway.SetAdminDigestInterval(cfg.AdminDigestInterval)
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
 		router.SetGuildMemberProvider(gateway)
+		router.SetHealth(healthState)
 		if repository != nil {
 			router.SetDashboardReset(func(resetContext context.Context) error {
 				if err := repository.DeleteMessageBinding(resetContext, cfg.Discord.GuildID, "dashboard"); err != nil {

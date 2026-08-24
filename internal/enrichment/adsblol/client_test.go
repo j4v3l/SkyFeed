@@ -86,6 +86,22 @@ func TestClientRoutesAndAirport(t *testing.T) {
 	}
 }
 
+func TestClientEmptyRoutesResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+	client := testClient(t, server)
+
+	routes, err := client.LookupRoutes(context.Background(), []enrichment.RouteRequest{{Callsign: "SKY123", Latitude: 12.5, Longitude: -45.25}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("routes=%v", routes)
+	}
+}
+
 func TestClientUnknownRouteAndAirport(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path == "/api/0/routeset" {

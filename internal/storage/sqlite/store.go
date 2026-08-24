@@ -767,6 +767,12 @@ ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_seen=aircraft_seen+ex
 			}
 			_, err = transaction.ExecContext(ctx, `INSERT INTO interesting_aircraft_seen(guild_id, icao, first_seen_at, callsign, flight_group) VALUES (?, ?, ?, ?, ?)
 ON CONFLICT(guild_id, icao) DO NOTHING`, value.GuildID, value.ICAO, formatTime(seenAt), value.Callsign, value.FlightGroup)
+		case storage.WriteRouteSightings:
+			if err = store.recordRouteSightingsTx(ctx, transaction, event.RouteBatch); err != nil {
+				_ = transaction.Rollback()
+				return err
+			}
+			continue
 		default:
 			err = fmt.Errorf("unsupported persistence event kind %d", event.Kind)
 		}

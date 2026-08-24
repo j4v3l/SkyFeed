@@ -67,6 +67,11 @@ func (cfg *Config) validateStatic() error {
 		validateDuration("SKYFEED_ADSBDB_STALE_TTL", cfg.ADSBDB.StaleTTL, time.Hour, 7*24*time.Hour),
 		validateDuration("SKYFEED_DASHBOARD_INTERVAL", cfg.DashboardInterval, 10*time.Second, 15*time.Minute),
 	)
+	if cfg.AdminDigestInterval < 0 {
+		errs = append(errs, errors.New("SKYFEED_ADMIN_DIGEST_INTERVAL must be zero (disabled) or a positive duration"))
+	} else if cfg.AdminDigestInterval > 0 && (cfg.AdminDigestInterval < time.Hour || cfg.AdminDigestInterval > 24*time.Hour) {
+		errs = append(errs, errors.New("SKYFEED_ADMIN_DIGEST_INTERVAL must be between 1h and 24h when enabled"))
+	}
 	if cfg.ADSBDB.Workers < 1 || cfg.ADSBDB.Workers > 16 {
 		errs = append(errs, errors.New("SKYFEED_ADSBDB_WORKERS must be between 1 and 16"))
 	}

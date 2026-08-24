@@ -7,7 +7,7 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 11
+const CommandSchemaVersion = 13
 
 const LookupAircraftCommand = "Lookup aircraft"
 
@@ -17,7 +17,7 @@ const LookupAircraftCommand = "Lookup aircraft"
 // owned by another application feature.
 var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
-	"watch": {}, "alerts": {}, "reports": {}, "feeder": {}, "settings": {}, "help": {},
+	"watch": {}, "alerts": {}, "reports": {}, "audit": {}, "feeder": {}, "settings": {}, "help": {},
 	"moderation": {}, "airline": {}, LookupAircraftCommand: {},
 }
 
@@ -92,13 +92,18 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			},
 		},
 		disgocord.SlashCommandCreate{
-			Name: "top", Description: "Show the highest-ranked visible aircraft for a live metric",
+			Name: "top", Description: "Show top live aircraft metrics or route traffic rankings",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
 					{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Ground speed", Value: "speed"},
 					{Name: "Messages", Value: "messages"}, {Name: "Signal", Value: "signal"},
+					{Name: "Routes", Value: "routes"}, {Name: "Origin countries", Value: "origin-countries"}, {Name: "Destination countries", Value: "destination-countries"},
+					{Name: "Airlines", Value: "airlines"}, {Name: "Domestic airports", Value: "domestic-airports"}, {Name: "International airports", Value: "international-airports"},
 				}},
-				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft to show", MinValue: &minLimit, MaxValue: &maxLimit},
+				disgocord.ApplicationCommandOptionString{Name: "period", Description: "Route ranking window (route metrics only)", Choices: []disgocord.ApplicationCommandOptionChoiceString{
+					{Name: "Last 24 hours", Value: "24h"}, {Name: "Last 7 days", Value: "7d"}, {Name: "Last 30 days", Value: "30d"}, {Name: "All time", Value: "all"},
+				}},
+				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of rows to show", MinValue: &minLimit, MaxValue: &maxLimit},
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -116,6 +121,9 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 		disgocord.SlashCommandCreate{
 			Name: "reports", Description: "Generate reports or manage schedules", DefaultMemberPermissions: omit.NewPtr(operator),
 			Options: reportOptions(),
+		},
+		disgocord.SlashCommandCreate{
+			Name: "audit", Description: "Admin-only full system health and configuration audit", DefaultMemberPermissions: omit.NewPtr(admin),
 		},
 		disgocord.SlashCommandCreate{Name: "feeder", Description: "Show receiver, statistics, range, and source diagnostics"},
 		disgocord.SlashCommandCreate{
