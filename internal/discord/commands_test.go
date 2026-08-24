@@ -8,23 +8,34 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 17 {
+	if len(commands) != 19 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {
 		t.Fatal(err)
 	}
+	var sawLookup bool
 	for _, command := range commands {
-		if command.Type() != disgocord.ApplicationCommandTypeSlash {
-			t.Fatalf("%s is not a slash command", command.CommandName())
+		switch command.Type() {
+		case disgocord.ApplicationCommandTypeSlash:
+			slash := command.(disgocord.SlashCommandCreate)
+			if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
+				t.Fatalf("%s integration types = %#v", slash.Name, slash.IntegrationTypes)
+			}
+			if !guildAndBotDMContexts(slash.Contexts) {
+				t.Fatalf("%s contexts = %#v", slash.Name, slash.Contexts)
+			}
+		case disgocord.ApplicationCommandTypeMessage:
+			if command.CommandName() != LookupAircraftCommand {
+				t.Fatalf("unexpected message command %q", command.CommandName())
+			}
+			sawLookup = true
+		default:
+			t.Fatalf("%s has unsupported type %v", command.CommandName(), command.Type())
 		}
-		slash := command.(disgocord.SlashCommandCreate)
-		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
-			t.Fatalf("%s integration types = %#v", slash.Name, slash.IntegrationTypes)
-		}
-		if !guildAndBotDMContexts(slash.Contexts) {
-			t.Fatalf("%s contexts = %#v", slash.Name, slash.Contexts)
-		}
+	}
+	if !sawLookup {
+		t.Fatal("Lookup aircraft message command missing")
 	}
 }
 
@@ -101,7 +112,10 @@ func TestCommandPickerPermissionsMatchAccessTiers(t *testing.T) {
 		"settings":   disgocord.PermissionManageRoles,
 	}
 	for _, command := range DesiredCommands() {
-		slash := command.(disgocord.SlashCommandCreate)
+		slash, ok := command.(disgocord.SlashCommandCreate)
+		if !ok {
+			continue
+		}
 		expected, privileged := want[slash.Name]
 		if !privileged {
 			if slash.DefaultMemberPermissions.OK && slash.DefaultMemberPermissions.Value != nil && *slash.DefaultMemberPermissions.Value != 0 {
@@ -120,7 +134,7 @@ func TestEmergencyAndTrafficCommandsExist(t *testing.T) {
 	for _, command := range DesiredCommands() {
 		found[command.CommandName()] = true
 	}
-	for _, name := range []string{"emergency", "traffic"} {
+	for _, name := range []string{"emergency", "traffic", "airline", LookupAircraftCommand} {
 		if !found[name] {
 			t.Fatalf("%s command missing", name)
 		}

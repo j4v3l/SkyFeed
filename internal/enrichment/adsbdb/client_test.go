@@ -92,3 +92,39 @@ func TestClientRejectsOversizedBody(t *testing.T) {
 		t.Fatal("expected oversized response error")
 	}
 }
+
+func TestClientAirlineCallsignAndModeS(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/v0/airline/JBU":
+			_, _ = writer.Write([]byte(`{"response":[{"name":"JetBlue","icao":"JBU","iata":"B6","country":"United States","callsign":"JETBLUE"}]}`))
+		case "/v0/callsign/JBU123":
+			_, _ = writer.Write([]byte(`{"response":{"flightroute":{"callsign":"JBU123","origin":{"icao_code":"KJFK"},"destination":{"icao_code":"KPBI"}}}}`))
+		case "/v0/mode-s/ABC123":
+			_, _ = writer.Write([]byte(`{"response":"N123SF"}`))
+		case "/v0/n-number/N123SF":
+			_, _ = writer.Write([]byte(`{"response":"ABC123"}`))
+		default:
+			t.Fatalf("path=%s", request.URL.Path)
+		}
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL + "/v0")
+	client := NewClientWithHTTP(base, server.Client())
+	airline, err := client.LookupAirline(context.Background(), "jbu")
+	if err != nil || airline.ICAO != "JBU" || airline.RadioCallsign != "JETBLUE" {
+		t.Fatalf("airline=%+v err=%v", airline, err)
+	}
+	route, err := client.LookupCallsign(context.Background(), "jbu123")
+	if err != nil || route.Route == nil || route.Route.Destination.ICAO != "KPBI" {
+		t.Fatalf("callsign=%+v err=%v", route, err)
+	}
+	registration, err := client.LookupModeS(context.Background(), "abc123")
+	if err != nil || registration != "N123SF" {
+		t.Fatalf("mode-s=%q err=%v", registration, err)
+	}
+	hex, err := client.LookupNNumber(context.Background(), "n123sf")
+	if err != nil || hex != "ABC123" {
+		t.Fatalf("n-number=%q err=%v", hex, err)
+	}
+}

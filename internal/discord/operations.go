@@ -31,10 +31,18 @@ type WeatherProvider interface {
 	Lookup(ctx context.Context, icao string) (aviationweather.Observation, error)
 }
 
+type DirectoryProvider interface {
+	LookupAirline(ctx context.Context, code string) (domain.Airline, error)
+	LookupCallsign(ctx context.Context, callsign string) (domain.Enrichment, error)
+	LookupModeS(ctx context.Context, hex string) (string, error)
+	LookupNNumber(ctx context.Context, registration string) (string, error)
+}
+
 func (router *Router) SetRoutes(provider RouteProvider) { router.routes = provider }
 func (router *Router) SetWeather(provider WeatherProvider) {
 	router.weather = provider
 }
+func (router *Router) SetDirectory(provider DirectoryProvider) { router.directory = provider }
 func (router *Router) SetPrivacyDisclosure(disclosure privacy.Disclosure) {
 	router.privacy = disclosure.Clone()
 }
@@ -61,7 +69,7 @@ func (router *Router) handleRoute(request CommandRequest, responder InteractionR
 		return responder.CreateMessage(errorMessage("Route data is temporarily unavailable. Try again shortly."))
 	}
 	if found {
-		return responder.CreateMessage(render.SafeMessage(render.Route(route, aircraft, router.now()), false))
+		return responder.CreateMessage(render.SafeMessage(router.routeEmbed(route, aircraft), false))
 	}
 	_ = responder.CreateMessage(render.SafeMessage(render.LookingUp("Route", callsign, router.now()), false))
 	router.routes.EnqueueRoute(routeRequest)
@@ -74,7 +82,7 @@ func (router *Router) handleRoute(request CommandRequest, responder InteractionR
 	if err != nil {
 		return responder.UpdateMessage(messageUpdate(errorMessage("Route lookup is temporarily unavailable. Try again shortly.")))
 	}
-	return responder.UpdateMessage(messageUpdate(render.SafeMessage(render.Route(route, aircraft, router.now()), false)))
+	return responder.UpdateMessage(messageUpdate(render.SafeMessage(router.routeEmbed(route, aircraft), false)))
 }
 
 func (router *Router) handleAirport(request CommandRequest, responder InteractionResponder) error {
@@ -119,6 +127,82 @@ func (router *Router) lookupWeather(code string) (metar, taf string) {
 		return "", ""
 	}
 	return observation.METAR, observation.TAF
+}
+
+func (router *Router) routeEmbed(route domain.Route, aircraft domain.Aircraft) disgocord.Embed {
+	originMETAR, _ := router.lookupWeather(firstNonEmpty(route.Origin.ICAO, route.Origin.IATA))
+	destMETAR, _ := router.lookupWeather(firstNonEmpty(route.Destination.ICAO, route.Destination.IATA))
+	return render.Route(route, aircraft, originMETAR, destMETAR, router.now())
+}
+
+func (router *Router) withRouteWeather(embed disgocord.Embed, route *domain.Route) disgocord.Embed {
+	if route == nil {
+		return embed
+	}
+	if origin := firstNonEmpty(route.Origin.ICAO, route.Origin.IATA); origin != "" {
+		if metar, _ := router.lookupWeather(origin); metar != "" {
+			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: "Origin METAR", Value: render.Truncate(render.PlainText(metar), 900)})
+		}
+	}
+	if dest := firstNonEmpty(route.Destination.ICAO, route.Destination.IATA); dest != "" {
+		if metar, _ := router.lookupWeather(dest); metar != "" {
+			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: "Destination METAR", Value: render.Truncate(render.PlainText(metar), 900)})
+		}
+	}
+	return render.BoundEmbed(embed)
+}
+
+func (router *Router) handleAirline(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {
+	code := strings.ToUpper(strings.TrimSpace(request.Strings["code"]))
+	if len(code) < 2 || len(code) > 3 {
+		return responder.CreateMessage(errorMessage("Enter a 2-character IATA or 3-character ICAO airline code."))
+	}
+	airline := domain.Airline{ICAO: code, IATA: code}
+	if router.directory != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if value, err := router.directory.LookupAirline(ctx, code); err == nil {
+			airline = value
+		}
+		cancel()
+	}
+	visible := visibleAirlineFlights(snapshot, airline, code)
+	return responder.CreateMessage(render.SafeMessage(render.Airline(airline, visible, router.now()), false))
+}
+
+func visibleAirlineFlights(snapshot *domain.Snapshot, airline domain.Airline, code string) []domain.Aircraft {
+	if snapshot == nil {
+		return nil
+	}
+	prefixes := make([]string, 0, 2)
+	for _, prefix := range []string{strings.ToUpper(strings.TrimSpace(airline.ICAO)), strings.ToUpper(strings.TrimSpace(airline.IATA)), strings.ToUpper(strings.TrimSpace(code))} {
+		if prefix == "" {
+			continue
+		}
+		exists := false
+		for _, seen := range prefixes {
+			if seen == prefix {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	matches := make([]domain.Aircraft, 0)
+	for _, aircraft := range snapshot.Aircraft {
+		callsign := strings.ToUpper(strings.TrimSpace(aircraft.Callsign))
+		if callsign == "" {
+			continue
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(callsign, prefix) {
+				matches = append(matches, aircraft)
+				break
+			}
+		}
+	}
+	return matches
 }
 
 func (router *Router) handleSquawk(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {

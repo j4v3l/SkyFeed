@@ -8,6 +8,7 @@ import (
 
 	disgocord "github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/enrichment"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 )
 
@@ -203,6 +204,12 @@ func TestDeferredInteractionPolicy(t *testing.T) {
 	if !deferCommand(CommandRequest{Name: "route"}) || deferredEphemeral(CommandRequest{Name: "route"}) {
 		t.Fatal("route should defer publicly")
 	}
+	if !deferCommand(CommandRequest{Name: "aircraft"}) || deferredEphemeral(CommandRequest{Name: "aircraft"}) {
+		t.Fatal("aircraft should defer publicly")
+	}
+	if !deferCommand(CommandRequest{Name: "airline"}) || deferredEphemeral(CommandRequest{Name: "airline"}) {
+		t.Fatal("airline should defer publicly")
+	}
 	if deferCommand(CommandRequest{Name: "privacy"}) {
 		t.Fatal("privacy should respond immediately")
 	}
@@ -278,6 +285,144 @@ func TestRouterEmergencyAndTrafficViews(t *testing.T) {
 	if len(traffic.created) != 1 || !strings.Contains(traffic.created[0].Embeds[0].Title, "Traffic") {
 		t.Fatalf("traffic = %#v", traffic.created)
 	}
+}
+
+func TestAircraftMessageIncludesHTTPSLinkButtons(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 {
+		t.Fatalf("created=%d", len(recorder.created))
+	}
+	foundLink := false
+	for _, row := range recorder.created[0].Components {
+		action, ok := row.(disgocord.ActionRowComponent)
+		if !ok {
+			continue
+		}
+		for _, component := range action.Components {
+			button, ok := component.(disgocord.ButtonComponent)
+			if !ok || button.Style != disgocord.ButtonStyleLink {
+				continue
+			}
+			foundLink = true
+			if !strings.HasPrefix(button.URL, "https://") {
+				t.Fatalf("non-https link %q", button.URL)
+			}
+		}
+	}
+	if !foundLink {
+		t.Fatal("missing ADS-B Exchange/FlightAware link buttons")
+	}
+}
+
+func TestAirportSelectOptionsSkipsEmptyCodes(t *testing.T) {
+	empty := airportSelectOptions(domain.Route{
+		Origin:      domain.Airport{Name: "Missing origin"},
+		Destination: domain.Airport{Name: "Missing destination"},
+		Midpoint:    &domain.Airport{Name: "Missing midpoint"},
+	})
+	if len(empty) != 0 {
+		t.Fatalf("expected no options for empty codes, got %#v", empty)
+	}
+
+	partial := airportSelectOptions(domain.Route{
+		Origin:      domain.Airport{ICAO: "KJFK"},
+		Destination: domain.Airport{IATA: "PBI"},
+	})
+	if len(partial) != 2 || partial[0].Value != "KJFK" || partial[1].Value != "PBI" {
+		t.Fatalf("partial=%#v", partial)
+	}
+}
+
+func TestAircraftMessageOmitsAirportSelectWhenCodesEmpty(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	snapshot.Aircraft[0].HasPosition = true
+	snapshot.Aircraft[0].Latitude = 26.68
+	snapshot.Aircraft[0].Longitude = -80.1
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	router.SetRoutes(emptyAirportRouteStub{})
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 {
+		t.Fatalf("created=%d", len(recorder.created))
+	}
+	for _, row := range recorder.created[0].Components {
+		action, ok := row.(disgocord.ActionRowComponent)
+		if !ok {
+			continue
+		}
+		for _, component := range action.Components {
+			if _, ok := component.(disgocord.StringSelectMenuComponent); ok {
+				t.Fatal("airport select should be omitted when route ICAO/IATA codes are empty")
+			}
+		}
+	}
+}
+
+type emptyAirportRouteStub struct{}
+
+func (emptyAirportRouteStub) CachedRoute(callsign string) (domain.Route, bool, error) {
+	return domain.Route{Callsign: callsign, Origin: domain.Airport{Name: "Somewhere"}, Destination: domain.Airport{Name: "Elsewhere"}}, true, nil
+}
+func (emptyAirportRouteStub) CachedAirport(string) (domain.Airport, bool, error) {
+	return domain.Airport{}, false, nil
+}
+func (emptyAirportRouteStub) LookupRoute(context.Context, enrichment.RouteRequest) (domain.Route, error) {
+	return domain.Route{}, nil
+}
+func (emptyAirportRouteStub) LookupAirport(context.Context, string) (domain.Airport, error) {
+	return domain.Airport{}, nil
+}
+func (emptyAirportRouteStub) EnqueueRoute(enrichment.RouteRequest) bool { return true }
+func (emptyAirportRouteStub) EnqueueAirport(string) bool                { return true }
+
+
+func TestAircraftFollowUpUpdatesWhenEnrichmentArrives(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	router.SetEnrichment(enrichmentFollowUpStub{value: domain.Enrichment{Found: true, ICAO: "ABC123", Aircraft: &domain.AircraftMetadata{Registration: "N123SF", PhotoURL: "https://www.planespotters.net/photo/1"}}})
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || len(recorder.updated) != 1 {
+		t.Fatalf("created=%d updated=%d", len(recorder.created), len(recorder.updated))
+	}
+}
+
+func TestAirlineListsVisibleCallsignPrefix(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "airline", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "SKY"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || !strings.Contains(recorder.created[0].Embeds[0].Title, "Airline") {
+		t.Fatalf("airline=%#v", recorder.created)
+	}
+}
+
+type enrichmentFollowUpStub struct {
+	value domain.Enrichment
+}
+
+func (stub enrichmentFollowUpStub) Cached(string, string) (domain.Enrichment, bool, error) {
+	return domain.Enrichment{}, false, nil
+}
+func (stub enrichmentFollowUpStub) Enqueue(string, string) bool { return true }
+func (stub enrichmentFollowUpStub) Lookup(context.Context, string, string) (domain.Enrichment, error) {
+	return stub.value, nil
 }
 
 func assertPrivateRejection(t *testing.T, recorder *responseRecorder) {

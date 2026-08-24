@@ -108,6 +108,107 @@ func (client *Client) Lookup(ctx context.Context, icao, callsign string) (domain
 	return result, nil
 }
 
+func (client *Client) LookupAirline(ctx context.Context, code string) (domain.Airline, error) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if len(code) < 2 || len(code) > 3 {
+		return domain.Airline{}, errors.New("airline code must be 2 or 3 characters")
+	}
+	var dto airlineListResponseDTO
+	if err := client.get(ctx, []string{"airline", code}, &dto); err != nil {
+		return domain.Airline{}, err
+	}
+	if len(dto.Response) == 0 {
+		return domain.Airline{}, enrichment.ErrNotFound
+	}
+	value := dto.Response[0]
+	return domain.Airline{
+		Name: value.Name, ICAO: value.ICAO, IATA: value.IATA, Country: value.Country, CountryISO: value.CountryISO,
+		RadioCallsign: value.Callsign, Attribution: "Airline data by ADSBDB",
+	}, nil
+}
+
+func (client *Client) LookupCallsign(ctx context.Context, callsign string) (domain.Enrichment, error) {
+	_, callsign, _ = enrichment.NormalizeKey("", callsign)
+	if callsign == "" {
+		return domain.Enrichment{}, errors.New("callsign is required")
+	}
+	var dto responseDTO
+	if err := client.get(ctx, []string{"callsign", callsign}, &dto); err != nil {
+		return domain.Enrichment{}, err
+	}
+	result := mapResponse("", callsign, dto.Response)
+	if !result.Found {
+		return domain.Enrichment{}, enrichment.ErrNotFound
+	}
+	result.FetchedAt = client.now().UTC()
+	result.Attribution = "Aircraft and route enrichment by ADSBDB"
+	return result, nil
+}
+
+func (client *Client) LookupModeS(ctx context.Context, hex string) (string, error) {
+	hex = strings.ToUpper(strings.TrimSpace(hex))
+	if len(hex) != 6 {
+		return "", errors.New("Mode S hex must be 6 characters")
+	}
+	return client.lookupString(ctx, []string{"mode-s", hex})
+}
+
+func (client *Client) LookupNNumber(ctx context.Context, registration string) (string, error) {
+	registration = strings.ToUpper(strings.TrimSpace(registration))
+	if registration == "" {
+		return "", errors.New("N-number is required")
+	}
+	return client.lookupString(ctx, []string{"n-number", registration})
+}
+
+func (client *Client) lookupString(ctx context.Context, segments []string) (string, error) {
+	var dto stringResponseDTO
+	if err := client.get(ctx, segments, &dto); err != nil {
+		return "", err
+	}
+	value := strings.ToUpper(strings.TrimSpace(dto.Response))
+	if value == "" {
+		return "", enrichment.ErrNotFound
+	}
+	return value, nil
+}
+
+func (client *Client) get(ctx context.Context, segments []string, dest any) error {
+	endpoint := *client.base
+	parts := append([]string{endpoint.Path}, segments...)
+	for index, part := range parts {
+		if index == 0 {
+			continue
+		}
+		parts[index] = url.PathEscape(part)
+	}
+	endpoint.Path = path.Join(parts...)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := client.httpClient.Do(request)
+	if err != nil {
+		return &RequestError{Transient: true, Cause: err}
+	}
+	defer response.Body.Close()
+	if response.StatusCode == http.StatusNotFound {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
+		return enrichment.ErrNotFound
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxResponseBytes))
+		return &RequestError{StatusCode: response.StatusCode, RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"), client.now()), Transient: response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500}
+	}
+	limited := http.MaxBytesReader(nil, response.Body, maxResponseBytes)
+	decoder := json.NewDecoder(limited)
+	if err := decoder.Decode(dest); err != nil {
+		return fmt.Errorf("decode ADSBDB response: %w", err)
+	}
+	return ensureEOF(decoder)
+}
+
 func mapResponse(icao, callsign string, payload payloadDTO) domain.Enrichment {
 	result := domain.Enrichment{ICAO: icao, Callsign: callsign, Found: payload.Aircraft != nil || payload.FlightRoute != nil}
 	if value := payload.Aircraft; value != nil {

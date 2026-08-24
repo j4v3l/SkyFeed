@@ -14,6 +14,16 @@ type AircraftMetadata struct {
 	ThumbnailURL string
 }
 
+type Airline struct {
+	Name          string
+	ICAO          string
+	IATA          string
+	Country       string
+	CountryISO    string
+	RadioCallsign string
+	Attribution   string
+}
+
 type Airport struct {
 	CountryCode   string
 	Municipality  string

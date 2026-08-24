@@ -23,6 +23,8 @@ type SnapshotProvider interface {
 
 type EnrichmentProvider interface {
 	Cached(icao, callsign string) (domain.Enrichment, bool, error)
+	Enqueue(icao, callsign string) bool
+	Lookup(ctx context.Context, icao, callsign string) (domain.Enrichment, error)
 }
 
 type InteractionResponder interface {
@@ -101,6 +103,7 @@ type Router struct {
 	enrichment        EnrichmentProvider
 	routes            RouteProvider
 	weather           WeatherProvider
+	directory         DirectoryProvider
 	privacy           privacy.Disclosure
 	testSend          func(context.Context, uint64, string) error
 	dashboardReset    func(context.Context) error
@@ -178,6 +181,8 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleReports(request, responder)
 	case "feeder":
 		return responder.CreateMessage(render.SafeMessage(render.Feeder(snapshot, router.now()), false))
+	case "airline":
+		return router.handleAirline(request, responder, snapshot)
 	default:
 		return responder.CreateMessage(errorMessage("Unknown SkyFeed command."))
 	}
@@ -322,6 +327,8 @@ func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder 
 	switch request.Name {
 	case "aircraft", "route":
 		return router.autocompleteAircraft(request, responder, snapshot, query)
+	case "airline":
+		return router.autocompleteAirlines(request, responder, snapshot, query)
 	case "airport":
 		return router.autocompleteAirports(request, responder, query)
 	default:
@@ -342,6 +349,41 @@ func (router *Router) autocompleteAircraft(request AutocompleteRequest, responde
 			if len(choices) == 25 {
 				break
 			}
+		}
+	}
+	return responder.Autocomplete(choices)
+}
+
+func (router *Router) autocompleteAirlines(_ AutocompleteRequest, responder InteractionResponder, snapshot *domain.Snapshot, query string) error {
+	choices := make([]disgocord.AutocompleteChoice, 0, 25)
+	seen := make(map[string]struct{})
+	add := func(code, label string) {
+		if len(choices) >= 25 || code == "" {
+			return
+		}
+		if query != "" && !strings.Contains(code, query) && !strings.Contains(strings.ToUpper(label), query) {
+			return
+		}
+		if _, exists := seen[code]; exists {
+			return
+		}
+		seen[code] = struct{}{}
+		choices = append(choices, disgocord.AutocompleteChoiceString{Name: render.Truncate(label+" • "+code, 100), Value: code})
+	}
+	if snapshot != nil {
+		for _, aircraft := range snapshot.Aircraft {
+			callsign := strings.ToUpper(strings.TrimSpace(aircraft.Callsign))
+			if len(callsign) < 2 {
+				continue
+			}
+			prefix := callsign
+			if len(prefix) > 3 {
+				prefix = prefix[:3]
+			}
+			if len(prefix) >= 3 && prefix[2] >= '0' && prefix[2] <= '9' {
+				prefix = prefix[:2]
+			}
+			add(prefix, firstNonEmpty(aircraft.Callsign, prefix))
 		}
 	}
 	return responder.Autocomplete(choices)
@@ -422,15 +464,86 @@ func (router *Router) handleNearby(request CommandRequest, responder Interaction
 
 func (router *Router) handleAircraft(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {
 	query := strings.ToUpper(strings.TrimSpace(request.Strings["query"]))
-	aircraft, ok := findAircraft(snapshot, query)
+	if query == "" {
+		return responder.CreateMessage(errorMessage("That message does not contain a visible aircraft identifier."))
+	}
+	aircraft, ok := router.resolveAircraft(snapshot, query)
 	if !ok {
+		if message, found := router.unseenAircraftMessage(query); found {
+			return responder.CreateMessage(message)
+		}
 		return responder.CreateMessage(errorMessage("That aircraft is no longer visible. Run `/aircraft` again to choose from current data."))
 	}
 	session, err := router.sessions.Create(request.UserID, request.GuildID, request.ChannelID, "aircraft", "", aircraft.ICAO, "")
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
-	return responder.CreateMessage(router.aircraftMessage(session, aircraft, snapshot))
+	if err := responder.CreateMessage(router.aircraftMessage(session, aircraft, snapshot)); err != nil {
+		return err
+	}
+	return router.followUpAircraft(session, aircraft, snapshot, responder)
+}
+
+func (router *Router) resolveAircraft(snapshot *domain.Snapshot, query string) (domain.Aircraft, bool) {
+	if aircraft, ok := findAircraft(snapshot, query); ok {
+		return aircraft, true
+	}
+	if router.directory == nil || !looksLikeNNumber(query) {
+		return domain.Aircraft{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	hex, err := router.directory.LookupNNumber(ctx, query)
+	if err != nil {
+		return domain.Aircraft{}, false
+	}
+	return findAircraft(snapshot, hex)
+}
+
+func (router *Router) unseenAircraftMessage(query string) (disgocord.MessageCreate, bool) {
+	if router.enrichment == nil || !looksLikeICAO(query) {
+		return disgocord.MessageCreate{}, false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	value, err := router.enrichment.Lookup(ctx, query, "")
+	if err != nil || !value.Found {
+		return disgocord.MessageCreate{}, false
+	}
+	embed := render.AircraftWithEnrichment(domain.Aircraft{ICAO: query}, nil, &value, nil, router.now())
+	embed.Description = "Not currently visible to this receiver. Cached ADSBDB metadata is shown."
+	return render.SafeMessage(embed, false), true
+}
+
+func (router *Router) followUpAircraft(session Session, aircraft domain.Aircraft, snapshot *domain.Snapshot, responder InteractionResponder) error {
+	updated := false
+	if router.enrichment != nil {
+		_, cached, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign)
+		router.enrichment.Enqueue(aircraft.ICAO, aircraft.Callsign)
+		if !cached {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if _, err := router.enrichment.Lookup(ctx, aircraft.ICAO, aircraft.Callsign); err == nil {
+				updated = true
+			}
+			cancel()
+		}
+	}
+	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
+		callsign := strings.ToUpper(strings.TrimSpace(aircraft.Callsign))
+		if _, found, _ := router.routes.CachedRoute(callsign); !found {
+			routeRequest := enrichment.RouteRequest{Callsign: callsign, Latitude: aircraft.Latitude, Longitude: aircraft.Longitude}
+			router.routes.EnqueueRoute(routeRequest)
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if _, err := router.routes.LookupRoute(ctx, routeRequest); err == nil {
+				updated = true
+			}
+			cancel()
+		}
+	}
+	if !updated {
+		return nil
+	}
+	return responder.UpdateMessage(messageUpdate(router.aircraftMessage(session, aircraft, snapshot)))
 }
 
 func (router *Router) handleAircraftRouteAction(request ComponentRequest, responder InteractionResponder, session Session) error {
@@ -448,19 +561,23 @@ func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft,
 	closeID, _ := CustomID(session.ID, "close")
 	message := render.SafeMessage(router.aircraftEmbed(aircraft, snapshot), false).
 		AddActionRow(disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
+	photoURL := ""
+	if router.enrichment != nil {
+		if value, ok, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign); ok && value.Aircraft != nil {
+			photoURL = value.Aircraft.PhotoURL
+		}
+	}
+	if links := aircraftLinkButtons(aircraft, photoURL); len(links) > 0 {
+		message = message.AddActionRow(links...)
+	}
 	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
 		routeID, _ := CustomID(session.ID, "route")
 		message = message.AddActionRow(disgocord.NewSecondaryButton("Route", routeID))
 		if route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign))); found {
-			airportID, _ := CustomID(session.ID, "airport")
-			options := []disgocord.StringSelectMenuOption{
-				disgocord.NewStringSelectMenuOption(route.Origin.ICAO, route.Origin.ICAO).WithDescription("Origin"),
-				disgocord.NewStringSelectMenuOption(route.Destination.ICAO, route.Destination.ICAO).WithDescription("Destination"),
+			if options := airportSelectOptions(route); len(options) > 0 {
+				airportID, _ := CustomID(session.ID, "airport")
+				message = message.AddActionRow(disgocord.NewStringSelectMenu(airportID, "Airports", options...))
 			}
-			if route.Midpoint != nil {
-				options = append(options, disgocord.NewStringSelectMenuOption(route.Midpoint.ICAO, route.Midpoint.ICAO).WithDescription("Midpoint"))
-			}
-			message = message.AddActionRow(disgocord.NewStringSelectMenu(airportID, "Airports", options...))
 		}
 	}
 	return message
@@ -520,7 +637,7 @@ func (router *Router) aircraftEmbed(aircraft domain.Aircraft, snapshot *domain.S
 			routeValue = &copyRoute
 		}
 	}
-	return render.AircraftWithEnrichment(aircraft, snapshot, enrichmentValue, routeValue, router.now())
+	return router.withRouteWeather(render.AircraftWithEnrichment(aircraft, snapshot, enrichmentValue, routeValue, router.now()), routeValue)
 }
 
 func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) (disgocord.MessageCreate, error) {
@@ -692,6 +809,28 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return "Unknown"
+}
+
+// airportSelectOptions builds Discord string-select choices for route airports.
+// Empty ICAO/IATA codes are skipped — Discord rejects option labels/values outside 1–100 chars.
+func airportSelectOptions(route domain.Route) []disgocord.StringSelectMenuOption {
+	var options []disgocord.StringSelectMenuOption
+	add := func(airport domain.Airport, description string) {
+		code := strings.TrimSpace(airport.ICAO)
+		if code == "" {
+			code = strings.TrimSpace(airport.IATA)
+		}
+		if code == "" || len(code) > 100 {
+			return
+		}
+		options = append(options, disgocord.NewStringSelectMenuOption(code, code).WithDescription(description))
+	}
+	add(route.Origin, "Origin")
+	add(route.Destination, "Destination")
+	if route.Midpoint != nil {
+		add(*route.Midpoint, "Midpoint")
+	}
+	return options
 }
 
 func (router *Router) acceptsGuild(guildID uint64) bool {

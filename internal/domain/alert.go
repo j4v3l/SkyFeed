@@ -19,6 +19,9 @@ const (
 	RuleOwner          RuleType = "owner"
 	RuleAircraftType   RuleType = "aircraft-type"
 	RuleInteresting    RuleType = "interesting"
+	RuleTakeoff        RuleType = "takeoff"
+	RuleLanding        RuleType = "landing"
+	RuleApproach       RuleType = "approach"
 )
 
 type WatchRule struct {

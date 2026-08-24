@@ -7,7 +7,9 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 10
+const CommandSchemaVersion = 11
+
+const LookupAircraftCommand = "Lookup aircraft"
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
@@ -16,7 +18,7 @@ const CommandSchemaVersion = 10
 var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
 	"watch": {}, "alerts": {}, "reports": {}, "feeder": {}, "settings": {}, "help": {},
-	"moderation": {},
+	"moderation": {}, "airline": {}, LookupAircraftCommand: {},
 }
 
 // Discord command-picker visibility uses native permission bits only (not custom
@@ -99,6 +101,12 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft to show", MinValue: &minLimit, MaxValue: &maxLimit},
 			},
 		},
+		disgocord.SlashCommandCreate{
+			Name: "airline", Description: "Look up an airline and currently visible flights",
+			Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "code", Description: "Airline ICAO or IATA code", Required: true, Autocomplete: true, MinLength: intPtr(2), MaxLength: intPtr(3)},
+			},
+		},
 		disgocord.SlashCommandCreate{Name: "privacy", Description: "Show how SkyFeed shares provider data in this server"},
 		disgocord.SlashCommandCreate{Name: "watch", Description: "Manage personal or server aircraft watch rules", Options: watchOptions()},
 		disgocord.SlashCommandCreate{
@@ -123,13 +131,14 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	for index, command := range commands {
 		slash := command.(disgocord.SlashCommandCreate)
 		slash.IntegrationTypes = []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall}
-		// Global commands honor BOT_DM; guild-scoped commands cannot be used in bot DMs.
-		slash.Contexts = []disgocord.InteractionContextType{
-			disgocord.InteractionContextTypeGuild,
-			disgocord.InteractionContextTypeBotDM,
-		}
+		slash.Contexts = guildAndBotDMContextList()
 		commands[index] = slash
 	}
+	commands = append(commands, disgocord.MessageCommandCreate{
+		Name:             LookupAircraftCommand,
+		IntegrationTypes: []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall},
+		Contexts:         guildAndBotDMContextList(),
+	})
 	return commands
 }
 
@@ -148,15 +157,8 @@ func validateDesiredCommands(commands []disgocord.ApplicationCommandCreate) erro
 		if _, exists := seen[name]; exists {
 			return fmt.Errorf("duplicate command %q", name)
 		}
-		slash, ok := command.(disgocord.SlashCommandCreate)
-		if !ok {
-			return fmt.Errorf("command %q is not a slash command", name)
-		}
-		if len(slash.IntegrationTypes) != 1 || slash.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
-			return fmt.Errorf("command %q must allow guild installation only", name)
-		}
-		if !guildAndBotDMContexts(slash.Contexts) {
-			return fmt.Errorf("command %q must allow guild and bot DM interaction contexts only", name)
+		if err := validateCommandInstallScope(command); err != nil {
+			return err
 		}
 		seen[name] = struct{}{}
 	}
@@ -184,7 +186,7 @@ func alertsOptions() []disgocord.ApplicationCommandOption {
 		disgocord.ApplicationCommandOptionSubCommand{Name: "view", Description: "View alert categories and cooldowns"},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "configure", Description: "Configure an alert category", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "category", Description: "Alert category", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"}, {Name: "Interesting aircraft", Value: "interesting"},
+				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Movements", Value: "movements"},
 			}},
 			disgocord.ApplicationCommandOptionBool{Name: "enabled", Description: "Whether this category is enabled", Required: true},
 			disgocord.ApplicationCommandOptionInt{Name: "cooldown-minutes", Description: "Minimum time between duplicate alerts", MinValue: intPtr(0), MaxValue: intPtr(1440)},
@@ -303,6 +305,36 @@ func ruleChoiceOption() []disgocord.ApplicationCommandOption {
 }
 
 func intPtr(value int) *int { return &value }
+
+func guildAndBotDMContextList() []disgocord.InteractionContextType {
+	return []disgocord.InteractionContextType{
+		disgocord.InteractionContextTypeGuild,
+		disgocord.InteractionContextTypeBotDM,
+	}
+}
+
+func validateCommandInstallScope(command disgocord.ApplicationCommandCreate) error {
+	name := command.CommandName()
+	switch typed := command.(type) {
+	case disgocord.SlashCommandCreate:
+		if len(typed.IntegrationTypes) != 1 || typed.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
+			return fmt.Errorf("command %q must allow guild installation only", name)
+		}
+		if !guildAndBotDMContexts(typed.Contexts) {
+			return fmt.Errorf("command %q must allow guild and bot DM interaction contexts only", name)
+		}
+	case disgocord.MessageCommandCreate:
+		if len(typed.IntegrationTypes) != 1 || typed.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
+			return fmt.Errorf("command %q must allow guild installation only", name)
+		}
+		if !guildAndBotDMContexts(typed.Contexts) {
+			return fmt.Errorf("command %q must allow guild and bot DM interaction contexts only", name)
+		}
+	default:
+		return fmt.Errorf("command %q has unsupported type %T", name, command)
+	}
+	return nil
+}
 
 func guildAndBotDMContexts(contexts []disgocord.InteractionContextType) bool {
 	if len(contexts) != 2 {

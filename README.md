@@ -76,11 +76,18 @@ metrics bind only to `127.0.0.1:9090` on the host.
 ## Discord interface
 
 SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
-`/squawk`, `/top`, `/privacy`, `/watch`, `/alerts`, `/reports`, `/feeder`,
-`/settings`, `/moderation`, and `/help`. Nearby pages are bound to their
-initiating user and expire. Buttons, select menus, modals, and autocomplete use
+`/airline`, `/squawk`, `/top`, `/privacy`, `/watch`, `/alerts`, `/reports`,
+`/feeder`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
+message context menu. Nearby pages are bound to their initiating user and
+expire. Buttons, select menus, HTTPS link buttons, modals, and autocomplete use
 opaque versioned session IDs. Settings and durable administration are private;
 allowed mentions default to none.
+
+`/alerts configure` can target the Movements category (takeoff, landing, and
+approach, feeder-only) in addition to watches, emergencies, feeder health, and
+interesting aircraft. Movement alerts use `#flight-alerts` unless a custom
+destination is set. Approach geometry uses the configured public airport center
+and never discloses receiver coordinates.
 
 `/privacy` is ephemeral and mirrors the same typed disclosure returned by health
 endpoints: provider names, the public airport code, query radius, retention, and

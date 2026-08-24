@@ -563,6 +563,8 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	} else if alert.Type == domain.RuleInteresting {
 		purpose = "interesting"
 		category = "interesting"
+	} else if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
+		category = "movements"
 	} else if alert.Type == domain.RuleFeeder {
 		category = "feeder"
 	}
@@ -667,8 +669,7 @@ func (service *GatewayService) markDelivered(key string, now time.Time) {
 
 func (service *GatewayService) commandEvent(event *events.ApplicationCommandInteractionCreate) {
 	started := time.Now()
-	data := event.SlashCommandInteractionData()
-	request := commandRequest(event.ApplicationCommandInteraction, data)
+	request, commandName := service.applicationCommandRequest(event)
 	responder := eventResponder{create: event.CreateMessage}
 	observed := false
 	defer func() {
@@ -678,7 +679,7 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 	}()
 	if shouldDeferCommand(request) {
 		if err := event.DeferCreateMessage(deferredEphemeral(request)); err != nil {
-			service.logInteractionError("command_defer", data.CommandName(), err)
+			service.logInteractionError("command_defer", commandName, err)
 			return
 		}
 		service.observeInteraction(started)
@@ -693,8 +694,22 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 		responder.update = updateResponse
 	}
 	if err := service.router.HandleCommand(request, responder); err != nil {
-		service.logInteractionError("command", data.CommandName(), err)
+		service.logInteractionError("command", commandName, err)
 	}
+}
+
+func (service *GatewayService) applicationCommandRequest(event *events.ApplicationCommandInteractionCreate) (CommandRequest, string) {
+	if event.Data.Type() == disgocord.ApplicationCommandTypeMessage {
+		data := event.MessageCommandInteractionData()
+		request := baseCommandRequest(event.ApplicationCommandInteraction, data.CommandName())
+		if data.CommandName() == LookupAircraftCommand {
+			request.Name = "aircraft"
+			request.Strings["query"] = extractAircraftQuery(data.TargetMessage())
+		}
+		return request, data.CommandName()
+	}
+	data := event.SlashCommandInteractionData()
+	return commandRequest(event.ApplicationCommandInteraction, data), data.CommandName()
 }
 
 func (service *GatewayService) componentEvent(event *events.ComponentInteractionCreate) {
@@ -796,7 +811,7 @@ func shouldDeferCommand(request CommandRequest) bool {
 
 func deferCommand(request CommandRequest) bool {
 	switch request.Name {
-	case "watch", "alerts", "settings", "reports", "moderation", "route", "airport":
+	case "watch", "alerts", "settings", "reports", "moderation", "route", "airport", "aircraft", "airline":
 		return true
 	default:
 		return false
@@ -824,16 +839,10 @@ func (service *GatewayService) logInteractionError(kind, name string, err error)
 	service.logger.Error("Discord interaction failed", "component", "discord", "event", "interaction_error", "kind", kind, "name", name, "error", err)
 }
 
-func commandRequest(interaction disgocord.ApplicationCommandInteraction, data disgocord.SlashCommandInteractionData) CommandRequest {
+func baseCommandRequest(interaction disgocord.ApplicationCommandInteraction, name string) CommandRequest {
 	request := CommandRequest{
-		Name: data.CommandName(), UserID: uint64(interaction.User().ID), GuildID: guildID(interaction.GuildID()), ChannelID: channelID(interaction.Channel()),
+		Name: name, UserID: uint64(interaction.User().ID), GuildID: guildID(interaction.GuildID()), ChannelID: channelID(interaction.Channel()),
 		Strings: map[string]string{}, Ints: map[string]int{}, Floats: map[string]float64{}, Bools: map[string]bool{}, IDs: map[string]uint64{},
-	}
-	if data.SubCommandName != nil {
-		request.Subcommand = *data.SubCommandName
-	}
-	if data.SubCommandGroupName != nil {
-		request.Group = *data.SubCommandGroupName
 	}
 	if member := interaction.Member(); member != nil {
 		request.Permissions = member.Permissions
@@ -843,6 +852,17 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 		for index, roleID := range member.RoleIDs {
 			request.RoleIDs[index] = uint64(roleID)
 		}
+	}
+	return request
+}
+
+func commandRequest(interaction disgocord.ApplicationCommandInteraction, data disgocord.SlashCommandInteractionData) CommandRequest {
+	request := baseCommandRequest(interaction, data.CommandName())
+	if data.SubCommandName != nil {
+		request.Subcommand = *data.SubCommandName
+	}
+	if data.SubCommandGroupName != nil {
+		request.Group = *data.SubCommandGroupName
 	}
 	for _, key := range []string{"query", "sort", "kind", "value", "rule", "category", "period", "cadence", "purpose", "tier", "reason", "duration", "user-id", "flight", "code", "metric", "squawk"} {
 		if value, ok := data.OptString(key); ok {

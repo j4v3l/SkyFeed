@@ -117,9 +117,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		healthState.SetComponent("planealert", "disabled", "database required for interesting aircraft matching")
 	}
+	movementConfig := rules.MovementConfig{}
+	if cfg.AirplanesLive.Latitude != nil && cfg.AirplanesLive.Longitude != nil {
+		movementConfig = rules.MovementConfig{Latitude: *cfg.AirplanesLive.Latitude, Longitude: *cfg.AirplanesLive.Longitude, HasCenter: true}
+	}
+	movementMonitor := rules.NewMovementMonitor(movementConfig)
 	var lastAircraftFetch atomic.Int64
 	var enrichmentService *enrichment.Service
 	var routeService *enrichment.RouteService
+	var adsbClient *adsbdb.Client
 	if cfg.ADSBDB.Enabled {
 		enrichmentConfig := enrichment.DefaultConfig()
 		enrichmentConfig.Workers = cfg.ADSBDB.Workers
@@ -129,7 +135,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		enrichmentConfig.NotFoundTTL = cfg.ADSBDB.NotFoundTTL
 		enrichmentConfig.ErrorTTL = cfg.ADSBDB.ErrorTTL
 		enrichmentConfig.StaleTTL = cfg.ADSBDB.StaleTTL
-		enrichmentService = enrichment.NewService(adsbdb.NewClient(cfg.ADSBDB.BaseURL, cfg.ADSBDB.Timeout), enrichmentConfig)
+		adsbClient = adsbdb.NewClient(cfg.ADSBDB.BaseURL, cfg.ADSBDB.Timeout)
+		enrichmentService = enrichment.NewService(adsbClient, enrichmentConfig)
 		healthState.SetComponent("adsbdb", "healthy", "asynchronous enrichment enabled")
 	} else {
 		healthState.SetComponent("adsbdb", "disabled", "enrichment disabled")
@@ -190,6 +197,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 					}
 				}
 			}
+		}
+		if movementMonitor != nil {
+			alerts = append(alerts, movementMonitor.Evaluate(cfg.Discord.GuildID, snapshot)...)
 		}
 		metrics.ObserveRules(time.Since(rulesStarted), len(alerts))
 		for _, alert := range alerts {
@@ -313,6 +323,9 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				}
 			}
 		})
+	}
+	if adsbClient != nil {
+		router.SetDirectory(adsbClient)
 	}
 	if routeService != nil {
 		router.SetRoutes(routeService)

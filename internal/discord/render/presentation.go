@@ -168,7 +168,7 @@ func Aircraft(aircraft domain.Aircraft, snapshot *domain.Snapshot, now time.Time
 	return AircraftWithEnrichment(aircraft, snapshot, nil, nil, now)
 }
 
-func Route(route domain.Route, aircraft domain.Aircraft, now time.Time) discord.Embed {
+func Route(route domain.Route, aircraft domain.Aircraft, originMETAR, destinationMETAR string, now time.Time) discord.Embed {
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
 	embed := base("Route • "+PlainText(identity), Scope, now)
 	embed.Description = routeText(route)
@@ -191,6 +191,12 @@ func Route(route domain.Route, aircraft domain.Aircraft, now time.Time) discord.
 	}
 	if route.AirlineName != "" || route.AirlineICAO != "" {
 		fields = append(fields, discord.EmbedField{Name: "Airline", Value: PlainText(strings.TrimSpace(route.AirlineName + " " + route.AirlineICAO)), Inline: ptr(false)})
+	}
+	if originMETAR != "" {
+		fields = append(fields, discord.EmbedField{Name: "Origin METAR", Value: Truncate(PlainText(originMETAR), 900)})
+	}
+	if destinationMETAR != "" {
+		fields = append(fields, discord.EmbedField{Name: "Destination METAR", Value: Truncate(PlainText(destinationMETAR), 900)})
 	}
 	embed.Fields = fields
 	if route.Attribution != "" {
@@ -229,6 +235,36 @@ func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time
 	}
 	if airport.Attribution != "" {
 		embed.Footer = &discord.EmbedFooter{Text: PlainText(airport.Attribution)}
+	}
+	return BoundEmbed(embed)
+}
+
+func Airline(airline domain.Airline, flights []domain.Aircraft, now time.Time) discord.Embed {
+	code := firstNonEmpty(airline.ICAO, airline.IATA, "Airline")
+	embed := base("Airline • "+PlainText(code), Scope, now)
+	identity := strings.Join(nonEmpty(PlainText(airline.Name), PlainText(airline.ICAO), PlainText(airline.IATA)), " • ")
+	if identity == "" {
+		identity = "Live callsign prefix match • airline directory unavailable"
+	}
+	embed.Description = identity
+	fields := []discord.EmbedField{}
+	if airline.Country != "" || airline.CountryISO != "" {
+		fields = append(fields, discord.EmbedField{Name: "Country", Value: PlainText(firstNonEmpty(airline.Country, airline.CountryISO)), Inline: ptr(true)})
+	}
+	if airline.RadioCallsign != "" {
+		fields = append(fields, discord.EmbedField{Name: "Radio callsign", Value: PlainText(airline.RadioCallsign), Inline: ptr(true)})
+	}
+	fields = append(fields, discord.EmbedField{Name: "Visible flights", Value: fmt.Sprintf("%d", len(flights)), Inline: ptr(true)})
+	for _, item := range flights {
+		if len(fields) >= 24 {
+			break
+		}
+		name := firstNonEmpty(item.Callsign, item.Registration, item.ICAO)
+		fields = append(fields, discord.EmbedField{Name: PlainText(name), Value: fmt.Sprintf("`%s` • %s • %s", PlainText(item.ICAO), position(item), altitude(item))})
+	}
+	embed.Fields = fields
+	if airline.Attribution != "" {
+		embed.Footer = &discord.EmbedFooter{Text: PlainText(airline.Attribution)}
 	}
 	return BoundEmbed(embed)
 }
@@ -388,6 +424,7 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 		PlainText(sourceLabel),
 	)
 	embed.Fields = []discord.EmbedField{
+		{Name: "ICAO", Value: "`" + PlainText(aircraft.ICAO) + "`", Inline: ptr(true)},
 		{Name: "Position", Value: position(aircraft), Inline: ptr(true)},
 		{Name: "Altitude", Value: altitude(aircraft), Inline: ptr(true)},
 		{Name: "Ground speed", Value: groundSpeed(aircraft), Inline: ptr(true)},
@@ -412,7 +449,7 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 				discord.EmbedField{Name: "Owner / operator", Value: strings.Join(nonEmpty(PlainText(metadata.Owner), PlainText(metadata.OwnerCountry)), " • ")},
 			)
 			if metadata.PhotoURL != "" {
-				embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Photo", Value: PlainText(metadata.PhotoURL)})
+				embed.Image = &discord.EmbedResource{URL: metadata.PhotoURL}
 			}
 			if metadata.ThumbnailURL != "" {
 				embed.Thumbnail = &discord.EmbedResource{URL: metadata.ThumbnailURL}
@@ -459,7 +496,7 @@ func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) disco
 func Help(now time.Time, manageGuild bool) discord.Embed {
 	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Privileged commands appear only for members with the matching Discord permission and SkyFeed role.")
 	embed.Fields = []discord.EmbedField{
-		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`"},
+		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/airline` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`. Right-click a SkyFeed message → Apps → Lookup aircraft."},
 		{Name: "Operator (+ Manage Server)", Value: "`/alerts` `/reports` plus server-scoped `/watch` rules."},
 		{Name: "Moderator (+ Moderate Members)", Value: "`/moderation` warn, timeout, kick, ban, and case history."},
 		{Name: "Admin (+ Manage Roles)", Value: "`/settings` channels, roles, alert pause/mute, dashboard recreate, and destination tests. Admins also see every lower-tier command."},

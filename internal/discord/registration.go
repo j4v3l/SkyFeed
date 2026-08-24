@@ -95,9 +95,9 @@ func syncCommandSet(api commandAPI, desired []disgocord.ApplicationCommandCreate
 	if err != nil {
 		return RegistrationStats{}, fmt.Errorf("list %s commands: %w", api.scope, err)
 	}
-	byName := make(map[string]disgocord.SlashCommandCreate, len(desired))
+	byName := make(map[string]disgocord.ApplicationCommandCreate, len(desired))
 	for _, command := range desired {
-		byName[command.CommandName()] = command.(disgocord.SlashCommandCreate)
+		byName[command.CommandName()] = command
 	}
 
 	stats := RegistrationStats{}
@@ -116,11 +116,24 @@ func syncCommandSet(api commandAPI, desired []disgocord.ApplicationCommandCreate
 			continue
 		}
 		seen[remote.Name()] = struct{}{}
+		if remote.Type() != wanted.Type() {
+			if err := api.delete(remote.ID()); err != nil {
+				return stats, fmt.Errorf("replace command %q: %w", remote.Name(), err)
+			}
+			if _, err := api.create(wanted); err != nil {
+				return stats, fmt.Errorf("replace command %q: %w", remote.Name(), err)
+			}
+			stats.Updated++
+			continue
+		}
 		if commandEquivalent(remote, wanted) {
 			stats.Kept++
 			continue
 		}
-		update := slashUpdate(wanted)
+		update, err := commandUpdate(wanted)
+		if err != nil {
+			return stats, err
+		}
 		if _, err := api.update(remote.ID(), update); err != nil {
 			return stats, fmt.Errorf("update command %q: %w", remote.Name(), err)
 		}
@@ -138,24 +151,59 @@ func syncCommandSet(api commandAPI, desired []disgocord.ApplicationCommandCreate
 	return stats, nil
 }
 
-func commandEquivalent(remote disgocord.ApplicationCommand, desired disgocord.SlashCommandCreate) bool {
-	slash, ok := remote.(disgocord.SlashCommand)
-	if !ok {
+func commandEquivalent(remote disgocord.ApplicationCommand, desired disgocord.ApplicationCommandCreate) bool {
+	if remote.Type() != desired.Type() {
 		return false
 	}
-	permissions := disgocord.Permissions(0)
-	permissionsSet := desired.DefaultMemberPermissions.OK && desired.DefaultMemberPermissions.Value != nil
-	if permissionsSet {
-		permissions = *desired.DefaultMemberPermissions.Value
+	switch typed := desired.(type) {
+	case disgocord.SlashCommandCreate:
+		slash, ok := remote.(disgocord.SlashCommand)
+		if !ok {
+			return false
+		}
+		permissions := disgocord.Permissions(0)
+		permissionsSet := typed.DefaultMemberPermissions.OK && typed.DefaultMemberPermissions.Value != nil
+		if permissionsSet {
+			permissions = *typed.DefaultMemberPermissions.Value
+		}
+		nsfw := typed.NSFW != nil && *typed.NSFW
+		return slash.Name() == typed.Name &&
+			slash.Description == typed.Description &&
+			reflect.DeepEqual(slash.Options, typed.Options) &&
+			slash.DefaultMemberPermissions() == permissions &&
+			slices.Equal(slash.IntegrationTypes(), typed.IntegrationTypes) &&
+			slices.Equal(slash.Contexts(), typed.Contexts) &&
+			slash.NSFW() == nsfw
+	case disgocord.MessageCommandCreate:
+		command, ok := remote.(disgocord.MessageCommand)
+		if !ok {
+			return false
+		}
+		permissions := disgocord.Permissions(0)
+		permissionsSet := typed.DefaultMemberPermissions.OK && typed.DefaultMemberPermissions.Value != nil
+		if permissionsSet {
+			permissions = *typed.DefaultMemberPermissions.Value
+		}
+		nsfw := typed.NSFW != nil && *typed.NSFW
+		return command.Name() == typed.Name &&
+			command.DefaultMemberPermissions() == permissions &&
+			slices.Equal(command.IntegrationTypes(), typed.IntegrationTypes) &&
+			slices.Equal(command.Contexts(), typed.Contexts) &&
+			command.NSFW() == nsfw
+	default:
+		return false
 	}
-	nsfw := desired.NSFW != nil && *desired.NSFW
-	return slash.Name() == desired.Name &&
-		slash.Description == desired.Description &&
-		reflect.DeepEqual(slash.Options, desired.Options) &&
-		slash.DefaultMemberPermissions() == permissions &&
-		slices.Equal(slash.IntegrationTypes(), desired.IntegrationTypes) &&
-		slices.Equal(slash.Contexts(), desired.Contexts) &&
-		slash.NSFW() == nsfw
+}
+
+func commandUpdate(command disgocord.ApplicationCommandCreate) (disgocord.ApplicationCommandUpdate, error) {
+	switch typed := command.(type) {
+	case disgocord.SlashCommandCreate:
+		return slashUpdate(typed), nil
+	case disgocord.MessageCommandCreate:
+		return messageCommandUpdate(typed), nil
+	default:
+		return nil, fmt.Errorf("unsupported command type %T", command)
+	}
 }
 
 func slashUpdate(command disgocord.SlashCommandCreate) disgocord.SlashCommandUpdate {
@@ -164,6 +212,17 @@ func slashUpdate(command disgocord.SlashCommandCreate) disgocord.SlashCommandUpd
 		Name:                     &name,
 		Description:              &description,
 		Options:                  &options,
+		DefaultMemberPermissions: command.DefaultMemberPermissions,
+		IntegrationTypes:         slicePointer(command.IntegrationTypes),
+		Contexts:                 slicePointer(command.Contexts),
+		NSFW:                     command.NSFW,
+	}
+}
+
+func messageCommandUpdate(command disgocord.MessageCommandCreate) disgocord.MessageCommandUpdate {
+	name := command.Name
+	return disgocord.MessageCommandUpdate{
+		Name:                     &name,
 		DefaultMemberPermissions: command.DefaultMemberPermissions,
 		IntegrationTypes:         slicePointer(command.IntegrationTypes),
 		Contexts:                 slicePointer(command.Contexts),

@@ -34,9 +34,20 @@ type routeDTO struct {
 }
 
 type airlineDTO struct {
-	Name string `json:"name"`
-	ICAO string `json:"icao"`
-	IATA string `json:"iata"`
+	Name       string `json:"name"`
+	ICAO       string `json:"icao"`
+	IATA       string `json:"iata"`
+	Country    string `json:"country"`
+	CountryISO string `json:"country_iso"`
+	Callsign   string `json:"callsign"`
+}
+
+type stringResponseDTO struct {
+	Response string `json:"response"`
+}
+
+type airlineListResponseDTO struct {
+	Response []airlineDTO `json:"response"`
 }
 
 type airportDTO struct {

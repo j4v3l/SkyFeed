@@ -192,13 +192,23 @@ func TestRouteRendererSanitizesProviderText(t *testing.T) {
 		Destination: domain.Airport{ICAO: "KJFK", Name: "Normal"},
 		Attribution: "adsb.lol https://evil.example",
 	}
-	embed := Route(route, domain.Aircraft{ICAO: "ABC123", Callsign: "SKY123"}, time.Unix(1_700_000_000, 0))
+	embed := Route(route, domain.Aircraft{ICAO: "ABC123", Callsign: "SKY123"}, "", "", time.Unix(1_700_000_000, 0))
 	combined := embed.Description
 	for _, field := range embed.Fields {
 		combined += field.Value
 	}
 	if strings.Contains(combined, "https://") {
 		t.Fatalf("route embed leaked URL: %q", combined)
+	}
+}
+
+func TestAircraftPhotoUsesEmbedImage(t *testing.T) {
+	embed := AircraftWithEnrichment(domain.Aircraft{ICAO: "ABC123"}, nil, &domain.Enrichment{
+		Found:    true,
+		Aircraft: &domain.AircraftMetadata{PhotoURL: "https://www.planespotters.net/photo/1", ThumbnailURL: "https://www.planespotters.net/photo/1/thumb"},
+	}, nil, time.Unix(1_700_000_000, 0))
+	if embed.Image == nil || embed.Image.URL != "https://www.planespotters.net/photo/1" {
+		t.Fatalf("image=%#v", embed.Image)
 	}
 }
 
