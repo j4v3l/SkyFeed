@@ -63,7 +63,7 @@ func NewClientWithHTTP(base *url.URL, client *http.Client) *Client {
 func (client *Client) Lookup(ctx context.Context, icao, callsign string) (domain.Enrichment, error) {
 	icao, callsign, _ = enrichment.NormalizeKey(icao, callsign)
 	if icao == "" {
-		return domain.Enrichment{}, errors.New("ICAO is required")
+		return domain.Enrichment{}, errors.New("icao is required")
 	}
 	endpoint := *client.base
 	endpoint.Path = path.Join(endpoint.Path, "aircraft", url.PathEscape(icao))
@@ -148,7 +148,7 @@ func (client *Client) LookupCallsign(ctx context.Context, callsign string) (doma
 func (client *Client) LookupModeS(ctx context.Context, hex string) (string, error) {
 	hex = strings.ToUpper(strings.TrimSpace(hex))
 	if len(hex) != 6 {
-		return "", errors.New("Mode S hex must be 6 characters")
+		return "", errors.New("mode S hex must be 6 characters")
 	}
 	return client.lookupString(ctx, []string{"mode-s", hex})
 }
@@ -156,7 +156,7 @@ func (client *Client) LookupModeS(ctx context.Context, hex string) (string, erro
 func (client *Client) LookupNNumber(ctx context.Context, registration string) (string, error) {
 	registration = strings.ToUpper(strings.TrimSpace(registration))
 	if registration == "" {
-		return "", errors.New("N-number is required")
+		return "", errors.New("n-number is required")
 	}
 	return client.lookupString(ctx, []string{"n-number", registration})
 }
