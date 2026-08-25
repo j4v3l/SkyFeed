@@ -44,6 +44,15 @@ jobs:
       - run: go test -run=^$ -fuzz=FuzzAircraftJSONDecoder -fuzztime=10s ./internal/source/readsb
       - run: go test -run=^$ -fuzz=FuzzADSBDBDecoder -fuzztime=10s ./internal/enrichment/adsbdb
 
+  flake-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v19
+      - uses: DeterminateSystems/magic-nix-cache-action@v13
+      - run: nix flake check -L
+
   container:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

@@ -282,6 +282,29 @@ Disable all ADSBDB traffic immediately by setting
 See [operations.md](docs/operations.md) for failure and recovery procedures and
 [cloud connectivity](deploy/cloud/README.md) for the private-tunnel design.
 
+## Nix / NixOS
+
+SkyFeed also ships a Nix flake for native binaries and a `services.skyfeed` NixOS
+module. Configuration uses the same `SKYFEED_*` keys as `.env.example`; on NixOS
+the file lives at `/etc/skyfeed/skyfeed.env` with the Discord token at
+`/etc/skyfeed/secrets/discord_token` (never in the Nix store).
+
+```sh
+nix run github:j4v3l/SkyFeed -- version
+nix run github:j4v3l/SkyFeed -- --help
+```
+
+Enable on NixOS (after creating the env file and token on the host):
+
+```nix
+inputs.skyfeed.url = "github:j4v3l/SkyFeed";
+imports = [ inputs.skyfeed.nixosModules.default ];
+services.skyfeed.enable = true;
+```
+
+Requires `nixpkgs-unstable` for Go 1.27 (`buildGo127Module`). See [docs/nix.md](docs/nix.md)
+for the full `.env` → NixOS mapping, permissions, and module options.
+
 ## ADSBDB data-use notice
 
 ADSBDB is opt-in and presentation-only. Route enrichment is independently off
