@@ -27,19 +27,19 @@ import (
 type ReadyFunc func(bool)
 
 type GatewayService struct {
-	config             config.Discord
-	router             *Router
-	logger             *slog.Logger
-	onReady            ReadyFunc
-	repository         storage.Repository
-	outbound           *OutboundScheduler
-	client             atomic.Pointer[bot.Client]
-	dashboardInterval  time.Duration
-	reportInterval     time.Duration
+	config              config.Discord
+	router              *Router
+	logger              *slog.Logger
+	onReady             ReadyFunc
+	repository          storage.Repository
+	outbound            *OutboundScheduler
+	client              atomic.Pointer[bot.Client]
+	dashboardInterval   time.Duration
+	reportInterval      time.Duration
 	adminDigestInterval time.Duration
-	interactionMetric  func(time.Duration)
-	cooldownMu         sync.Mutex
-	lastDelivered      map[string]time.Time
+	interactionMetric   func(time.Duration)
+	cooldownMu          sync.Mutex
+	lastDelivered       map[string]time.Time
 }
 
 func NewGatewayService(cfg config.Discord, router *Router, logger *slog.Logger, onReady ReadyFunc) *GatewayService {

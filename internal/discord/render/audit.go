@@ -16,42 +16,42 @@ type AuditComponent struct {
 }
 
 type SystemAuditData struct {
-	GeneratedAt    time.Time
-	Uptime         time.Duration
-	OverallStatus  string
-	Live           bool
-	Ready          bool
-	Components     []AuditComponent
-	AircraftCount  int
-	ActiveProvider string
-	SnapshotAge    time.Duration
-	MessageRate    float64
-	MaxRangeNM     float64
-	AlertsPaused   bool
-	MutedSquawks   string
-	Channels       []string
-	Roles          []string
-	WatchRules     int
-	AlertConfigs   int
-	ReportSchedules int
-	Report24h      storage.ReportSummary
-	RouteCatalog   int64
-	RouteSightings24h int64
-	InterestingSeen int
-	RecentFeeders  []string
+	GeneratedAt           time.Time
+	Uptime                time.Duration
+	OverallStatus         string
+	Live                  bool
+	Ready                 bool
+	Components            []AuditComponent
+	AircraftCount         int
+	ActiveProvider        string
+	SnapshotAge           time.Duration
+	MessageRate           float64
+	MaxRangeNM            float64
+	AlertsPaused          bool
+	MutedSquawks          string
+	Channels              []string
+	Roles                 []string
+	WatchRules            int
+	AlertConfigs          int
+	ReportSchedules       int
+	Report24h             storage.ReportSummary
+	RouteCatalog          int64
+	RouteSightings24h     int64
+	InterestingSeen       int
+	RecentFeeders         []string
 	PendingModerationLogs int
-	PlaneAlertRecords int
-	ADSBDBEnabled bool
-	ADSBDBCache   int
-	ADSBDBHits    uint64
-	ADSBDBMisses  uint64
-	ADSBDBFailures uint64
-	ADSBDBCircuitRejects uint64
-	AdsbLolEnabled bool
-	AdsbLolRouteCache int
-	AdsbLolAirportCache int
-	AdsbLolBatches uint64
-	AdsbLolFailures uint64
+	PlaneAlertRecords     int
+	ADSBDBEnabled         bool
+	ADSBDBCache           int
+	ADSBDBHits            uint64
+	ADSBDBMisses          uint64
+	ADSBDBFailures        uint64
+	ADSBDBCircuitRejects  uint64
+	AdsbLolEnabled        bool
+	AdsbLolRouteCache     int
+	AdsbLolAirportCache   int
+	AdsbLolBatches        uint64
+	AdsbLolFailures       uint64
 	AdsbLolCircuitRejects uint64
 }
 

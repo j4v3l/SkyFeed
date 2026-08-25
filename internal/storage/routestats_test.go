@@ -8,10 +8,10 @@ import (
 
 func TestRouteCatalogFromDomainRequiresSimplePlausibleRoute(t *testing.T) {
 	route := domain.Route{
-		Callsign: "AAL100",
-		Origin:   domain.Airport{ICAO: "KJFK", IATA: "JFK", CountryCode: "US"},
+		Callsign:    "AAL100",
+		Origin:      domain.Airport{ICAO: "KJFK", IATA: "JFK", CountryCode: "US"},
 		Destination: domain.Airport{ICAO: "KPBI", IATA: "PBI", CountryCode: "US"},
-		Plausible: true, PlausibilityKnown: true,
+		Plausible:   true, PlausibilityKnown: true,
 	}
 	catalog, ok := RouteCatalogFromDomain(route)
 	if !ok || catalog.OriginIATA != "JFK" || catalog.DestinationIATA != "PBI" {

@@ -4,11 +4,11 @@ import "time"
 
 // View is a Discord-safe copy of process health for admin audit embeds.
 type View struct {
-	Status        string
-	Live          bool
-	Ready         bool
-	Uptime        time.Duration
-	Components    map[string]Component
+	Status     string
+	Live       bool
+	Ready      bool
+	Uptime     time.Duration
+	Components map[string]Component
 }
 
 // View returns the current health snapshot without privacy disclosure details.

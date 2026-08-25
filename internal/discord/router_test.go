@@ -427,7 +427,6 @@ func (emptyAirportRouteStub) LookupAirport(context.Context, string) (domain.Airp
 func (emptyAirportRouteStub) EnqueueRoute(enrichment.RouteRequest) bool { return true }
 func (emptyAirportRouteStub) EnqueueAirport(string) bool                { return true }
 
-
 func TestAircraftFollowUpUpdatesWhenEnrichmentArrives(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)

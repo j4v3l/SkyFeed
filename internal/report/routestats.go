@@ -19,8 +19,8 @@ type AircraftEnrichmentLookup interface {
 }
 
 type RouteStatsLookup struct {
-	AdsbLol    RouteLookup
-	AdsbDB     AircraftEnrichmentLookup
+	AdsbLol RouteLookup
+	AdsbDB  AircraftEnrichmentLookup
 }
 
 func (lookup RouteStatsLookup) routeFor(icao, callsign string) (domain.Route, bool) {

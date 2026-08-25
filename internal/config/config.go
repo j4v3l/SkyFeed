@@ -69,20 +69,20 @@ type ADSBDB struct {
 }
 
 type Config struct {
-	Discord           Discord
-	ADSB              ADSB
-	AirplanesLive     AirplanesLive
-	AdsbLol           AdsbLol
-	PlaneAlert        PlaneAlert
-	ADSBDB            ADSBDB
-	DatabasePath      string
-	DashboardInterval time.Duration
+	Discord             Discord
+	ADSB                ADSB
+	AirplanesLive       AirplanesLive
+	AdsbLol             AdsbLol
+	PlaneAlert          PlaneAlert
+	ADSBDB              ADSBDB
+	DatabasePath        string
+	DashboardInterval   time.Duration
 	AdminDigestInterval time.Duration
-	HealthAddr        string
-	PprofAddr         string
-	LogLevel          string
-	LogFormat         string
-	Timezone          *time.Location
+	HealthAddr          string
+	PprofAddr           string
+	LogLevel            string
+	LogFormat           string
+	Timezone            *time.Location
 }
 
 type LookupEnv func(string) (string, bool)
@@ -123,13 +123,13 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 			Timeout: 30 * time.Second,
 			Refresh: 24 * time.Hour,
 		},
-		DatabasePath:      "/var/lib/skyfeed/skyfeed.db",
-		DashboardInterval: 15 * time.Second,
+		DatabasePath:        "/var/lib/skyfeed/skyfeed.db",
+		DashboardInterval:   15 * time.Second,
 		AdminDigestInterval: 6 * time.Hour,
-		HealthAddr:        "0.0.0.0:9090",
-		LogLevel:          "info",
-		LogFormat:         "json",
-		Timezone:          time.UTC,
+		HealthAddr:          "0.0.0.0:9090",
+		LogLevel:            "info",
+		LogFormat:           "json",
+		Timezone:            time.UTC,
 	}
 
 	cfg.Discord.TokenFile = env(lookup, "SKYFEED_DISCORD_TOKEN_FILE", "")

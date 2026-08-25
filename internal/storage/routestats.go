@@ -8,21 +8,21 @@ import (
 )
 
 type RouteCatalog struct {
-	Callsign                string
-	AirlineName             string
-	AirlineICAO             string
-	AirlineIATA             string
-	OriginICAO              string
-	OriginIATA              string
-	OriginName              string
-	OriginCountryISO        string
-	DestinationICAO         string
-	DestinationIATA         string
-	DestinationName         string
-	DestinationCountryISO   string
-	Plausible               bool
-	PlausibilityKnown       bool
-	UpdatedAt               time.Time
+	Callsign              string
+	AirlineName           string
+	AirlineICAO           string
+	AirlineIATA           string
+	OriginICAO            string
+	OriginIATA            string
+	OriginName            string
+	OriginCountryISO      string
+	DestinationICAO       string
+	DestinationIATA       string
+	DestinationName       string
+	DestinationCountryISO string
+	Plausible             bool
+	PlausibilityKnown     bool
+	UpdatedAt             time.Time
 }
 
 type RouteSightingsObservation struct {
@@ -32,8 +32,8 @@ type RouteSightingsObservation struct {
 }
 
 type RouteSightingsBatch struct {
-	GuildID     uint64
-	BucketStart time.Time
+	GuildID      uint64
+	BucketStart  time.Time
 	Observations []RouteSightingsObservation
 }
 

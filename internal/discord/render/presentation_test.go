@@ -203,12 +203,12 @@ func TestRouteRendererSanitizesProviderText(t *testing.T) {
 
 func TestInterestingAlertMessageUsesLinkButtonForHTTPSReference(t *testing.T) {
 	alert := domain.Alert{
-		Description:     "Interesting aircraft sighting",
-		AircraftICAO:    "AE1234",
-		Callsign:        "RCH123",
+		Description:      "Interesting aircraft sighting",
+		AircraftICAO:     "AE1234",
+		Callsign:         "RCH123",
 		InterestingGroup: "Mil",
-		InterestingLink: "https://w.wiki/CzEu",
-		ObservedAt:      time.Unix(1_700_000_000, 0),
+		InterestingLink:  "https://w.wiki/CzEu",
+		ObservedAt:       time.Unix(1_700_000_000, 0),
 	}
 	embed := InterestingAlert(alert)
 	for _, field := range embed.Fields {
