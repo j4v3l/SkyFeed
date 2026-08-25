@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/j4v3l/SkyFeed/security/advisories/new
+    about: Report a security issue privately. Do not open a public issue for vulnerabilities or tokens.
+  - name: Operations guide
+    url: https://github.com/j4v3l/SkyFeed/blob/main/docs/operations.md
+    about: Failure modes, recovery, and operational procedures.
+  - name: Discussions (questions)
+    url: https://github.com/j4v3l/SkyFeed/discussions
+    about: Ask usage questions that are not bugs or feature requests.

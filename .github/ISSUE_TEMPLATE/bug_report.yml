@@ -1,0 +1,88 @@
+name: Bug report
+description: Report a reproducible problem with SkyFeed
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. **Do not include** Discord tokens, interaction payloads, private receiver URLs/IPs, guild IDs, user IDs, or coordinates.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One or two sentences describing what went wrong.
+      placeholder: Health stays not-ready after source check succeeds…
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Minimal steps using sanitized config only.
+      placeholder: |
+        1. Start with compose.local profile
+        2. Run `skyfeed source check`
+        3. Observe …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Docker Compose
+        - Nix / NixOS
+        - Built from source (`go build` / `make`)
+        - Prebuilt binary / other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: SkyFeed version
+      description: Output of `skyfeed version` or the image tag (e.g. `ghcr.io/j4v3l/skyfeed:1.0.0`).
+      placeholder: version=… commit=… build_date=…
+    validations:
+      required: true
+  - type: dropdown
+    id: arch
+    attributes:
+      label: Host architecture
+      options:
+        - linux/amd64
+        - linux/arm64 (e.g. Raspberry Pi 64-bit)
+        - darwin/amd64
+        - darwin/arm64
+        - other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs / health
+      description: Paste relevant log lines or `/healthz` JSON with secrets and identifiers redacted.
+      render: text
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I ran `skyfeed config check` (or the Compose equivalent) before filing.
+          required: true
+        - label: I confirmed this is not a Discord permission / role hierarchy issue.
+          required: true
+        - label: This report contains no tokens, private IPs, guild IDs, or coordinates.
+          required: true

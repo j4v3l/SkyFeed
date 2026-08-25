@@ -1,35 +1,51 @@
 # SkyFeed
 
-SkyFeed is a local-first ADS-B Discord bot for one readsb/tar1090 feeder. It
-polls the receiver once per second, publishes immutable in-memory snapshots,
-evaluates indexed alert rules, and serves native Discord commands without the
-privileged Message Content intent. SQLite, Discord, and enrichment work remain off
-the ingest critical path.
+[![CI](https://github.com/j4v3l/SkyFeed/actions/workflows/ci.yaml/badge.svg)](https://github.com/j4v3l/SkyFeed/actions/workflows/ci.yaml)
+[![License](https://img.shields.io/github/license/j4v3l/SkyFeed)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
+[![GHCR](https://img.shields.io/badge/GHCR-skyfeed-blue?logo=github)](https://ghcr.io/j4v3l/skyfeed)
 
-Local readsb stays the primary aircraft source. When configured, airplanes.live
-provides a privacy-safe point-query fallback around a public airport reference
-(KPBI by default in the bundled Compose profile). Route and airport enrichment
-via adsb.lol is opt-in at the HTTP layer and uses only callsigns and already-
-public aircraft positions. Tests continue to use deterministic, privacy-reviewed
-synthetic fixtures so no receiver-specific observations enter the repository.
+**Local-first ADS-B Discord bot for a single [readsb](https://github.com/wiedehopf/readsb)/tar1090 feeder.**
 
-Public verification pages:
+SkyFeed polls your receiver once per second, keeps immutable in-memory
+snapshots, evaluates indexed alert rules, and serves native Discord slash
+commands **without** the privileged Message Content intent. SQLite, Discord, and
+enrichment stay off the ingest critical path.
 
-- [Terms of Service](https://skyfeed-policies.javel-palmer.chatgpt.site/terms)
-- [Privacy Policy](https://skyfeed-policies.javel-palmer.chatgpt.site/privacy)
+| | |
+| --- | --- |
+| **Primary source** | Local readsb JSON (`/data`) |
+| **Optional fallback** | [airplanes.live](https://airplanes.live) point query around a *public* airport reference |
+| **Enrichment** | Opt-in adsb.lol / ADSBDB (callsigns & public positions only) |
+| **Deploy** | Docker Compose (Pi/ARM64 + amd64) or Nix / NixOS flake |
+| **Privacy** | No Message Content intent; health/metrics omit private coordinates |
+
+Public policy pages: [Terms](https://skyfeed-policies.javel-palmer.chatgpt.site/terms) · [Privacy](https://skyfeed-policies.javel-palmer.chatgpt.site/privacy)
+
+## Table of contents
+
+- [Quick start (Docker)](#quick-start)
+- [Discord interface](#discord-interface)
+- [Aircraft sources and privacy](#aircraft-sources-and-privacy)
+- [Route and airport enrichment](#route-and-airport-enrichment)
+- [Interesting aircraft](#interesting-aircraft-plane-alert-db)
+- [Operations](#operations)
+- [Nix / NixOS](#nix--nixos)
+- [Development](#development-and-performance)
+- [Contributing & support](#contributing--support)
 
 ## Quick start
 
-Requirements are Docker Engine/Compose and a Discord application token. On a
-Raspberry Pi use a 64-bit ARM64 operating system.
+**Requirements:** Docker Engine/Compose and a Discord application token. On a
+Raspberry Pi use a **64-bit ARM64** OS.
 
-In the Discord Developer Portal, install the application with the `bot` and
-`applications.commands` scopes. Grant only View Channels, Send Messages, Embed
-Links, Read Message History, Moderate Members, Kick Members, and Ban Members;
-add Attach Files only if bounded report attachments are enabled. Do not grant
-Administrator or Manage Roles, and do not enable Message Content. Place the
-SkyFeed bot role above every member role it may moderate—Discord hierarchy is
-still enforced for the bot and the invoking moderator.
+In the [Discord Developer Portal](https://discord.com/developers/applications),
+install the app with the `bot` and `applications.commands` scopes. Grant only
+View Channels, Send Messages, Embed Links, Read Message History, Moderate
+Members, Kick Members, and Ban Members; add Attach Files only if bounded report
+attachments are enabled. Do **not** grant Administrator or Manage Roles, and do
+**not** enable Message Content. Place the SkyFeed bot role above every member
+role it may moderate.
 
 ```sh
 cp .env.example .env
@@ -332,5 +348,17 @@ PGO is deliberately deferred until a representative ARM64 profile exists; see
 The current measured baseline and remaining release gates are recorded in the
 [implementation checkpoint](docs/checkpoints/implementation-status.md).
 
-Tests never contact Discord, a live receiver, or public enrichment APIs. See
-[SECURITY.md](SECURITY.md) for private vulnerability reporting.
+Tests never contact Discord, a live receiver, or public enrichment APIs.
+
+## Contributing & support
+
+| Resource | Link |
+| --- | --- |
+| Contributing guide | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
+| Support / help | [SUPPORT.md](SUPPORT.md) |
+| Security policy | [SECURITY.md](SECURITY.md) |
+| Bug report | [New bug](https://github.com/j4v3l/SkyFeed/issues/new?template=bug_report.yml) |
+| Feature request | [New feature](https://github.com/j4v3l/SkyFeed/issues/new?template=feature_request.yml) |
+
+License: [Apache-2.0](LICENSE).

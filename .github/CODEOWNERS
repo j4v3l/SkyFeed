@@ -1,0 +1,7 @@
+# Default owners for the SkyFeed repository.
+* @j4v3l
+
+/.github/ @j4v3l
+/nix/ @j4v3l
+/docs/ @j4v3l
+SECURITY.md @j4v3l
