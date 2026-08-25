@@ -27,7 +27,7 @@ jobs:
       - run: go tool govulncheck ./...
       - run: go tool go-licenses check ./cmd/skyfeed
       - run: go tool go-licenses report ./cmd/skyfeed | tee dependency-licenses.csv
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dependency-licenses
           path: dependency-licenses.csv
