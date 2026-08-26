@@ -61,6 +61,9 @@ func NewClient(baseURL *url.URL, timeout time.Duration) *Client {
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   timeout,
+			CheckRedirect: func(*http.Request, []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 		now: time.Now,
 	}

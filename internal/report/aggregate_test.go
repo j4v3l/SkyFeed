@@ -7,7 +7,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
-func TestAggregatorUsesMessageDeltasAndCountsEmergencyObservations(t *testing.T) {
+func TestAggregatorUsesMessageDeltasWithoutCountingEmergencySnapshotsAsEvents(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	aggregator := NewAggregator()
 	snapshot := &domain.Snapshot{
@@ -19,19 +19,19 @@ func TestAggregatorUsesMessageDeltasAndCountsEmergencyObservations(t *testing.T)
 		ByICAO:              map[string]int{"ABC123": 0},
 	}
 	first := aggregator.Observe(1, snapshot)
-	if first.Messages != 0 || first.Emergencies != 1 {
+	if first.Messages != 0 || first.EmergencyEvents != 0 || first.AircraftObservations != 1 || first.PeakTracked != 1 {
 		t.Fatalf("first=%+v", first)
 	}
 	snapshot.PublishedAt = now.Add(time.Second)
 	snapshot.ReceiverMessages = 125
 	second := aggregator.Observe(1, snapshot)
-	if second.Messages != 25 || second.Emergencies != 1 {
+	if second.Messages != 25 || second.EmergencyEvents != 0 {
 		t.Fatalf("second=%+v", second)
 	}
 
-	restarted := NewAggregator().Observe(1, snapshot)
-	if restarted.Emergencies != second.Emergencies {
-		t.Fatalf("emergency observations changed across restart: before=%d after=%d", second.Emergencies, restarted.Emergencies)
+	event := EmergencyEvent(1, now)
+	if event.EmergencyEvents != 1 || event.BucketStart != now.UTC().Truncate(time.Hour) {
+		t.Fatalf("event=%+v", event)
 	}
 }
 

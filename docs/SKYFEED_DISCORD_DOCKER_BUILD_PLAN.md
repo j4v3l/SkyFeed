@@ -11,7 +11,7 @@
 | Discord library | github.com/disgoorg/disgo |
 | Live ADS-B source | readsb/tar1090 JSON at http://adsb.local/data |
 | Optional enrichment | ADSBDB |
-| Plan status | Implementation specification |
+| Plan status | Implemented roadmap; target-host and live-guild acceptance gates remain |
 
 ---
 
@@ -22,13 +22,28 @@
 | Phase 0 | Implemented | Repository/dependency spikes pass, sanitized fixtures are retained, and the final container reaches and decodes all three receiver endpoints. See `docs/checkpoints/phase-0.md`. |
 | Phase 1 | Implemented | Configuration, CLI, logging, lifecycle, health, metrics, pprof guard, and graceful shutdown tests pass. |
 | Phase 2 | Implemented | Fixed-path bounded ingestion, immutable snapshots, source health, replay, benchmarks, and live receiver reconciliation pass. |
-| Phase 3 | Implemented; guild smoke gate open | All ten commands, native components, deferral, sessions, registration scopes, dashboard, delivery priorities, and fake interaction tests pass; a real development-guild smoke test awaits the operator's guild ID. |
-| Phase 4 | Implemented | WAL SQLite, migrations, backup/restore, rules, durable emergency/feeder dedupe, reports, schedules, and permission tests pass. |
+| Phase 3 | Implemented; guild smoke gate open | Twenty slash commands plus the aircraft context command, layered aircraft/weather/track actions, personal and guild units, native components, deferral, sessions, registration scopes, dashboard, fixed outbound priority lanes, and fake interaction tests pass. A real development-guild smoke test remains. |
+| Phase 4 | Implemented | WAL SQLite, ten forward migrations, provenance-gated route analytics, backup/restore, pruned rules/cooldowns, transition-based emergency reporting, coalesced rollups, reports, schedules, and aligned permission tests pass. |
 | Phase 5 | Implemented | Bounded asynchronous ADSBDB client/service, configurable cache policy, best-effort enrichment rules, attribution, and synthetic fault tests pass. |
 | Phase 6 | Implemented; guild smoke gate open | Hardened distroless images build and run for linux/amd64 and linux/arm64; both pass final-image fixture checks, and the final container reaches the live receiver. Discord acceptance awaits the operator's guild ID. |
-| Phase 7 | Baseline complete; soak gate open | Five-sample benchmarks and short 10× replay/soak pass. The required 24-hour intended-host soak and representative PGO decision remain release gates. |
+| Phase 7 | Optimized baseline complete; soak gate open | Snapshot metadata publications reuse immutable indexes, caches and tracks are bounded, and expanded benchmark/replay coverage exists. The required 24-hour intended-host soak and representative PGO decision remain release gates. |
 | Phase 8 | Implemented for selected pattern | Private-tunnel deployment is documented and the future agent envelope is validated. Agent transport/PostgreSQL/leadership remain intentionally conditional because no multi-replica cloud platform was selected. |
 | Phase 9 | Implemented; release gate open | CI/release workflows, license/vulnerability checks, operations, backup, upgrade, rollback, and token rotation documentation exist. v1.0 tagging and live disaster-recovery rehearsal await the open acceptance gates. |
+
+---
+
+### Trust, presentation, and information roadmap checkpoint — 2026-08-25
+
+- [x] Typed live/enrichment/route provenance prevents ADSBDB routes from entering durable traffic rankings; migration 010 purges unproven derived route data.
+- [x] Reports distinguish observations, peak tracked aircraft, and emergency transitions; rollups flush in coalesced 15-second batches.
+- [x] Rule, weather, enrichment, interaction, track, and plot state have explicit retention and capacity bounds.
+- [x] Route prefetch admission is typed and rotates fairly; Discord delivery uses isolated critical, alert, and background lanes.
+- [x] Plane Alert and all HTTP adapters enforce body, redirect, timeout, and malformed-response protections with provider URL allowlists.
+- [x] Discord uses concise layered cards, centralized emergency meanings, composite attribution, personal/guild units, plain-language weather, and permission-aware help.
+- [x] Movement notifications require three compatible samples and are explicitly labeled as inferred trends.
+- [x] Recent tracks are memory-only, sampled at most every five seconds, capped at 180 points for up to 2,000 aircraft, and rendered locally on demand.
+- [x] Metadata-only snapshots reuse immutable aircraft/index/search data; search sorting no longer builds joined allocation-heavy keys.
+- [ ] Complete the 24-hour ARM64 soak and live development-guild acceptance before v1.0.
 
 ---
 

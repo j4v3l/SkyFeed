@@ -92,12 +92,20 @@ metrics bind only to `127.0.0.1:9090` on the host.
 ## Discord interface
 
 SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
-`/airline`, `/squawk`, `/top`, `/privacy`, `/watch`, `/alerts`, `/reports`,
+`/airline`, `/squawk`, `/emergency`, `/traffic`, `/top live`, `/top traffic`,
+`/privacy`, `/preferences units`, `/watch`, `/alerts`, `/reports`, `/audit`,
 `/feeder`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
-message context menu. Nearby pages are bound to their initiating user and
-expire. Buttons, select menus, HTTPS link buttons, modals, and autocomplete use
-opaque versioned session IDs. Settings and durable administration are private;
-allowed mentions default to none.
+message context menu. Aircraft results begin with a concise card; invoker-bound
+**Details**, **Track**, **Route / Weather**, **Watch**, **Refresh**, and **Close**
+actions reveal more only when requested. Track plots are generated locally from
+a bounded, memory-only 15-minute history and are never written to SQLite.
+Nearby pages and component sessions expire. Buttons, select menus, HTTPS link
+buttons, modals, and autocomplete use opaque versioned session IDs. Settings
+and durable administration are private; allowed mentions default to none.
+
+Use `/preferences units` to choose personal aviation or metric units. A personal
+choice overrides the server default set by `/settings units`; scheduled reports
+and the live dashboard use the server default.
 
 `/alerts configure` can target the Movements category (takeoff, landing, and
 approach, feeder-only) in addition to watches, emergencies, feeder health, and
@@ -135,7 +143,8 @@ Discord so admins can assign Operator and Moderator roles to members.
 
 Viewer commands remain public. Operators see `/alerts` and `/reports` (Manage
 Server) and manage server watch rules. Moderators see `/moderation` (Moderate
-Members). Admins see `/settings` (Manage Roles) and every lower-tier command.
+Members). Admins see `/settings` with Manage Server and every lower-tier
+command; changing role bindings additionally requires Manage Roles.
 Discord Administrators always see the full command list. Bot DMs stay Admin-only
 at runtime even though Discord shows the command picker there. Moderators can
 warn, timeout, remove timeouts, kick, ban, unban, and inspect bounded case
@@ -152,6 +161,9 @@ Daily and weekly report schedules are delivered by the bounded outbound
 scheduler and record their last successful run to prevent restart duplicates.
 Operator, owner, and aircraft-type watch rules are visibly best-effort and use
 only asynchronously cached ADSBDB metadata; they can never become emergencies.
+Movement alerts require three consecutive compatible observations and are
+labeled **likely takeoff**, **likely landing**, or **approach trend** because
+they are inferred from ADS-B movement rather than authoritative airport events.
 
 ## Aircraft sources and privacy
 
@@ -185,8 +197,15 @@ sends only normalized callsigns plus each aircraft's already-public position to
 receiver or home position is transmitted.
 
 Route and airport responses are attributed in Discord (`adsb.lol route and
-airport data (ODbL)`). Cached enrichment is transient, excluded from SQLite
-exports, and covered by the same `/privacy` disclosure as other providers.
+airport data (ODbL)`). Full provider responses and live route cards remain in
+bounded memory. SkyFeed stores only a derived, source-labeled route catalog and
+hourly sighting counts for `/top traffic`; these rows are never populated from
+ADSBDB and are purged if their provenance cannot be proven. The behavior is
+covered by the same `/privacy` disclosure as other providers.
+
+Upgrade note: migration 010 deliberately clears older derived route rankings
+and rebuilds them from source-labeled adsb.lol sightings. It preserves server
+settings, watch rules, moderation cases, and legacy report observation counts.
 
 Disable adsb.lol traffic immediately by setting `SKYFEED_ADSBLOL_ENABLED=false`
 and recreating the container.
@@ -325,9 +344,11 @@ for the full `.env` → NixOS mapping, permissions, and module options.
 
 ADSBDB is opt-in and presentation-only. Route enrichment is independently off
 by default. The software license and underlying dataset rights are separate;
-confirm the intended private/public Discord use before enabling routes. Route
-data is transient, attributed when shown, excluded from exports, and never
-stored in SQLite. Synthetic route data is used in tests.
+confirm the intended private/public Discord use before enabling routes. ADSBDB
+route data is transient, attributed when shown, excluded from exports,
+and never stored in SQLite. Separate adsb.lol-derived route sighting analytics
+may be stored for `/top traffic` with mandatory source metadata. Synthetic
+route data is used in tests.
 
 ## Development and performance
 

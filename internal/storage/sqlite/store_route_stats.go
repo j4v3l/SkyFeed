@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -34,12 +35,13 @@ func (store *Store) recordRouteSightingsTx(ctx context.Context, transaction *sql
 		bucket = time.Now().UTC().Truncate(time.Hour)
 	}
 	catalogStatement := `INSERT INTO route_catalog(
-		callsign, airline_name, airline_icao, airline_iata,
+		source, callsign, airline_name, airline_icao, airline_iata,
 		origin_icao, origin_iata, origin_name, origin_country_iso,
 		destination_icao, destination_iata, destination_name, destination_country_iso,
 		plausible, plausibility_known, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(callsign) DO UPDATE SET
+		source=excluded.source,
 		airline_name=excluded.airline_name,
 		airline_icao=excluded.airline_icao,
 		airline_iata=excluded.airline_iata,
@@ -60,8 +62,11 @@ ON CONFLICT(guild_id, icao, bucket_start) DO UPDATE SET
 	sightings=sightings+1`
 	for _, observation := range batch.Observations {
 		route := observation.Route
+		if route.Source != domain.DataSourceADSBLOL {
+			return fmt.Errorf("persist route source %q: only adsb.lol is allowed", route.Source)
+		}
 		_, err := transaction.ExecContext(ctx, catalogStatement,
-			route.Callsign, route.AirlineName, route.AirlineICAO, route.AirlineIATA,
+			string(route.Source), route.Callsign, route.AirlineName, route.AirlineICAO, route.AirlineIATA,
 			route.OriginICAO, route.OriginIATA, route.OriginName, route.OriginCountryISO,
 			route.DestinationICAO, route.DestinationIATA, route.DestinationName, route.DestinationCountryISO,
 			boolInt(route.Plausible), boolInt(route.PlausibilityKnown), formatTime(route.UpdatedAt.UTC()),

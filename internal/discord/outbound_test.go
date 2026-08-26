@@ -88,6 +88,45 @@ func TestOutboundCoalescesAndRetries(t *testing.T) {
 	}
 }
 
+func TestOutboundCriticalLaneBypassesSlowRetryingBackground(t *testing.T) {
+	scheduler := NewOutboundScheduler(1, 1, 1, 1)
+	scheduler.retryBase = 50 * time.Millisecond
+	backgroundStarted := make(chan struct{})
+	releaseBackground := make(chan struct{})
+	if err := scheduler.Enqueue(context.Background(), OutboundJob{Key: "report", Priority: PriorityReport, Retryable: true, Run: func(context.Context) error {
+		select {
+		case <-backgroundStarted:
+		default:
+			close(backgroundStarted)
+		}
+		<-releaseBackground
+		return errors.New("slow failure")
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- scheduler.Run(ctx) }()
+	<-backgroundStarted
+	criticalRan := make(chan struct{})
+	if err := scheduler.Enqueue(context.Background(), OutboundJob{Priority: PriorityEmergency, Run: func(context.Context) error {
+		close(criticalRan)
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-criticalRan:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("critical job waited behind background retry")
+	}
+	close(releaseBackground)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestModerationLogBackoffIsBounded(t *testing.T) {
 	if got := moderationLogBackoff(0); got != 5*time.Second {
 		t.Fatalf("first retry=%s", got)

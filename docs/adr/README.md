@@ -14,3 +14,4 @@ rationale.
 | [0006](0006-deployment-networking.md) | Private receiver networking and cloud boundary | Accepted |
 | [0007](0007-pgo-deferred.md) | Defer PGO pending representative evidence | Accepted |
 | [0008](0008-cloud-private-path.md) | Private tunnel as initial cloud path | Accepted |
+| [0009](0009-provenance-and-rollup-batching.md) | Provenance-gated route analytics and coalesced report rollups | Accepted |

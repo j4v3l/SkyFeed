@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 const customIDPrefix = "sf:v1:"
@@ -29,6 +31,7 @@ type Session struct {
 	Sort                  string
 	Query                 string
 	Squawk                string
+	Units                 domain.UnitSystem
 	Page                  int
 	PageSize              int
 	RadiusNM              float64

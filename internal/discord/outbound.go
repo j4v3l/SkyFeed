@@ -128,13 +128,23 @@ func (scheduler *OutboundScheduler) Enqueue(ctx context.Context, job OutboundJob
 }
 
 func (scheduler *OutboundScheduler) Run(ctx context.Context) error {
+	var workers sync.WaitGroup
+	workers.Add(3)
+	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextCritical) }()
+	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextAlert) }()
+	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextBackground) }()
+	workers.Wait()
+	return nil
+}
+
+func (scheduler *OutboundScheduler) runLane(ctx context.Context, next func(context.Context) (OutboundJob, bool)) {
 	for {
-		job, ok := scheduler.next(ctx)
+		job, ok := next(ctx)
 		if !ok {
-			return nil
+			return
 		}
-		scheduler.releasePending(job)
 		scheduler.execute(ctx, job)
+		scheduler.releasePending(job)
 	}
 }
 
@@ -200,8 +210,7 @@ func (scheduler *OutboundScheduler) releasePending(job OutboundJob) {
 	scheduler.mu.Unlock()
 }
 
-func (scheduler *OutboundScheduler) next(ctx context.Context) (OutboundJob, bool) {
-	// The non-blocking cascade makes queued high-priority work deterministic.
+func (scheduler *OutboundScheduler) nextCritical(ctx context.Context) (OutboundJob, bool) {
 	select {
 	case job := <-scheduler.emergency:
 		return job, true
@@ -209,21 +218,6 @@ func (scheduler *OutboundScheduler) next(ctx context.Context) (OutboundJob, bool
 	}
 	select {
 	case job := <-scheduler.interaction:
-		return job, true
-	default:
-	}
-	select {
-	case job := <-scheduler.alert:
-		return job, true
-	default:
-	}
-	select {
-	case job := <-scheduler.dashboard:
-		return job, true
-	default:
-	}
-	select {
-	case job := <-scheduler.report:
 		return job, true
 	default:
 	}
@@ -234,8 +228,27 @@ func (scheduler *OutboundScheduler) next(ctx context.Context) (OutboundJob, bool
 		return job, true
 	case job := <-scheduler.interaction:
 		return job, true
+	}
+}
+
+func (scheduler *OutboundScheduler) nextAlert(ctx context.Context) (OutboundJob, bool) {
+	select {
+	case <-ctx.Done():
+		return OutboundJob{}, false
 	case job := <-scheduler.alert:
 		return job, true
+	}
+}
+
+func (scheduler *OutboundScheduler) nextBackground(ctx context.Context) (OutboundJob, bool) {
+	select {
+	case job := <-scheduler.dashboard:
+		return job, true
+	default:
+	}
+	select {
+	case <-ctx.Done():
+		return OutboundJob{}, false
 	case job := <-scheduler.dashboard:
 		return job, true
 	case job := <-scheduler.report:

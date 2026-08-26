@@ -8,6 +8,7 @@ import (
 
 func TestRouteCatalogFromDomainRequiresSimplePlausibleRoute(t *testing.T) {
 	route := domain.Route{
+		Source:      domain.DataSourceADSBLOL,
 		Callsign:    "AAL100",
 		Origin:      domain.Airport{ICAO: "KJFK", IATA: "JFK", CountryCode: "US"},
 		Destination: domain.Airport{ICAO: "KPBI", IATA: "PBI", CountryCode: "US"},

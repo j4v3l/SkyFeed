@@ -258,6 +258,7 @@ func mapRoute(callsign string, value routeDTO) (domain.Route, bool) {
 		airports = append(airports, airport)
 	}
 	route := domain.Route{
+		Source:      domain.DataSourceADSBLOL,
 		Callsign:    callsign,
 		AirlineICAO: sanitizeCode(value.AirlineCode, 4),
 		Origin:      airports[0],
@@ -385,7 +386,6 @@ func decodeRoutes(reader io.Reader) ([]routeDTO, error) {
 func decode(reader io.Reader, maxBytes int64, destination any) error {
 	limited := http.MaxBytesReader(nil, io.NopCloser(reader), maxBytes)
 	decoder := json.NewDecoder(limited)
-	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(destination); err != nil {
 		return err
 	}

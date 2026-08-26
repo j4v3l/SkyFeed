@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -14,24 +15,26 @@ type compiledRule struct {
 }
 
 type Index struct {
-	icao         map[string][]compiledRule
-	registration map[string][]compiledRule
-	callsign     map[string][]compiledRule
-	squawk       map[string][]compiledRule
-	prefixes     []compiledRule
-	radius       []compiledRule
-	altitude     []compiledRule
-	firstSeen    []compiledRule
-	operator     map[string][]compiledRule
-	owner        map[string][]compiledRule
-	aircraftType map[string][]compiledRule
-	count        int
+	icao          map[string][]compiledRule
+	registration  map[string][]compiledRule
+	callsign      map[string][]compiledRule
+	squawk        map[string][]compiledRule
+	prefixes      map[int]map[string][]compiledRule
+	prefixLengths []int
+	radius        []compiledRule
+	altitude      []compiledRule
+	firstSeen     []compiledRule
+	operator      map[string][]compiledRule
+	owner         map[string][]compiledRule
+	aircraftType  map[string][]compiledRule
+	count         int
 }
 
 func BuildIndex(rules []domain.WatchRule) *Index {
 	index := &Index{
 		icao: make(map[string][]compiledRule), registration: make(map[string][]compiledRule),
 		callsign: make(map[string][]compiledRule), squawk: make(map[string][]compiledRule),
+		prefixes: make(map[int]map[string][]compiledRule),
 		operator: make(map[string][]compiledRule), owner: make(map[string][]compiledRule), aircraftType: make(map[string][]compiledRule),
 	}
 	for _, rule := range rules {
@@ -53,12 +56,18 @@ func BuildIndex(rules []domain.WatchRule) *Index {
 		case domain.RuleSquawk:
 			index.squawk[value] = append(index.squawk[value], compiled)
 		case domain.RuleCallsignPrefix:
-			index.prefixes = append(index.prefixes, compiled)
+			length := len(value)
+			if index.prefixes[length] == nil {
+				index.prefixes[length] = make(map[string][]compiledRule)
+				index.prefixLengths = append(index.prefixLengths, length)
+			}
+			index.prefixes[length][value] = append(index.prefixes[length][value], compiled)
 		case domain.RuleRadius:
 			index.radius = append(index.radius, compiled)
 		case domain.RuleAltitude:
 			index.altitude = append(index.altitude, compiled)
 		case domain.RuleFirstSeen:
+			compiled.rule.MinimumObservations = 1
 			index.firstSeen = append(index.firstSeen, compiled)
 		case domain.RuleOperator:
 			compiled.rule.BestEffortEnrichment = true
@@ -77,6 +86,7 @@ func BuildIndex(rules []domain.WatchRule) *Index {
 		}
 		index.count++
 	}
+	sort.Ints(index.prefixLengths)
 	return index
 }
 

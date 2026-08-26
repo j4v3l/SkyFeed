@@ -6,9 +6,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+)
+
+const (
+	maxMetadataBytes = 256 << 10
+	maxCSVBytes      = 32 << 20
+	maxCSVRows       = 100_000
+	maxCSVFieldBytes = 4 << 10
 )
 
 type Loader struct {
@@ -24,9 +33,16 @@ func NewLoader(url string, timeout time.Duration) *Loader {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
+	transport := &http.Transport{
+		Proxy:             http.ProxyFromEnvironment,
+		DialContext:       (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2: true, MaxIdleConns: 4, MaxIdleConnsPerHost: 2,
+		IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 2 * time.Second,
+		ResponseHeaderTimeout: min(timeout, 10*time.Second),
+	}
 	return &Loader{
 		url:        url,
-		httpClient: &http.Client{Timeout: timeout},
+		httpClient: &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 		now:        time.Now,
 	}
 }
@@ -42,9 +58,10 @@ func (loader *Loader) LatestCommitHash(ctx context.Context) (string, error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		discardBounded(response.Body, maxMetadataBytes)
 		return "", fmt.Errorf("plane-alert-db commit lookup: HTTP %s", response.Status)
 	}
-	body, err := io.ReadAll(response.Body)
+	body, err := readBounded(response.Body, maxMetadataBytes)
 	if err != nil {
 		return "", err
 	}
@@ -77,13 +94,21 @@ func (loader *Loader) FetchRecords(ctx context.Context) ([]Record, string, error
 	if err != nil {
 		return nil, "", err
 	}
+	if !safeSourceURL(request.URL) {
+		return nil, "", fmt.Errorf("fetch plane-alert-db CSV: source URL must use HTTPS or loopback HTTP")
+	}
+	request.Header.Set("Accept", "text/csv, application/csv;q=0.9")
 	response, err := loader.httpClient.Do(request)
 	if err != nil {
 		return nil, "", fmt.Errorf("fetch plane-alert-db CSV: %w", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		discardBounded(response.Body, maxMetadataBytes)
 		return nil, "", fmt.Errorf("fetch plane-alert-db CSV: HTTP %s", response.Status)
+	}
+	if response.ContentLength > maxCSVBytes {
+		return nil, "", fmt.Errorf("fetch plane-alert-db CSV: response is too large")
 	}
 	records, err := parseCSV(response.Body)
 	if err != nil {
@@ -100,40 +125,83 @@ func isCustomURL(url string) bool {
 }
 
 func parseCSV(reader io.Reader) ([]Record, error) {
-	csvReader := csv.NewReader(reader)
-	rows, err := csvReader.ReadAll()
+	limited := &io.LimitedReader{R: reader, N: maxCSVBytes + 1}
+	csvReader := csv.NewReader(limited)
+	csvReader.FieldsPerRecord = -1
+	csvReader.ReuseRecord = true
+	headings, err := csvReader.Read()
 	if err != nil {
-		return nil, fmt.Errorf("read plane-alert-db CSV: %w", err)
+		return nil, fmt.Errorf("read plane-alert-db CSV header: %w", err)
 	}
-	if len(rows) < 2 {
-		return nil, fmt.Errorf("read plane-alert-db CSV: no data rows")
-	}
-	headers := headerMap(rows[0])
-	records := make([]Record, 0, len(rows)-1)
-	for _, row := range rows[1:] {
+	headers := headerMap(append([]string(nil), headings...))
+	records := make([]Record, 0, 4096)
+	for rowNumber := 1; ; rowNumber++ {
+		row, readErr := csvReader.Read()
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			if limited.N <= 0 {
+				return nil, fmt.Errorf("read plane-alert-db CSV: response exceeds %d bytes", maxCSVBytes)
+			}
+			return nil, fmt.Errorf("read plane-alert-db CSV: %w", readErr)
+		}
+		if rowNumber > maxCSVRows {
+			return nil, fmt.Errorf("read plane-alert-db CSV: exceeds %d rows", maxCSVRows)
+		}
+		for _, value := range row {
+			if len(value) > maxCSVFieldBytes {
+				return nil, fmt.Errorf("read plane-alert-db CSV: row %d contains an oversized field", rowNumber)
+			}
+		}
 		icao := field(row, headers, "$ICAO")
 		if icao == "" {
 			continue
 		}
 		records = append(records, Record{
-			ICAO:         strings.ToUpper(icao),
-			Registration: field(row, headers, "$Registration"),
-			Operator:     field(row, headers, "$Operator"),
-			Type:         field(row, headers, "$Type"),
-			ICAOType:     field(row, headers, "$ICAO Type"),
-			Group:        field(row, headers, "#CMPG"),
-			Tag1:         field(row, headers, "$Tag 1"),
-			Tag2:         field(row, headers, "$#Tag 2"),
-			Tag3:         field(row, headers, "$#Tag 3"),
-			Category:     field(row, headers, "Category"),
-			Link:         field(row, headers, "$#Link"),
-			Image1:       field(row, headers, "#ImageLink"),
-			Image2:       field(row, headers, "#ImageLink2"),
-			Image3:       field(row, headers, "#ImageLink3"),
-			Image4:       field(row, headers, "#ImageLink4"),
+			ICAO: strings.ToUpper(icao), Registration: field(row, headers, "$Registration"), Operator: field(row, headers, "$Operator"),
+			Type: field(row, headers, "$Type"), ICAOType: field(row, headers, "$ICAO Type"), Group: field(row, headers, "#CMPG"),
+			Tag1: field(row, headers, "$Tag 1"), Tag2: field(row, headers, "$#Tag 2"), Tag3: field(row, headers, "$#Tag 3"),
+			Category: field(row, headers, "Category"), Link: field(row, headers, "$#Link"), Image1: field(row, headers, "#ImageLink"),
+			Image2: field(row, headers, "#ImageLink2"), Image3: field(row, headers, "#ImageLink3"), Image4: field(row, headers, "#ImageLink4"),
 		})
 	}
+	if limited.N <= 0 {
+		return nil, fmt.Errorf("read plane-alert-db CSV: response exceeds %d bytes", maxCSVBytes)
+	}
+	if len(records) == 0 {
+		return nil, fmt.Errorf("read plane-alert-db CSV: no data rows")
+	}
 	return records, nil
+}
+
+func readBounded(reader io.Reader, limit int64) ([]byte, error) {
+	body, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return body, nil
+}
+
+func discardBounded(reader io.Reader, limit int64) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(reader, limit))
+}
+
+func safeSourceURL(value *url.URL) bool {
+	if value == nil || value.User != nil || value.Hostname() == "" || value.RawQuery != "" || value.Fragment != "" {
+		return false
+	}
+	if value.Scheme == "https" {
+		return true
+	}
+	if value.Scheme != "http" {
+		return false
+	}
+	host := value.Hostname()
+	return strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback())
 }
 
 func headerMap(headers []string) map[string]int {

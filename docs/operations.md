@@ -76,10 +76,21 @@ labels in metrics output.
 ## Database
 
 SQLite uses WAL, foreign keys, a busy timeout, forward-only migrations, and one
-bounded batch writer. A full writer queue or failed durable batch is an
-operational fault. Use the binary's `backup` command while running. Stop the
-application before `restore`; the old database and any WAL/SHM sidecars are
-preserved under the same timestamped rollback prefix.
+bounded batch writer. Report rollups are coalesced in memory and flush every 15
+seconds, at hour rollover, and during graceful shutdown. A crash can therefore
+lose at most the unflushed report window, not live aircraft state. Transient
+busy errors retry the same retained batch within a fixed budget and degrade
+database readiness. A permanent/corrupt database disables durable
+administration and keeps safe live aircraft commands and ingest running; it
+must be repaired before readiness recovers. A full writer queue remains an
+operational fault.
+
+Migration 010 intentionally purges the derived route catalog and sightings,
+then requires `adsb-lol` source metadata. Traffic rankings rebuild from new
+adsb.lol observations; ADSBDB routes never enter SQLite. Use the binary's
+`backup` command while running. Stop the application before `restore`; the old
+database and any WAL/SHM sidecars are preserved under the same timestamped
+rollback prefix.
 
 ## Upgrade and rollback
 
@@ -96,8 +107,11 @@ run backward.
   or emergency state.
 - airplanes.live fallback is cancellation-safe and never logs URLs or center
   coordinates on errors.
-- Discord disconnects leave ingest/rules active while bounded outbound queues
-  coalesce dashboards and normal duplicate alerts.
+- Discord disconnects leave ingest/rules active while fixed critical, alert,
+  and background lanes prevent report/dashboard retries from delaying
+  emergencies and coalesce dashboards and normal duplicate alerts.
+- Recent tracks are sampled at most every five seconds, kept only in bounded
+  memory for 15 minutes, and rendered locally on demand. A restart clears them.
 - pprof is disabled unless `SKYFEED_PPROF_ADDR` is explicitly set to loopback.
 - Metrics never label ICAO, callsign, guild, channel, user IDs, airport codes,
   or coordinates.

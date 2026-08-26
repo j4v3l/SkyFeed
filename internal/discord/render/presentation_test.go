@@ -8,6 +8,7 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
+	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
 func TestBoundEmbedEnforcesLimits(t *testing.T) {
@@ -85,7 +86,7 @@ func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 			embed := Help(now, test.manage)
 			found := false
 			for _, field := range embed.Fields {
-				found = found || field.Name == "/settings"
+				found = found || field.Name == "Administration"
 			}
 			if found != test.wantConfig {
 				t.Fatalf("settings visibility = %t, want %t", found, test.wantConfig)
@@ -274,6 +275,118 @@ func TestAircraftUsesSectionFieldsNotInlineColumns(t *testing.T) {
 		if field.Inline != nil && *field.Inline {
 			t.Fatalf("field %q should be full-width for mobile readability", field.Name)
 		}
+	}
+}
+
+func TestAircraftClassifiesEmergencySquawksWithoutEmergencyField(t *testing.T) {
+	for _, code := range []string{"7500", "7600", "7700"} {
+		embed := Aircraft(domain.Aircraft{ICAO: "ABC123", Squawk: code}, nil, time.Unix(1_700_000_000, 0))
+		if embed.Color != EmergencyColor || !strings.Contains(fieldMap(embed)["Live"], "🔴") {
+			t.Fatalf("squawk %s embed = %#v", code, embed)
+		}
+	}
+}
+
+func TestAircraftFooterCombinesLiveAndEnrichmentProvenance(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := &domain.Snapshot{ActiveProvider: domain.ProviderAirplanesLive, FetchedAt: now.Add(-2 * time.Second)}
+	route := &domain.Route{Source: domain.DataSourceADSBLOL, Attribution: "adsb.lol route data"}
+	value := &domain.Enrichment{Found: true, FetchedAt: now.Add(-time.Minute), Aircraft: &domain.AircraftMetadata{Source: domain.DataSourceADSBDB}}
+	embed := AircraftWithEnrichment(domain.Aircraft{ICAO: "ABC123", Provider: domain.ProviderAirplanesLive}, snapshot, value, route, now)
+	footer := embed.Footer.Text
+	for _, expected := range []string{"airplanes-live", "ADSBDB", "adsb-lol"} {
+		if !strings.Contains(footer, expected) {
+			t.Fatalf("footer %q missing %q", footer, expected)
+		}
+	}
+	if strings.Contains(strings.ToLower(footer), "receiver") || strings.Contains(strings.ToLower(footer), "readsb") {
+		t.Fatalf("provider-aware footer = %q", footer)
+	}
+}
+
+func TestAircraftUnknownProviderDoesNotClaimReadsb(t *testing.T) {
+	embed := Aircraft(domain.Aircraft{ICAO: "ABC123"}, nil, time.Unix(1_700_000_000, 0))
+	content := strings.ToLower(embed.Description + " " + embed.Footer.Text)
+	if strings.Contains(content, "readsb") || strings.Contains(content, "receiver") {
+		t.Fatalf("unknown provider made a false receiver claim: %q", content)
+	}
+}
+
+func TestAircraftAndRouteUseCompositeProviderFootersWithoutSnapshot(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	aircraft := domain.Aircraft{ICAO: "ABC123", Provider: domain.ProviderAirplanesLive, Seen: 2 * time.Second}
+	aircraftEmbed := Aircraft(aircraft, nil, now)
+	if !strings.Contains(aircraftEmbed.Footer.Text, "airplanes-live") {
+		t.Fatalf("aircraft footer = %q", aircraftEmbed.Footer.Text)
+	}
+
+	route := Route(domain.Route{Source: domain.DataSourceADSBLOL, Attribution: "adsb.lol route data"}, aircraft, "KJFK METAR", "", now)
+	for _, expected := range []string{"airplanes-live", "adsb-lol", "aviationweather.gov"} {
+		if !strings.Contains(route.Footer.Text, expected) {
+			t.Fatalf("route footer %q missing %q", route.Footer.Text, expected)
+		}
+	}
+}
+
+func TestAircraftRendersBothUnitSystemsAndTrends(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	aircraft := domain.Aircraft{ICAO: "ABC123", HasDistance: true, DistanceNM: 10, BearingDegrees: 45, HasAltitude: true, AltitudeFeet: 10_000, HasGroundSpeed: true, GroundSpeedKts: 100, HasVerticalRate: true, VerticalRateFPM: -500}
+	aviation := fieldMap(AircraftSummary(aircraft, nil, domain.UnitsAviation, now))["Live"]
+	metric := fieldMap(AircraftSummary(aircraft, nil, domain.UnitsMetric, now))["Live"]
+	for _, expected := range []string{"NE", "10.0 NM", "10000 ft", "100 kt", "↓ -500 ft/min"} {
+		if !strings.Contains(aviation, expected) {
+			t.Fatalf("aviation %q missing %q", aviation, expected)
+		}
+	}
+	for _, expected := range []string{"18.5 km", "3048 m", "185 km/h", "↓ -2.5 m/s"} {
+		if !strings.Contains(metric, expected) {
+			t.Fatalf("metric %q missing %q", metric, expected)
+		}
+	}
+}
+
+func TestListFooterUsesActualLiveProvider(t *testing.T) {
+	embed := NearbyWithUnits([]domain.Aircraft{{
+		ICAO: "ABC123", Provider: domain.ProviderAirplanesLive, Seen: 3 * time.Second,
+	}}, 0, 10, time.Unix(1_700_000_000, 0), domain.UnitsAviation)
+	footer := embed.Footer.Text
+	if !strings.Contains(footer, "airplanes-live") || !strings.Contains(footer, "3s old") {
+		t.Fatalf("provider footer = %q", footer)
+	}
+	if strings.Contains(strings.ToLower(footer), "readsb") || strings.Contains(strings.ToLower(footer), "receiver") {
+		t.Fatalf("provider footer made a false receiver claim: %q", footer)
+	}
+}
+
+func TestAirportAirlineAndReportRespectMetricUnits(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	airport := AirportWithWeatherViewAndUnits(domain.Airport{ICAO: "KJFK", HasElevation: true, ElevationFeet: 1000}, WeatherView{}, false, now, domain.UnitsMetric)
+	if got := fieldMap(airport)["Elevation"]; got != "305 m" {
+		t.Fatalf("metric airport elevation = %q", got)
+	}
+
+	airline := AirlineWithUnits(domain.Airline{ICAO: "SKY"}, []domain.Aircraft{{
+		ICAO: "ABC123", Provider: domain.ProviderReadsb, HasDistance: true, DistanceNM: 10,
+	}}, now, domain.UnitsMetric)
+	if got := fieldMap(airline)["1. ABC123"]; !strings.Contains(got, "18.5 km") {
+		t.Fatalf("metric airline row = %q", got)
+	}
+
+	report := ReportWithUnits(storage.ReportSummary{From: now.Add(-time.Hour), To: now, MaximumRangeNM: 10}, domain.UnitsMetric)
+	if got := fieldMap(report)["Range & alerts"]; !strings.Contains(got, "18.5 km") {
+		t.Fatalf("metric report = %q", got)
+	}
+}
+
+func TestPlaneAlertURLAllowlistsRejectArbitraryHTTPS(t *testing.T) {
+	if _, ok := SafeHTTPSURL("https://evil.example/aircraft"); ok {
+		t.Fatal("arbitrary reference host accepted")
+	}
+	if _, ok := SafePlaneAlertImageURL("https://github.com/example/photo.jpg"); ok {
+		t.Fatal("non-image provider accepted")
+	}
+	if _, ok := SafePlaneAlertImageURL("https://upload.wikimedia.org/example.jpg"); !ok {
+		t.Fatal("allowlisted image provider rejected")
 	}
 }
 

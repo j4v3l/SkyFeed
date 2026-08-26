@@ -13,6 +13,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
+	"github.com/j4v3l/SkyFeed/internal/weather/aviationweather"
 )
 
 type snapshotStub struct{ snapshot *domain.Snapshot }
@@ -153,7 +154,17 @@ func TestRouterComponentBindingAndModalFlow(t *testing.T) {
 	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
 		t.Fatal(err)
 	}
-	button := recorder.created[0].Components[0].(disgocord.ActionRowComponent).Components[0].(disgocord.ButtonComponent)
+	var button disgocord.ButtonComponent
+	for _, component := range recorder.created[0].Components[0].(disgocord.ActionRowComponent).Components {
+		candidate := component.(disgocord.ButtonComponent)
+		if candidate.Label == "Watch" {
+			button = candidate
+			break
+		}
+	}
+	if button.CustomID == "" {
+		t.Fatal("watch button missing")
+	}
 	wrongUser := &responseRecorder{}
 	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 9, GuildID: 2, ChannelID: 3}, wrongUser); err != nil {
 		t.Fatal(err)
@@ -252,7 +263,7 @@ func TestRouterTopRanksByMetric(t *testing.T) {
 	snapshot.Aircraft[1].Messages = 200
 	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, time.Minute), 2, now)
 	recorder := &responseRecorder{}
-	if err := router.HandleCommand(CommandRequest{Name: "top", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "messages"}, Ints: map[string]int{"limit": 1}}, recorder); err != nil {
+	if err := router.HandleCommand(CommandRequest{Name: "top", Subcommand: "live", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "messages"}, Ints: map[string]int{"limit": 1}}, recorder); err != nil {
 		t.Fatal(err)
 	}
 	if len(recorder.created) != 1 || len(recorder.created[0].Embeds) != 1 {
@@ -260,6 +271,46 @@ func TestRouterTopRanksByMetric(t *testing.T) {
 	}
 	if !strings.Contains(recorder.created[0].Embeds[0].Fields[0].Name, "SKY456") {
 		t.Fatalf("top ranking = %#v", recorder.created[0].Embeds[0].Fields)
+	}
+}
+
+func TestRouterPersonalUnitsOverrideGuildDefault(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	if err := repository.EnsureGuild(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := repository.GuildSettings(context.Background(), 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.Units = "metric"
+	if err := repository.UpsertGuildSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 2, now)
+	router.SetRepository(repository)
+	metric := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, metric); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(metric.created[0].Embeds[0].Fields[0].Value, "km") {
+		t.Fatalf("guild units not used: %#v", metric.created[0].Embeds[0])
+	}
+	preference := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "preferences", Subcommand: "units", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"system": "aviation"}}, preference); err != nil {
+		t.Fatal(err)
+	}
+	aviation := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 4, Strings: map[string]string{"query": "ABC123"}}, aviation); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(aviation.created[0].Embeds[0].Fields[0].Value, "NM") {
+		t.Fatalf("personal units not used: %#v", aviation.created[0].Embeds[0])
 	}
 }
 
@@ -278,7 +329,7 @@ func TestRouterTopRouteRankings(t *testing.T) {
 		BucketStart: now.UTC().Truncate(time.Hour),
 		Observations: []storage.RouteSightingsObservation{{
 			ICAO: "ABC123", Callsign: "SKY123",
-			Route: storage.RouteCatalog{
+			Route: storage.RouteCatalog{Source: domain.DataSourceADSBLOL,
 				Callsign: "SKY123", AirlineName: "Sky", AirlineICAO: "SKY",
 				OriginIATA: "JFK", OriginName: "JFK", OriginCountryISO: "US",
 				DestinationIATA: "PBI", DestinationName: "PBI", DestinationCountryISO: "US",
@@ -294,7 +345,7 @@ func TestRouterTopRouteRankings(t *testing.T) {
 	router.SetRoutes(catalogRouteStub{})
 	router.SetDomesticCountryISO("US")
 	recorder := &responseRecorder{}
-	if err := router.HandleCommand(CommandRequest{Name: "top", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "routes", "period": "all"}, Ints: map[string]int{"limit": 5}}, recorder); err != nil {
+	if err := router.HandleCommand(CommandRequest{Name: "top", Subcommand: "traffic", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"metric": "routes", "period": "all"}, Ints: map[string]int{"limit": 5}}, recorder); err != nil {
 		t.Fatal(err)
 	}
 	if len(recorder.created) != 1 || !strings.Contains(recorder.created[0].Embeds[0].Title, "routes") {
@@ -410,6 +461,49 @@ func TestAircraftMessageOmitsAirportSelectWhenCodesEmpty(t *testing.T) {
 	}
 }
 
+func TestAirportWeatherUsesSummaryBeforeRawDetailsAction(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	router.SetRoutes(catalogRouteStub{})
+	router.SetWeather(weatherStub{observation: aviationweather.Observation{
+		METAR: "KPBI 231453Z 14008KT 10SM FEW040", TAF: "KPBI 231120Z 2312/2412 14010KT P6SM SCT040",
+		FlightCategory: "VFR", METARStatus: "available", TAFStatus: "available", FetchedAt: now.Add(-time.Minute), Attribution: aviationweather.Attribution,
+	}})
+	initial := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "airport", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "KPBI"}}, initial); err != nil {
+		t.Fatal(err)
+	}
+	fields := fieldValues(initial.created[0].Embeds[0])
+	if !strings.Contains(fields, "generally visual conditions") || strings.Contains(fields, "231453Z") {
+		t.Fatalf("initial airport fields = %q", fields)
+	}
+	row := initial.created[0].Components[0].(disgocord.ActionRowComponent)
+	button := row.Components[0].(disgocord.ButtonComponent)
+	details := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, details); err != nil {
+		t.Fatal(err)
+	}
+	if len(details.updated) != 1 || !strings.Contains(fieldValues((*details.updated[0].Embeds)[0]), "231453Z") {
+		t.Fatalf("weather details = %#v", details.updated)
+	}
+}
+
+type weatherStub struct{ observation aviationweather.Observation }
+
+func (stub weatherStub) Lookup(context.Context, string) (aviationweather.Observation, error) {
+	return stub.observation, nil
+}
+
+func fieldValues(embed disgocord.Embed) string {
+	var builder strings.Builder
+	for _, field := range embed.Fields {
+		builder.WriteString(field.Value)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
+}
+
 type emptyAirportRouteStub struct{}
 
 func (emptyAirportRouteStub) CachedRoute(callsign string) (domain.Route, bool, error) {
@@ -424,8 +518,12 @@ func (emptyAirportRouteStub) LookupRoute(context.Context, enrichment.RouteReques
 func (emptyAirportRouteStub) LookupAirport(context.Context, string) (domain.Airport, error) {
 	return domain.Airport{}, nil
 }
-func (emptyAirportRouteStub) EnqueueRoute(enrichment.RouteRequest) bool { return true }
-func (emptyAirportRouteStub) EnqueueAirport(string) bool                { return true }
+func (emptyAirportRouteStub) EnqueueRoute(enrichment.RouteRequest) enrichment.AdmissionResult {
+	return enrichment.AdmissionEnqueued
+}
+func (emptyAirportRouteStub) EnqueueAirport(string) enrichment.AdmissionResult {
+	return enrichment.AdmissionEnqueued
+}
 
 func TestAircraftFollowUpUpdatesWhenEnrichmentArrives(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
@@ -461,7 +559,9 @@ type enrichmentFollowUpStub struct {
 func (stub enrichmentFollowUpStub) Cached(string, string) (domain.Enrichment, bool, error) {
 	return domain.Enrichment{}, false, nil
 }
-func (stub enrichmentFollowUpStub) Enqueue(string, string) bool { return true }
+func (stub enrichmentFollowUpStub) Enqueue(string, string) enrichment.AdmissionResult {
+	return enrichment.AdmissionEnqueued
+}
 func (stub enrichmentFollowUpStub) Lookup(context.Context, string, string) (domain.Enrichment, error) {
 	return stub.value, nil
 }

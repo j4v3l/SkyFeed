@@ -171,8 +171,8 @@ func formatBindings(data SystemAuditData) string {
 }
 
 func formatReportWindow(data SystemAuditData) string {
-	return fmt.Sprintf("%d observations · %d peak ICAOs · %d msgs\nmax %.1f NM · %d emergencies\nroute catalog %d · route sightings %d",
-		data.Report24h.AircraftSeen, data.Report24h.DistinctICAOs, data.Report24h.Messages, data.Report24h.MaximumRangeNM, data.Report24h.Emergencies, data.RouteCatalog, data.RouteSightings24h)
+	return fmt.Sprintf("%d aircraft observations · %d peak tracked · %d msgs\nmax %.1f NM · %d emergency events\nroute catalog %d · route sightings %d",
+		data.Report24h.AircraftObservations, data.Report24h.PeakTracked, data.Report24h.Messages, data.Report24h.MaximumRangeNM, data.Report24h.EmergencyEvents, data.RouteCatalog, data.RouteSightings24h)
 }
 
 func formatEnrichment(data SystemAuditData) string {

@@ -52,13 +52,17 @@ func NewClient(base *url.URL, timeout time.Duration) *Client {
 		IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: time.Second, ResponseHeaderTimeout: 1500 * time.Millisecond,
 	}
 	copyBase := *base
-	return &Client{base: &copyBase, httpClient: &http.Client{Transport: transport, Timeout: timeout}, now: time.Now}
+	return &Client{base: &copyBase, httpClient: &http.Client{Transport: transport, Timeout: timeout, CheckRedirect: rejectRedirect}, now: time.Now}
 }
 
 func NewClientWithHTTP(base *url.URL, client *http.Client) *Client {
 	copyBase := *base
-	return &Client{base: &copyBase, httpClient: client, now: time.Now}
+	httpCopy := *client
+	httpCopy.CheckRedirect = rejectRedirect
+	return &Client{base: &copyBase, httpClient: &httpCopy, now: time.Now}
 }
+
+func rejectRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 func (client *Client) Lookup(ctx context.Context, icao, callsign string) (domain.Enrichment, error) {
 	icao, callsign, _ = enrichment.NormalizeKey(icao, callsign)
@@ -212,10 +216,10 @@ func (client *Client) get(ctx context.Context, segments []string, dest any) erro
 func mapResponse(icao, callsign string, payload payloadDTO) domain.Enrichment {
 	result := domain.Enrichment{ICAO: icao, Callsign: callsign, Found: payload.Aircraft != nil || payload.FlightRoute != nil}
 	if value := payload.Aircraft; value != nil {
-		result.Aircraft = &domain.AircraftMetadata{Registration: value.Registration, AircraftType: value.Type, ICAOType: value.ICAOType, Manufacturer: value.Manufacturer, Owner: value.RegisteredOwner, OwnerCountry: firstNonEmpty(value.RegisteredOwnerCountryName, value.RegisteredOwnerCountryISOName), OperatorFlag: value.RegisteredOwnerOperatorFlagCode, PhotoURL: allowPhoto(value.PhotoURL), ThumbnailURL: allowPhoto(value.ThumbnailURL)}
+		result.Aircraft = &domain.AircraftMetadata{Source: domain.DataSourceADSBDB, Registration: value.Registration, AircraftType: value.Type, ICAOType: value.ICAOType, Manufacturer: value.Manufacturer, Owner: value.RegisteredOwner, OwnerCountry: firstNonEmpty(value.RegisteredOwnerCountryName, value.RegisteredOwnerCountryISOName), OperatorFlag: value.RegisteredOwnerOperatorFlagCode, PhotoURL: allowPhoto(value.PhotoURL), ThumbnailURL: allowPhoto(value.ThumbnailURL)}
 	}
 	if value := payload.FlightRoute; value != nil {
-		route := &domain.Route{Callsign: value.Callsign}
+		route := &domain.Route{Source: domain.DataSourceADSBDB, Callsign: value.Callsign, Attribution: "Route enrichment by ADSBDB"}
 		if value.Airline != nil {
 			route.AirlineName, route.AirlineICAO, route.AirlineIATA = value.Airline.Name, value.Airline.ICAO, value.Airline.IATA
 		}

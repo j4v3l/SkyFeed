@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -107,6 +108,27 @@ func TestPrivacyDisclosureIncludesExplicitPublicPointProvider(t *testing.T) {
 	}
 	if len(disclosure.Attribution) != 3 || disclosure.Attribution[0].Provider != "airplanes.live" {
 		t.Fatalf("attribution = %+v", disclosure.Attribution)
+	}
+}
+
+func TestPrivacyDisclosureNamesTransientTracksAndProviderSpecificRetention(t *testing.T) {
+	disclosure := privacyDisclosure(config.Config{
+		ADSBDB:     config.ADSBDB{Enabled: true, RouteEnabled: true},
+		AdsbLol:    config.AdsbLol{Enabled: true},
+		PlaneAlert: config.PlaneAlert{Enabled: true},
+	})
+	joinedProviders := strings.Join(disclosure.Providers, " ")
+	if !strings.Contains(joinedProviders, "plane-alert-db") {
+		t.Fatalf("enabled providers = %v", disclosure.Providers)
+	}
+	wording := ""
+	for _, value := range disclosure.Retention {
+		wording += value.Category + ": " + value.Period + "\n"
+	}
+	for _, expected := range []string{"track points expire after 15 minutes", "route values are never stored in SQLite", "source-labeled catalog"} {
+		if !strings.Contains(wording, expected) {
+			t.Fatalf("retention wording %q missing %q", wording, expected)
+		}
 	}
 }
 

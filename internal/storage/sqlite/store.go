@@ -98,6 +98,35 @@ func (store *Store) GuildSettings(ctx context.Context, guildID uint64) (storage.
 	return settings, err
 }
 
+func (store *Store) UpsertUserPreference(ctx context.Context, preference storage.UserPreference) error {
+	units, ok := domain.ParseUnitSystem(preference.Units)
+	if !ok {
+		return errors.New("user preference units must be aviation or metric")
+	}
+	now := preference.UpdatedAt.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	_, err := store.db.ExecContext(ctx, `INSERT INTO user_preferences(guild_id, user_id, units, updated_at) VALUES (?, ?, ?, ?)
+ON CONFLICT(guild_id, user_id) DO UPDATE SET units=excluded.units, updated_at=excluded.updated_at`, preference.GuildID, preference.UserID, units, formatTime(now))
+	return wrap("upsert user preference", err)
+}
+
+func (store *Store) UserPreference(ctx context.Context, guildID, userID uint64) (storage.UserPreference, error) {
+	var preference storage.UserPreference
+	var updated string
+	err := store.db.QueryRowContext(ctx, `SELECT guild_id, user_id, units, updated_at FROM user_preferences WHERE guild_id=? AND user_id=?`, guildID, userID).
+		Scan(&preference.GuildID, &preference.UserID, &preference.Units, &updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return storage.UserPreference{}, ErrNotFound
+	}
+	if err != nil {
+		return storage.UserPreference{}, fmt.Errorf("get user preference: %w", err)
+	}
+	preference.UpdatedAt, err = parseTime(updated)
+	return preference, err
+}
+
 func (store *Store) UpsertChannelBinding(ctx context.Context, binding storage.ChannelBinding) error {
 	now := binding.UpdatedAt.UTC()
 	if now.IsZero() {
@@ -293,6 +322,33 @@ SELECT rule_id, aircraft_icao, condition_fingerprint, last_fired_at, last_clear_
 	return result, rows.Err()
 }
 
+func (store *Store) PurgeAlertStates(ctx context.Context, before time.Time, limit int) (int64, error) {
+	limit = min(max(limit, 1), 10_000)
+	transaction, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin alert-state purge: %w", err)
+	}
+	var removed int64
+	for _, table := range []string{"alert_state", "system_alert_state"} {
+		result, execErr := transaction.ExecContext(ctx, `DELETE FROM `+table+` WHERE rowid IN (
+SELECT rowid FROM `+table+` WHERE active=0 AND COALESCE(NULLIF(last_clear_at, ''), NULLIF(last_fired_at, ''), '0001-01-01T00:00:00Z')<? ORDER BY COALESCE(NULLIF(last_clear_at, ''), NULLIF(last_fired_at, ''), '0001-01-01T00:00:00Z') LIMIT ?)`, formatTime(before.UTC()), limit)
+		if execErr != nil {
+			_ = transaction.Rollback()
+			return 0, fmt.Errorf("purge %s: %w", table, execErr)
+		}
+		count, countErr := result.RowsAffected()
+		if countErr != nil {
+			_ = transaction.Rollback()
+			return 0, countErr
+		}
+		removed += count
+	}
+	if err := transaction.Commit(); err != nil {
+		return 0, fmt.Errorf("commit alert-state purge: %w", err)
+	}
+	return removed, nil
+}
+
 func (store *Store) AppendFeederEvent(ctx context.Context, event storage.FeederEvent) error {
 	_, err := store.db.ExecContext(ctx, `INSERT INTO feeder_events(guild_id, kind, status, detail, occurred_at) VALUES (?, ?, ?, ?, ?)`, event.GuildID, event.Kind, event.Status, event.Detail, formatTime(event.Occurred.UTC()))
 	return wrap("append feeder event", err)
@@ -322,8 +378,8 @@ func (store *Store) RecentFeederEvents(ctx context.Context, guildID uint64, limi
 }
 
 func (store *Store) AddReportRollup(ctx context.Context, rollup storage.ReportRollup) error {
-	_, err := store.db.ExecContext(ctx, `INSERT INTO report_rollups(guild_id, bucket_start, aircraft_seen, messages, emergencies, maximum_range, distinct_icaos) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_seen=aircraft_seen+excluded.aircraft_seen, messages=messages+excluded.messages, emergencies=emergencies+excluded.emergencies, maximum_range=MAX(maximum_range, excluded.maximum_range), distinct_icaos=MAX(distinct_icaos, excluded.distinct_icaos)`, rollup.GuildID, formatTime(rollup.BucketStart.UTC()), rollup.AircraftSeen, rollup.Messages, rollup.Emergencies, rollup.MaximumRange, rollup.DistinctICAOs)
+	_, err := store.db.ExecContext(ctx, `INSERT INTO report_rollups(guild_id, bucket_start, aircraft_observations, messages, emergency_observations, emergency_events, maximum_range, peak_tracked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_observations=aircraft_observations+excluded.aircraft_observations, messages=messages+excluded.messages, emergency_observations=emergency_observations+excluded.emergency_observations, emergency_events=emergency_events+excluded.emergency_events, maximum_range=MAX(maximum_range, excluded.maximum_range), peak_tracked=MAX(peak_tracked, excluded.peak_tracked)`, rollup.GuildID, formatTime(rollup.BucketStart.UTC()), rollup.AircraftObservations, rollup.Messages, rollup.EmergencyObservations, rollup.EmergencyEvents, rollup.MaximumRange, rollup.PeakTracked)
 	return wrap("add report rollup", err)
 }
 
@@ -422,16 +478,16 @@ func (store *Store) ReportSummary(ctx context.Context, guildID uint64, from, to 
 	from = from.UTC().Truncate(time.Hour)
 	to = to.UTC().Truncate(time.Hour)
 	result := storage.ReportSummary{From: from, To: to}
-	err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(aircraft_seen), 0), COALESCE(SUM(messages), 0), COALESCE(SUM(emergencies), 0), COALESCE(MAX(maximum_range), 0), COALESCE(MAX(distinct_icaos), 0)
-FROM report_rollups WHERE guild_id=? AND bucket_start>=? AND bucket_start<?`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&result.AircraftSeen, &result.Messages, &result.Emergencies, &result.MaximumRangeNM, &result.DistinctICAOs)
+	err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(aircraft_observations), 0), COALESCE(SUM(messages), 0), COALESCE(SUM(emergency_observations), 0), COALESCE(SUM(emergency_events), 0), COALESCE(MAX(maximum_range), 0), COALESCE(MAX(peak_tracked), 0)
+FROM report_rollups WHERE guild_id=? AND bucket_start>=? AND bucket_start<?`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&result.AircraftObservations, &result.Messages, &result.EmergencyObservations, &result.EmergencyEvents, &result.MaximumRangeNM, &result.PeakTracked)
 	if err != nil {
 		return storage.ReportSummary{}, fmt.Errorf("report summary: %w", err)
 	}
 	var peakBucket sql.NullString
 	var peakAircraft sql.NullInt64
-	err = store.db.QueryRowContext(ctx, `SELECT bucket_start, distinct_icaos FROM report_rollups
+	err = store.db.QueryRowContext(ctx, `SELECT bucket_start, peak_tracked FROM report_rollups
 WHERE guild_id=? AND bucket_start>=? AND bucket_start<?
-ORDER BY distinct_icaos DESC, bucket_start ASC LIMIT 1`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&peakBucket, &peakAircraft)
+ORDER BY peak_tracked DESC, bucket_start ASC LIMIT 1`, guildID, formatTime(from.UTC()), formatTime(to.UTC())).Scan(&peakBucket, &peakAircraft)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return storage.ReportSummary{}, fmt.Errorf("report peak hour: %w", err)
 	}
@@ -495,6 +551,12 @@ func (store *Store) ReplacePlaneAlertReference(ctx context.Context, records []st
 		icao, registration, operator, aircraft_type, icao_type, flight_group, tag1, tag2, tag3, category, link,
 		image_link_1, image_link_2, image_link_3, image_link_4, commit_hash, updated_at
 	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	prepared, err := transaction.PrepareContext(ctx, statement)
+	if err != nil {
+		_ = transaction.Rollback()
+		return fmt.Errorf("prepare plane alert reference insert: %w", err)
+	}
+	defer prepared.Close()
 	for _, record := range records {
 		hash := record.CommitHash
 		if hash == "" {
@@ -504,7 +566,7 @@ func (store *Store) ReplacePlaneAlertReference(ctx context.Context, records []st
 		if !record.UpdatedAt.IsZero() {
 			updated = formatTime(record.UpdatedAt.UTC())
 		}
-		if _, err := transaction.ExecContext(ctx, statement,
+		if _, err := prepared.ExecContext(ctx,
 			record.ICAO, record.Registration, record.Operator, record.AircraftType, record.ICAOType, record.FlightGroup,
 			record.Tag1, record.Tag2, record.Tag3, record.Category, record.Link,
 			record.ImageLink1, record.ImageLink2, record.ImageLink3, record.ImageLink4, hash, updated,
@@ -757,8 +819,8 @@ ON CONFLICT(rule_id, aircraft_icao, condition_fingerprint) DO UPDATE SET last_fi
 			_, err = transaction.ExecContext(ctx, `INSERT INTO feeder_events(guild_id, kind, status, detail, occurred_at) VALUES (?, ?, ?, ?, ?)`, value.GuildID, value.Kind, value.Status, value.Detail, formatTime(value.Occurred.UTC()))
 		case storage.WriteReportRollup:
 			value := event.Rollup
-			_, err = transaction.ExecContext(ctx, `INSERT INTO report_rollups(guild_id, bucket_start, aircraft_seen, messages, emergencies, maximum_range, distinct_icaos) VALUES (?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_seen=aircraft_seen+excluded.aircraft_seen, messages=messages+excluded.messages, emergencies=emergencies+excluded.emergencies, maximum_range=MAX(maximum_range, excluded.maximum_range), distinct_icaos=MAX(distinct_icaos, excluded.distinct_icaos)`, value.GuildID, formatTime(value.BucketStart.UTC()), value.AircraftSeen, value.Messages, value.Emergencies, value.MaximumRange, value.DistinctICAOs)
+			_, err = transaction.ExecContext(ctx, `INSERT INTO report_rollups(guild_id, bucket_start, aircraft_observations, messages, emergency_observations, emergency_events, maximum_range, peak_tracked) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(guild_id, bucket_start) DO UPDATE SET aircraft_observations=aircraft_observations+excluded.aircraft_observations, messages=messages+excluded.messages, emergency_observations=emergency_observations+excluded.emergency_observations, emergency_events=emergency_events+excluded.emergency_events, maximum_range=MAX(maximum_range, excluded.maximum_range), peak_tracked=MAX(peak_tracked, excluded.peak_tracked)`, value.GuildID, formatTime(value.BucketStart.UTC()), value.AircraftObservations, value.Messages, value.EmergencyObservations, value.EmergencyEvents, value.MaximumRange, value.PeakTracked)
 		case storage.WriteInterestingSeen:
 			value := event.Interesting
 			seenAt := value.FirstSeenAt.UTC()

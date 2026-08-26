@@ -167,7 +167,7 @@ func (router *Router) handleReports(request CommandRequest, responder Interactio
 		if err != nil {
 			return responder.CreateMessage(errorMessage("The report could not be generated."))
 		}
-		return responder.CreateMessage(render.SafeMessage(render.Report(summary), false))
+		return responder.CreateMessage(render.SafeMessage(render.ReportWithUnits(summary, router.effectiveUnits(request.GuildID, request.UserID)), false))
 	case "schedule":
 		if !request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
 			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required to schedule reports."))
@@ -208,6 +208,9 @@ func (router *Router) handleSettings(request CommandRequest, responder Interacti
 		return responder.CreateMessage(errorMessage("A configured Admin role plus Manage Server permission is required. A Discord Administrator can bootstrap the first binding."))
 	}
 	if request.Group == "roles" {
+		if (request.Subcommand == "bind" || request.Subcommand == "remove") && !request.Administrator && !request.Permissions.Has(disgocord.PermissionManageRoles) {
+			return responder.CreateMessage(errorMessage("Manage Roles permission is additionally required to change SkyFeed role bindings."))
+		}
 		return router.handleRoleSettings(ctx, request, responder)
 	}
 	if request.Subcommand == "channels" {
@@ -238,6 +241,16 @@ func (router *Router) handleOpsSettings(ctx context.Context, request CommandRequ
 		return responder.CreateMessage(errorMessage("Server settings are temporarily unavailable."))
 	}
 	switch request.Subcommand {
+	case "units":
+		units, ok := domain.ParseUnitSystem(request.Strings["system"])
+		if !ok {
+			return responder.CreateMessage(errorMessage("Choose aviation or metric units."))
+		}
+		settings.Units = string(units)
+		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {
+			return responder.CreateMessage(errorMessage("The server unit default could not be saved."))
+		}
+		return responder.CreateMessage(infoMessage("Server units updated", fmt.Sprintf("SkyFeed now defaults to %s units. Personal preferences still take priority.", units)))
 	case "pause-alerts":
 		settings.AlertsPaused = true
 		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {

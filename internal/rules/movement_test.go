@@ -25,15 +25,19 @@ func TestMovementMonitorTakeoffAndLandingCooldown(t *testing.T) {
 	ground := domain.Aircraft{ICAO: "ABC123", Provider: domain.ProviderReadsb, OnGround: true}
 	air := domain.Aircraft{ICAO: "ABC123", Provider: domain.ProviderReadsb, OnGround: false, HasAltitude: true, AltitudeFeet: 400, HasVerticalRate: true, VerticalRateFPM: 900}
 	_ = monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now, Aircraft: []domain.Aircraft{ground}})
-	takeoff := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: []domain.Aircraft{air}})
+	_ = monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: []domain.Aircraft{air}})
+	_ = monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(2 * time.Second), Aircraft: []domain.Aircraft{air}})
+	takeoff := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(3 * time.Second), Aircraft: []domain.Aircraft{air}})
 	if len(takeoff) != 1 || takeoff[0].Type != domain.RuleTakeoff {
 		t.Fatalf("takeoff=%+v", takeoff)
 	}
-	landing := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(2 * time.Second), Aircraft: []domain.Aircraft{ground}})
+	_ = monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(4 * time.Second), Aircraft: []domain.Aircraft{ground}})
+	_ = monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(5 * time.Second), Aircraft: []domain.Aircraft{ground}})
+	landing := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(6 * time.Second), Aircraft: []domain.Aircraft{ground}})
 	if len(landing) != 1 || landing[0].Type != domain.RuleLanding {
 		t.Fatalf("landing=%+v", landing)
 	}
-	again := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(3 * time.Second), Aircraft: []domain.Aircraft{air}})
+	again := monitor.Evaluate(9, &domain.Snapshot{PublishedAt: now.Add(7 * time.Second), Aircraft: []domain.Aircraft{air}})
 	if len(again) != 0 {
 		t.Fatalf("takeoff cooldown=%+v", again)
 	}
@@ -52,11 +56,13 @@ func TestMovementMonitorApproachUsesPublicCenter(t *testing.T) {
 	if alerts := monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now, Aircraft: []domain.Aircraft{far}}); len(alerts) != 0 {
 		t.Fatalf("far=%+v", alerts)
 	}
-	alerts := monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: []domain.Aircraft{near}})
+	_ = monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: []domain.Aircraft{near}})
+	_ = monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(2 * time.Second), Aircraft: []domain.Aircraft{near}})
+	alerts := monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(3 * time.Second), Aircraft: []domain.Aircraft{near}})
 	if len(alerts) != 1 || alerts[0].Type != domain.RuleApproach {
 		t.Fatalf("approach=%+v", alerts)
 	}
-	again := monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(2 * time.Second), Aircraft: []domain.Aircraft{near}})
+	again := monitor.Evaluate(3, &domain.Snapshot{PublishedAt: now.Add(4 * time.Second), Aircraft: []domain.Aircraft{near}})
 	if len(again) != 0 {
 		t.Fatalf("rearmed too soon=%+v", again)
 	}

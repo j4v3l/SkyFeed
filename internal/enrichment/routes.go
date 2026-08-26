@@ -94,12 +94,13 @@ type RouteService struct {
 	pendingRoute map[string]struct{}
 	pendingPort  map[string]struct{}
 
-	routeGroup   singleflight.Group
-	airportGroup singleflight.Group
-	limiter      *tokenBucket
-	outbound     chan struct{}
-	circuit      routeCircuit
-	now          func() time.Time
+	routeGroup     singleflight.Group
+	airportGroup   singleflight.Group
+	limiter        *tokenBucket
+	outbound       chan struct{}
+	circuit        routeCircuit
+	now            func() time.Time
+	prefetchCursor atomic.Uint64
 
 	enqueued       atomic.Uint64
 	dropped        atomic.Uint64
@@ -198,43 +199,51 @@ func normalizeRouteConfig(config RouteConfig) RouteConfig {
 // Prefetch queues at most PrefetchLimit visible aircraft. Only aircraft with a
 // normalized callsign and their own public position are eligible.
 func (service *RouteService) Prefetch(aircraft []domain.Aircraft) int {
+	if len(aircraft) == 0 {
+		return 0
+	}
 	queued := 0
-	for _, item := range aircraft {
+	start := int(service.prefetchCursor.Load() % uint64(len(aircraft)))
+	examined := 0
+	for examined < len(aircraft) {
 		if queued >= service.config.PrefetchLimit {
 			break
 		}
+		item := aircraft[(start+examined)%len(aircraft)]
+		examined++
 		if !item.HasPosition {
 			continue
 		}
-		if service.EnqueueRoute(RouteRequest{Callsign: item.Callsign, Latitude: item.Latitude, Longitude: item.Longitude}) {
+		if service.EnqueueRoute(RouteRequest{Callsign: item.Callsign, Latitude: item.Latitude, Longitude: item.Longitude}) == AdmissionEnqueued {
 			queued++
 		}
 	}
+	service.prefetchCursor.Store(uint64((start + examined) % len(aircraft)))
 	return queued
 }
 
-func (service *RouteService) EnqueueRoute(request RouteRequest) bool {
+func (service *RouteService) EnqueueRoute(request RouteRequest) AdmissionResult {
 	normalized, ok := normalizeRouteRequest(request)
 	if !ok {
-		return false
+		return AdmissionInvalid
 	}
 	if _, found, stale, _ := service.routes.get(normalized.Callsign); found && !stale {
 		service.hits.Add(1)
-		return true
+		return AdmissionCached
 	}
 
 	service.pendingMu.Lock()
 	if _, exists := service.pendingRoute[normalized.Callsign]; exists {
 		service.pendingMu.Unlock()
 		service.coalesced.Add(1)
-		return true
+		return AdmissionCoalesced
 	}
 	service.pendingRoute[normalized.Callsign] = struct{}{}
 	select {
 	case service.routeQueue <- normalized:
 		service.pendingMu.Unlock()
 		service.enqueued.Add(1)
-		return true
+		return AdmissionEnqueued
 	default:
 		select {
 		case oldest := <-service.routeQueue:
@@ -246,38 +255,38 @@ func (service *RouteService) EnqueueRoute(request RouteRequest) bool {
 		case service.routeQueue <- normalized:
 			service.pendingMu.Unlock()
 			service.enqueued.Add(1)
-			return true
+			return AdmissionEnqueued
 		default:
 			delete(service.pendingRoute, normalized.Callsign)
 			service.pendingMu.Unlock()
 			service.dropped.Add(1)
-			return false
+			return AdmissionDropped
 		}
 	}
 }
 
-func (service *RouteService) EnqueueAirport(code string) bool {
+func (service *RouteService) EnqueueAirport(code string) AdmissionResult {
 	code, ok := NormalizeAirportCode(code)
 	if !ok {
-		return false
+		return AdmissionInvalid
 	}
 	if _, found, stale, _ := service.airports.get(code); found && !stale {
 		service.hits.Add(1)
-		return true
+		return AdmissionCached
 	}
 
 	service.pendingMu.Lock()
 	if _, exists := service.pendingPort[code]; exists {
 		service.pendingMu.Unlock()
 		service.coalesced.Add(1)
-		return true
+		return AdmissionCoalesced
 	}
 	service.pendingPort[code] = struct{}{}
 	select {
 	case service.airportQueue <- code:
 		service.pendingMu.Unlock()
 		service.enqueued.Add(1)
-		return true
+		return AdmissionEnqueued
 	default:
 		select {
 		case oldest := <-service.airportQueue:
@@ -289,12 +298,12 @@ func (service *RouteService) EnqueueAirport(code string) bool {
 		case service.airportQueue <- code:
 			service.pendingMu.Unlock()
 			service.enqueued.Add(1)
-			return true
+			return AdmissionEnqueued
 		default:
 			delete(service.pendingPort, code)
 			service.pendingMu.Unlock()
 			service.dropped.Add(1)
-			return false
+			return AdmissionDropped
 		}
 	}
 }

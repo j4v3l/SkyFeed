@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -24,13 +25,13 @@ func TestTopRouteRankingsAggregateSightings(t *testing.T) {
 		GuildID:     42,
 		BucketStart: now.Truncate(time.Hour),
 		Observations: []storage.RouteSightingsObservation{
-			{ICAO: "ABC123", Callsign: "AAL100", Route: storage.RouteCatalog{
+			{ICAO: "ABC123", Callsign: "AAL100", Route: storage.RouteCatalog{Source: domain.DataSourceADSBLOL,
 				Callsign: "AAL100", AirlineName: "American", AirlineICAO: "AAL",
 				OriginIATA: "JFK", OriginName: "JFK", OriginCountryISO: "US",
 				DestinationIATA: "PBI", DestinationName: "PBI", DestinationCountryISO: "US",
 				Plausible: true, UpdatedAt: now,
 			}},
-			{ICAO: "DEF456", Callsign: "AAL100", Route: storage.RouteCatalog{
+			{ICAO: "DEF456", Callsign: "AAL100", Route: storage.RouteCatalog{Source: domain.DataSourceADSBLOL,
 				Callsign: "AAL100", AirlineName: "American", AirlineICAO: "AAL",
 				OriginIATA: "JFK", OriginName: "JFK", OriginCountryISO: "US",
 				DestinationIATA: "PBI", DestinationName: "PBI", DestinationCountryISO: "US",

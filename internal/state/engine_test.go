@@ -210,6 +210,59 @@ func TestFailureRetainsLastGoodAircraft(t *testing.T) {
 	}
 }
 
+func TestMetadataAndHealthPublicationsReuseImmutableAircraftIndexes(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	engine := NewEngine(nil)
+	engine.now = func() time.Time { return now }
+	engine.applyReceiver(source.Frame[domain.Receiver]{FetchedAt: now, Value: domain.Receiver{Latitude: 40, Longitude: -75, HasPosition: true}}, 30*time.Second)
+	engine.applyAircraft(source.Frame[domain.AircraftBatch]{FetchedAt: now, Provider: domain.ProviderReadsb, Value: domain.AircraftBatch{GeneratedAt: now, Aircraft: []domain.Aircraft{{ICAO: "ABC123", Callsign: "SKY1", Latitude: 41, Longitude: -75, HasPosition: true}}}}, time.Second)
+	first := engine.Current()
+	aircraftAddress := &first.Aircraft[0]
+	searchAddress := &first.Search[0]
+
+	engine.applyStats(source.Frame[domain.Statistics]{FetchedAt: now, Value: domain.Statistics{WindowEnd: now, Messages: 10}}, 30*time.Second)
+	afterStats := engine.Current()
+	if &afterStats.Aircraft[0] != aircraftAddress || &afterStats.Search[0] != searchAddress || afterStats.Statistics.Messages != 10 {
+		t.Fatal("stats publication rebuilt aircraft/index data")
+	}
+	engine.statsFailure(errors.New("timeout"), 30*time.Second)
+	afterHealth := engine.Current()
+	if &afterHealth.Aircraft[0] != aircraftAddress || &afterHealth.Search[0] != searchAddress {
+		t.Fatal("health publication rebuilt aircraft/index data")
+	}
+	engine.applyReceiver(source.Frame[domain.Receiver]{FetchedAt: now.Add(time.Second), Value: domain.Receiver{Latitude: 41, Longitude: -75, HasPosition: true}}, 30*time.Second)
+	if &engine.Current().Aircraft[0] == aircraftAddress {
+		t.Fatal("receiver position change failed to rebuild derived distances")
+	}
+}
+
+func TestProviderTransitionTimestampTracksActualChange(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	engine := NewEngine(nil)
+	engine.now = func() time.Time { return now }
+	engine.applyAircraft(source.Frame[domain.AircraftBatch]{FetchedAt: now, Provider: domain.ProviderReadsb, Value: domain.AircraftBatch{GeneratedAt: now}}, time.Second)
+	firstChange := engine.Current().ProviderChangedAt
+	now = now.Add(time.Minute)
+	engine.applyAircraft(source.Frame[domain.AircraftBatch]{FetchedAt: now, Provider: domain.ProviderAirplanesLive, Value: domain.AircraftBatch{GeneratedAt: now}}, time.Second)
+	if !engine.Current().ProviderChangedAt.Equal(now) || engine.Current().ProviderChangedAt.Equal(firstChange) {
+		t.Fatalf("provider transition timestamp = %s", engine.Current().ProviderChangedAt)
+	}
+}
+
+func BenchmarkMetadataSnapshotReuse(b *testing.B) {
+	now := time.Unix(1_700_000_000, 0)
+	engine := NewEngine(nil)
+	aircraft := make([]domain.Aircraft, 1_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{ICAO: fmt.Sprintf("%06X", index)}
+	}
+	engine.applyAircraft(source.Frame[domain.AircraftBatch]{FetchedAt: now, Value: domain.AircraftBatch{GeneratedAt: now, Aircraft: aircraft}}, time.Second)
+	b.ReportAllocs()
+	for b.Loop() {
+		engine.applyStats(source.Frame[domain.Statistics]{FetchedAt: now, Value: domain.Statistics{WindowEnd: now}}, 30*time.Second)
+	}
+}
+
 func TestSourceTimestampSanity(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	stale := successHealth(domain.SourceHealth{}, now, now.Add(-time.Minute), time.Second)

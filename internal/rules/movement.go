@@ -30,13 +30,16 @@ type MovementConfig struct {
 }
 
 type movementState struct {
-	onGround     bool
-	known        bool
-	approaching  bool
-	lastTakeoff  time.Time
-	lastLanding  time.Time
-	lastApproach time.Time
-	lastSeen     time.Time
+	onGround        bool
+	known           bool
+	approaching     bool
+	lastTakeoff     time.Time
+	lastLanding     time.Time
+	lastApproach    time.Time
+	lastSeen        time.Time
+	takeoffMatches  int
+	landingMatches  int
+	approachMatches int
 }
 
 type MovementMonitor struct {
@@ -77,13 +80,25 @@ func (monitor *MovementMonitor) Evaluate(guildID uint64, snapshot *domain.Snapsh
 		}
 		state.lastSeen = now
 		if state.known {
-			if state.onGround && !aircraft.OnGround && takeoffLikely(aircraft) && now.Sub(state.lastTakeoff) >= movementCooldown {
-				state.lastTakeoff = now
-				alerts = append(alerts, movementAlert(guildID, aircraft, domain.RuleTakeoff, "Takeoff", movementDescription("Departed the ground", aircraft), now))
+			if !aircraft.OnGround && takeoffLikely(aircraft) && (state.onGround || state.takeoffMatches > 0) {
+				state.takeoffMatches++
+			} else if aircraft.OnGround {
+				state.takeoffMatches = 0
 			}
-			if !state.onGround && aircraft.OnGround && now.Sub(state.lastLanding) >= movementCooldown {
+			if state.takeoffMatches >= 3 && now.Sub(state.lastTakeoff) >= movementCooldown {
+				state.lastTakeoff = now
+				state.takeoffMatches = 0
+				alerts = append(alerts, movementAlert(guildID, aircraft, domain.RuleTakeoff, "Likely takeoff", movementDescription("Three observations indicate departure", aircraft), now))
+			}
+			if aircraft.OnGround && (!state.onGround || state.landingMatches > 0) {
+				state.landingMatches++
+			} else if !aircraft.OnGround {
+				state.landingMatches = 0
+			}
+			if state.landingMatches >= 3 && now.Sub(state.lastLanding) >= movementCooldown {
 				state.lastLanding = now
-				alerts = append(alerts, movementAlert(guildID, aircraft, domain.RuleLanding, "Landing", movementDescription("Touched down", aircraft), now))
+				state.landingMatches = 0
+				alerts = append(alerts, movementAlert(guildID, aircraft, domain.RuleLanding, "Likely landing", movementDescription("Three observations indicate touchdown", aircraft), now))
 			}
 		}
 		if alert, ok := monitor.evaluateApproach(guildID, aircraft, state, now); ok {
@@ -105,36 +120,47 @@ func (monitor *MovementMonitor) Evaluate(guildID uint64, snapshot *domain.Snapsh
 
 func (monitor *MovementMonitor) evaluateApproach(guildID uint64, aircraft domain.Aircraft, state *movementState, now time.Time) (domain.Alert, bool) {
 	if !monitor.config.HasCenter || !aircraft.HasPosition || aircraft.OnGround {
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
 	distance, fromAirport := distanceBearing(monitor.config.Latitude, monitor.config.Longitude, aircraft.Latitude, aircraft.Longitude)
 	if distance > approachExitRadiusNM {
 		state.approaching = false
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
 	if state.approaching || now.Sub(state.lastApproach) < movementCooldown {
 		return domain.Alert{}, false
 	}
 	if distance > approachRadiusNM {
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
 	if !aircraft.HasAltitude || aircraft.AltitudeFeet < approachMinAltitudeFt || aircraft.AltitudeFeet > approachMaxAltitudeFt {
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
 	if !aircraft.HasVerticalRate || aircraft.VerticalRateFPM > approachVerticalFPM {
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
 	toAirport := math.Mod(fromAirport+180, 360)
 	if aircraft.HasTrack && headingDelta(aircraft.TrackDegrees, toAirport) > approachHeadingDeg {
+		state.approachMatches = 0
 		return domain.Alert{}, false
 	}
+	state.approachMatches++
+	if state.approachMatches < 3 {
+		return domain.Alert{}, false
+	}
+	state.approachMatches = 0
 	state.approaching = true
 	state.lastApproach = now
 	description := fmt.Sprintf("Descending toward the public airport center • %.1f NM", distance)
 	if aircraft.HasAltitude {
 		description += fmt.Sprintf(" • %d ft", aircraft.AltitudeFeet)
 	}
-	return movementAlert(guildID, aircraft, domain.RuleApproach, "Approach", description, now), true
+	return movementAlert(guildID, aircraft, domain.RuleApproach, "Approach trend", "Three observations indicate approach • "+description, now), true
 }
 
 func takeoffLikely(aircraft domain.Aircraft) bool {

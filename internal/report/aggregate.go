@@ -1,7 +1,6 @@
 package report
 
 import (
-	"strings"
 	"sync"
 	"time"
 
@@ -27,7 +26,7 @@ func (aggregator *Aggregator) Observe(guildID uint64, snapshot *domain.Snapshot)
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	rollup := storage.ReportRollup{GuildID: guildID, BucketStart: now.Truncate(time.Hour), AircraftSeen: int64(len(snapshot.Aircraft)), DistinctICAOs: int64(len(snapshot.ByICAO))}
+	rollup := storage.ReportRollup{GuildID: guildID, BucketStart: now.Truncate(time.Hour), AircraftObservations: int64(len(snapshot.Aircraft)), PeakTracked: int64(len(snapshot.ByICAO))}
 	if snapshot.MessageCounterValid {
 		if aggregator.hasMessages &&
 			snapshot.ActiveProvider == aggregator.lastProvider &&
@@ -44,14 +43,13 @@ func (aggregator *Aggregator) Observe(guildID uint64, snapshot *domain.Snapshot)
 		if aircraft.HasDistance && aircraft.DistanceNM > rollup.MaximumRange {
 			rollup.MaximumRange = aircraft.DistanceNM
 		}
-		if isEmergency(aircraft) {
-			rollup.Emergencies++
-		}
 	}
 	return rollup
 }
 
-func isEmergency(aircraft domain.Aircraft) bool {
-	emergency := strings.ToLower(strings.TrimSpace(aircraft.Emergency))
-	return aircraft.Squawk == "7500" || aircraft.Squawk == "7600" || aircraft.Squawk == "7700" || (emergency != "" && emergency != "none")
+func EmergencyEvent(guildID uint64, observedAt time.Time) storage.ReportRollup {
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+	return storage.ReportRollup{GuildID: guildID, BucketStart: observedAt.UTC().Truncate(time.Hour), EmergencyEvents: 1}
 }

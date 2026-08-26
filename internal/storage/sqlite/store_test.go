@@ -191,6 +191,53 @@ func TestGuildSettingsPersistAlertPauseAndMutedSquawks(t *testing.T) {
 	}
 }
 
+func TestUserUnitPreferencePersistsAndValidates(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertUserPreference(context.Background(), storage.UserPreference{GuildID: 7, UserID: 9, Units: "metric"}); err != nil {
+		t.Fatal(err)
+	}
+	preference, err := store.UserPreference(context.Background(), 7, 9)
+	if err != nil || preference.Units != "metric" {
+		t.Fatalf("preference=%+v err=%v", preference, err)
+	}
+	if err := store.UpsertUserPreference(context.Background(), storage.UserPreference{GuildID: 7, UserID: 9, Units: "nautical-ish"}); err == nil {
+		t.Fatal("invalid units accepted")
+	}
+}
+
+func TestPurgeAlertStatesRemovesOnlyOldInactiveRows(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC()
+	for _, state := range []domain.AlertState{
+		{RuleID: -1, AircraftICAO: "OLD001", ConditionFingerprint: "old", LastClearAt: now.Add(-8 * 24 * time.Hour)},
+		{RuleID: -1, AircraftICAO: "NEW001", ConditionFingerprint: "new", LastClearAt: now.Add(-time.Hour)},
+		{RuleID: -1, AircraftICAO: "ACTIVE", ConditionFingerprint: "active", LastFiredAt: now.Add(-8 * 24 * time.Hour), Active: true},
+	} {
+		if err := store.UpsertAlertState(context.Background(), state); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := store.PurgeAlertStates(context.Background(), now.Add(-7*24*time.Hour), 100)
+	if err != nil || removed != 1 {
+		t.Fatalf("removed=%d err=%v", removed, err)
+	}
+	states, err := store.AlertStates(context.Background(), 100)
+	if err != nil || len(states) != 2 {
+		t.Fatalf("states=%+v err=%v", states, err)
+	}
+}
+
 func TestDeleteMessageBindingRemovesDashboard(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
@@ -223,10 +270,10 @@ func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Date(2026, time.August, 22, 9, 0, 0, 0, time.UTC)
-	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start, AircraftSeen: 10, DistinctICAOs: 3}); err != nil {
+	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start, AircraftObservations: 10, PeakTracked: 3, EmergencyEvents: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start.Add(time.Hour), AircraftSeen: 1, DistinctICAOs: 1}); err != nil {
+	if err := store.AddReportRollup(ctx, storage.ReportRollup{GuildID: 1, BucketStart: start.Add(time.Hour), AircraftObservations: 1, PeakTracked: 1}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -234,11 +281,11 @@ func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !summary.From.Equal(start) || !summary.To.Equal(start.Add(time.Hour)) || summary.AircraftSeen != 10 {
+	if !summary.From.Equal(start) || !summary.To.Equal(start.Add(time.Hour)) || summary.AircraftObservations != 10 || summary.EmergencyEvents != 1 {
 		t.Fatalf("summary = %+v", summary)
 	}
-	if summary.DistinctICAOs != 3 {
-		t.Fatalf("peak tracked aircraft = %d, want 3", summary.DistinctICAOs)
+	if summary.PeakTracked != 3 {
+		t.Fatalf("peak tracked aircraft = %d, want 3", summary.PeakTracked)
 	}
 	if !summary.PeakHour.Equal(start) || summary.PeakAircraft != 3 {
 		t.Fatalf("peak hour = %+v", summary)
@@ -323,7 +370,7 @@ func BenchmarkSQLiteBatch(b *testing.B) {
 	}
 	b.ResetTimer()
 	for b.Loop() {
-		if err := store.AddReportRollup(context.Background(), storage.ReportRollup{GuildID: 1, BucketStart: time.Unix(1_700_000_000, 0), AircraftSeen: 1, Messages: 10}); err != nil {
+		if err := store.AddReportRollup(context.Background(), storage.ReportRollup{GuildID: 1, BucketStart: time.Unix(1_700_000_000, 0), AircraftObservations: 1, Messages: 10}); err != nil {
 			b.Fatal(err)
 		}
 	}

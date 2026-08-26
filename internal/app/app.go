@@ -25,6 +25,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/storage"
 	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
 	"github.com/j4v3l/SkyFeed/internal/telemetry"
+	"github.com/j4v3l/SkyFeed/internal/track"
 	"github.com/j4v3l/SkyFeed/internal/weather/aviationweather"
 )
 
@@ -68,6 +69,18 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			bootstrapRoleBindings(ctx, repository, cfg.Discord, logger)
 		}
 		persistence = storage.NewWriter(repository, 1_024, 64, 250*time.Millisecond)
+		persistence.SetObserver(func(writeErr error) {
+			if writeErr != nil {
+				databaseReady.Store(false)
+				healthState.SetComponent("database", "degraded", "SQLite writes are retrying")
+				logger.Error("SQLite persistence degraded", "component", "storage", "event", "writer_degraded", "error", writeErr)
+			} else {
+				databaseReady.Store(true)
+				healthState.SetComponent("database", "healthy", "SQLite writer recovered")
+				logger.Info("SQLite persistence recovered", "component", "storage", "event", "writer_recovered")
+			}
+			setReadiness()
+		})
 		storedRules, err := repository.AllWatchRules(ctx, cfg.Discord.GuildID, 500)
 		if err != nil {
 			return err
@@ -123,6 +136,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		movementConfig = rules.MovementConfig{Latitude: *cfg.AirplanesLive.Latitude, Longitude: *cfg.AirplanesLive.Longitude, HasCenter: true}
 	}
 	movementMonitor := rules.NewMovementMonitor(movementConfig)
+	trackStore := track.NewStore()
 	var lastAircraftFetch atomic.Int64
 	var enrichmentService *enrichment.Service
 	var routeService *enrichment.RouteService
@@ -181,6 +195,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		if fetched == 0 || lastAircraftFetch.Swap(fetched) == fetched {
 			return
 		}
+		trackStore.Observe(snapshot)
 		rulesStarted := time.Now()
 		alerts, stateUpdates := ruleEngine.Evaluate(snapshot)
 		if interestingMonitor != nil && planeAlertIndex != nil {
@@ -212,6 +227,11 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				logger.Error("alert queue admission failed", "component", "rules", "event", "alert_drop", "priority", alert.Priority, "error", err)
 			}
 			cancel()
+			if persistence != nil && alert.Priority == domain.AlertEmergency {
+				if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: report.EmergencyEvent(cfg.Discord.GuildID, alert.ObservedAt)}); err != nil {
+					logger.Error("emergency report event persistence failed", "component", "storage", "event", "write_drop", "error", err)
+				}
+			}
 		}
 		if persistence != nil {
 			for _, update := range stateUpdates {
@@ -222,8 +242,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: reportAggregator.Observe(cfg.Discord.GuildID, snapshot)}); err != nil {
 				logger.Error("persistence queue admission failed", "component", "storage", "event", "write_drop", "kind", "report_rollup", "error", err)
 			}
-			if routeService != nil || enrichmentService != nil {
-				lookup := report.RouteStatsLookup{AdsbLol: routeService, AdsbDB: enrichmentService}
+			if routeService != nil {
+				lookup := report.RouteStatsLookup{AdsbLol: routeService}
 				if batch := routeStatsCollector.Observe(cfg.Discord.GuildID, snapshot, lookup, snapshot.PublishedAt); len(batch.Observations) > 0 {
 					if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteRouteSightings, RouteBatch: batch}); err != nil {
 						logger.Error("persistence queue admission failed", "component", "storage", "event", "write_drop", "kind", "route_sightings", "error", err)
@@ -292,6 +312,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
 	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
+	router.SetTracks(trackStore)
 	router.SetPrivacyDisclosure(privacyDisclosure(cfg))
 	router.SetDomesticCountryISO(cfg.AirplanesLive.DomesticCountryISO)
 	ruleReload := make(chan struct{}, 1)
@@ -376,6 +397,28 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 						continue
 					}
 					ruleEngine.ReplaceRules(storedRules)
+				}
+			}
+		}, func(serviceContext context.Context) error {
+			purge := func(now time.Time) {
+				purgeContext, cancel := context.WithTimeout(serviceContext, 2*time.Second)
+				removed, err := repository.PurgeAlertStates(purgeContext, now.Add(-7*24*time.Hour), 10_000)
+				cancel()
+				if err != nil {
+					logger.Warn("alert-state retention purge failed", "component", "storage", "event", "alert_state_retention_failure", "error", err)
+				} else if removed > 0 {
+					logger.Info("expired alert states purged", "component", "storage", "event", "alert_state_retention", "count", removed)
+				}
+			}
+			purge(time.Now().UTC())
+			ticker := time.NewTicker(6 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-serviceContext.Done():
+					return nil
+				case now := <-ticker.C:
+					purge(now.UTC())
 				}
 			}
 		})
@@ -496,20 +539,35 @@ func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 	providers = append(providers, "aviationweather.gov")
 	attribution = append(attribution, privacy.Attribution{Provider: "aviationweather.gov", Notice: aviationweather.Attribution})
 	if cfg.PlaneAlert.Enabled {
+		providers = append(providers, "plane-alert-db")
 		attribution = append(attribution, privacy.Attribution{Provider: "plane-alert-db", Notice: planealert.Attribution})
+	}
+	retention := []privacy.Retention{
+		{Category: "raw aircraft snapshots", Period: "memory only; recent track points expire after 15 minutes"},
+		{Category: "weather observations", Period: "bounded in-memory TTL cache only"},
+		{Category: "interaction sessions", Period: "15 minutes"},
+		{Category: "moderation cases", Period: "365 days"},
+	}
+	if cfg.ADSBDB.Enabled {
+		retention = append(retention, privacy.Retention{Category: "ADSBDB enrichment", Period: "in-memory TTL cache only; route values are never stored in SQLite"})
+	}
+	if cfg.AdsbLol.Enabled {
+		retention = append(retention,
+			privacy.Retention{Category: "adsb.lol route analytics", Period: "derived source-labeled catalog and hourly sightings in SQLite until operator purge"},
+			privacy.Retention{Category: "adsb.lol route and airport responses", Period: "bounded in-memory TTL cache only"},
+		)
+	}
+	if cfg.PlaneAlert.Enabled {
+		retention = append(retention,
+			privacy.Retention{Category: "plane-alert-db reference", Period: "SQLite reference table, refreshed periodically"},
+			privacy.Retention{Category: "interesting aircraft sightings", Period: "SQLite, one row per ICAO per guild"},
+		)
 	}
 	return privacy.NewDisclosure(
 		providers,
 		publicAirportCode,
 		radiusNM,
-		[]privacy.Retention{
-			{Category: "raw aircraft snapshots", Period: "memory only"},
-			{Category: "route and airport enrichment", Period: "in-memory TTL cache only"},
-			{Category: "plane-alert-db reference", Period: "SQLite reference table, refreshed periodically"},
-			{Category: "interesting aircraft sightings", Period: "SQLite, one row per ICAO per guild"},
-			{Category: "interaction sessions", Period: "15 minutes"},
-			{Category: "moderation cases", Period: "365 days"},
-		},
+		retention,
 		attribution,
 	)
 }

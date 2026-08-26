@@ -76,20 +76,20 @@ func NewService(upstream Enricher, config Config) *Service {
 	return &Service{upstream: upstream, config: config, cache: NewCache(10_000), queue: make(chan Request, config.QueueSize), pending: make(map[string]struct{}), limiter: newTokenBucket(config.RequestsPerSecond, config.Burst), now: time.Now}
 }
 
-func (service *Service) Enqueue(icao, callsign string) bool {
+func (service *Service) Enqueue(icao, callsign string) AdmissionResult {
 	icao, callsign, key := NormalizeKey(icao, callsign)
 	if icao == "" {
-		return false
+		return AdmissionInvalid
 	}
 	if _, ok, stale, _ := service.cache.Get(key); ok && !stale {
 		service.hits.Add(1)
-		return true
+		return AdmissionCached
 	}
 	service.pendingMu.Lock()
 	if _, exists := service.pending[key]; exists {
 		service.pendingMu.Unlock()
 		service.coalesced.Add(1)
-		return true
+		return AdmissionCoalesced
 	}
 	service.pending[key] = struct{}{}
 	request := Request{ICAO: icao, Callsign: callsign, key: key}
@@ -97,7 +97,7 @@ func (service *Service) Enqueue(icao, callsign string) bool {
 	case service.queue <- request:
 		service.pendingMu.Unlock()
 		service.enqueued.Add(1)
-		return true
+		return AdmissionEnqueued
 	default:
 		select {
 		case oldest := <-service.queue:
@@ -109,12 +109,12 @@ func (service *Service) Enqueue(icao, callsign string) bool {
 		case service.queue <- request:
 			service.pendingMu.Unlock()
 			service.enqueued.Add(1)
-			return true
+			return AdmissionEnqueued
 		default:
 			delete(service.pending, key)
 			service.pendingMu.Unlock()
 			service.dropped.Add(1)
-			return false
+			return AdmissionDropped
 		}
 	}
 }
@@ -168,10 +168,10 @@ func (service *Service) worker(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case request := <-service.queue:
+			_, _ = service.lookup(ctx, request)
 			service.pendingMu.Lock()
 			delete(service.pending, request.key)
 			service.pendingMu.Unlock()
-			_, _ = service.lookup(ctx, request)
 		}
 	}
 }

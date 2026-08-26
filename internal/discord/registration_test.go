@@ -21,7 +21,7 @@ func TestCommandSchemaIsStableAndVersioned(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Fatal("command schema is not deterministic")
 	}
-	if CommandSchemaVersion != 13 || len(first) < 100 {
+	if CommandSchemaVersion != 14 || len(first) < 100 {
 		t.Fatalf("schema version=%d bytes=%d", CommandSchemaVersion, len(first))
 	}
 }

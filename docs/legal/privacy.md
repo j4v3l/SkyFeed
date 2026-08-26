@@ -1,6 +1,6 @@
 # SkyFeed Privacy Policy
 
-Effective date: August 22, 2026
+Effective date: August 25, 2026
 
 SkyFeed is an independently operated Discord bot that presents aircraft data
 from an operator-controlled ADS-B receiver. This policy explains what SkyFeed
@@ -20,11 +20,19 @@ Depending on enabled features, SkyFeed may process:
   reliability, and troubleshooting;
 - live ADS-B aircraft observations supplied by the configured receiver; and
 - transient aircraft and callsign lookup values sent to ADSBDB when enrichment
-  is explicitly enabled.
+  is explicitly enabled;
+- callsigns and already-public aircraft positions sent to adsb.lol for route
+  enrichment when that provider is enabled;
+- the configured public airport center and radius sent to airplanes.live only
+  while external fallback is active; and
+- airport codes sent to AviationWeather.gov for current METAR/TAF information.
 
 SkyFeed does not request Discord's Message Content intent. It does not sell
-personal information, use information for advertising, or create a durable
-route database. Route enrichment is disabled by default.
+personal information or use information for advertising. ADSBDB route
+enrichment is disabled by default and is never durably stored. When adsb.lol is
+enabled, SkyFeed may retain a derived, source-labeled route catalog and hourly
+route-sighting counts for traffic rankings; it does not store raw provider
+responses or raw flight tracks in SQLite.
 
 ## How information is used
 
@@ -34,27 +42,33 @@ protect the service, diagnose failures, and comply with applicable obligations.
 
 ## Storage and retention
 
-The local deployment stores configuration, role and channel bindings, watch
-rules, alert state, report rollups, message bindings, and moderation cases in
-the server operator's SQLite database. Raw one-second aircraft snapshots are
-not stored by default.
+The local deployment stores configuration, user unit preferences, role and
+channel bindings, watch rules, alert state, report rollups, message bindings,
+moderation cases, and (when adsb.lol is enabled) derived route catalog/sighting
+analytics in the server operator's SQLite database. Raw one-second aircraft
+snapshots and 15-minute track points are not stored.
 
 Moderation cases are retained for 365 days so authorized server staff can
 review actions and resolve disputes. They are then removed in bounded purge
 batches. Disposable interaction sessions expire automatically. Operational
 logs and backups should be retained only as long as the server operator needs
-them. Transient ADSBDB route data is not durably stored by default.
+them. Transient ADSBDB route data is never durably stored. Derived adsb.lol
+route analytics remain until the operator purges them or deletes the database.
 
 ## Sharing and service providers
 
 SkyFeed sends interaction responses and configured messages to Discord. When
-ADSBDB enrichment is enabled, normalized aircraft ICAO and callsign values may
-be sent to ADSBDB. A hosting, VPN, registry, or secret-management provider may
-process limited operational data when chosen by the server operator. SkyFeed
-does not otherwise disclose data except when required by law, to protect users
-or the service, or with the operator's direction.
+optional providers are enabled, SkyFeed sends only the bounded lookup values
+described above to ADSBDB, adsb.lol, airplanes.live, or AviationWeather.gov.
+The Plane Alert reference list is downloaded for local ICAO matching; SkyFeed
+does not upload observations to it. A hosting, VPN, registry, or
+secret-management provider may process limited operational data when chosen by
+the server operator. SkyFeed does not otherwise disclose data except when
+required by law, to protect users or the service, or with the operator's
+direction.
 
-Discord and ADSBDB operate under their own terms and privacy practices.
+Discord and each enabled data provider operate under their own terms and
+privacy practices.
 
 ## Security
 

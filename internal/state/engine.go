@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -124,7 +123,7 @@ func (engine *Engine) configureSources(upstream source.Set) {
 		Receiver: configuredHealth(upstream.Receiver, domain.CapabilityReceiver),
 		Stats:    configuredHealth(upstream.Stats, domain.CapabilityStatistics),
 	}
-	snapshot := engine.buildLocked()
+	snapshot := engine.buildLocked(false)
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
@@ -160,6 +159,7 @@ func poll(ctx context.Context, interval time.Duration, operation func(context.Co
 
 func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], interval time.Duration) {
 	engine.mu.Lock()
+	previous := engine.batch.Provider
 	engine.batch = frame.Value
 	provider := frame.Provider
 	if provider == domain.ProviderUnknown || provider == "" {
@@ -168,7 +168,6 @@ func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], in
 	if provider == domain.ProviderUnknown || provider == "" {
 		provider = engine.health.Aircraft.Provider
 	}
-	previous := engine.batch.Provider
 	engine.batch.Provider = provider
 	for index := range engine.batch.Aircraft {
 		engine.batch.Aircraft[index].Provider = provider
@@ -187,19 +186,21 @@ func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], in
 	engine.fetched = frame.FetchedAt
 	engine.health.Aircraft = successHealth(engine.health.Aircraft, frame.FetchedAt, frame.Value.GeneratedAt, interval)
 	engine.health.Aircraft.Provider = provider
-	snapshot := engine.buildLocked()
+	snapshot := engine.buildLocked(true)
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
 
 func (engine *Engine) applyReceiver(frame source.Frame[domain.Receiver], interval time.Duration) {
 	engine.mu.Lock()
+	positionChanged := engine.receiver.HasPosition != frame.Value.HasPosition ||
+		engine.receiver.Latitude != frame.Value.Latitude || engine.receiver.Longitude != frame.Value.Longitude
 	engine.receiver = frame.Value
 	engine.health.Receiver = successHealth(engine.health.Receiver, frame.FetchedAt, frame.FetchedAt, interval)
 	if frame.Provider != domain.ProviderUnknown && frame.Provider != "" {
 		engine.health.Receiver.Provider = frame.Provider
 	}
-	snapshot := engine.buildLocked()
+	snapshot := engine.buildLocked(positionChanged)
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
@@ -211,7 +212,7 @@ func (engine *Engine) applyStats(frame source.Frame[domain.Statistics], interval
 	if frame.Provider != domain.ProviderUnknown && frame.Provider != "" {
 		engine.health.Stats.Provider = frame.Provider
 	}
-	snapshot := engine.buildLocked()
+	snapshot := engine.buildLocked(false)
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
@@ -232,47 +233,57 @@ func (engine *Engine) failure(target *domain.SourceHealth, err error, interval t
 	engine.mu.Lock()
 	now := engine.now()
 	*target = failureHealth(*target, err, now, interval)
-	snapshot := engine.buildLocked()
+	snapshot := engine.buildLocked(false)
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
 
-func (engine *Engine) buildLocked() *domain.Snapshot {
+func (engine *Engine) buildLocked(rebuildAircraft bool) *domain.Snapshot {
 	engine.sequence++
-	aircraft := make([]domain.Aircraft, len(engine.batch.Aircraft))
-	copy(aircraft, engine.batch.Aircraft)
-	if engine.receiver.HasPosition {
-		for index := range aircraft {
-			if !aircraft[index].HasPosition {
-				continue
+	current := engine.current.Load()
+	var aircraft []domain.Aircraft
+	var byICAO map[string]int
+	var search []domain.AircraftKey
+	if !rebuildAircraft && current != nil {
+		aircraft, byICAO, search = current.Aircraft, current.ByICAO, current.Search
+	} else {
+		aircraft = make([]domain.Aircraft, len(engine.batch.Aircraft))
+		copy(aircraft, engine.batch.Aircraft)
+		if engine.receiver.HasPosition {
+			for index := range aircraft {
+				if !aircraft[index].HasPosition {
+					continue
+				}
+				aircraft[index].DistanceNM, aircraft[index].BearingDegrees = DistanceBearing(
+					engine.receiver.Latitude,
+					engine.receiver.Longitude,
+					aircraft[index].Latitude,
+					aircraft[index].Longitude,
+				)
+				aircraft[index].HasDistance = true
 			}
-			aircraft[index].DistanceNM, aircraft[index].BearingDegrees = DistanceBearing(
-				engine.receiver.Latitude,
-				engine.receiver.Longitude,
-				aircraft[index].Latitude,
-				aircraft[index].Longitude,
-			)
-			aircraft[index].HasDistance = true
 		}
-	}
-	sort.Slice(aircraft, func(left, right int) bool {
-		return aircraft[left].ICAO < aircraft[right].ICAO
-	})
-	byICAO := make(map[string]int, len(aircraft))
-	search := make([]domain.AircraftKey, 0, len(aircraft))
-	for index := range aircraft {
-		byICAO[aircraft[index].ICAO] = index
-		search = append(search, domain.AircraftKey{
-			ICAO:         aircraft[index].ICAO,
-			Callsign:     aircraft[index].Callsign,
-			Registration: aircraft[index].Registration,
+		sort.Slice(aircraft, func(left, right int) bool { return aircraft[left].ICAO < aircraft[right].ICAO })
+		byICAO = make(map[string]int, len(aircraft))
+		search = make([]domain.AircraftKey, 0, len(aircraft))
+		for index := range aircraft {
+			byICAO[aircraft[index].ICAO] = index
+			search = append(search, domain.AircraftKey{
+				ICAO:         aircraft[index].ICAO,
+				Callsign:     aircraft[index].Callsign,
+				Registration: aircraft[index].Registration,
+			})
+		}
+		sort.Slice(search, func(left, right int) bool {
+			if search[left].Callsign != search[right].Callsign {
+				return search[left].Callsign < search[right].Callsign
+			}
+			if search[left].Registration != search[right].Registration {
+				return search[left].Registration < search[right].Registration
+			}
+			return search[left].ICAO < search[right].ICAO
 		})
 	}
-	sort.Slice(search, func(left, right int) bool {
-		leftKey := strings.Join([]string{search[left].Callsign, search[left].Registration, search[left].ICAO}, "\x00")
-		rightKey := strings.Join([]string{search[right].Callsign, search[right].Registration, search[right].ICAO}, "\x00")
-		return leftKey < rightKey
-	})
 	return &domain.Snapshot{
 		Sequence:            engine.sequence,
 		ActiveProvider:      engine.batch.Provider,

@@ -546,7 +546,11 @@ func (service *GatewayService) sendScheduledReport(ctx context.Context, schedule
 	if err != nil {
 		return err
 	}
-	message := render.SafeMessage(render.Report(summary), false).
+	units := domain.UnitsAviation
+	if settings, settingsErr := service.repository.GuildSettings(ctx, schedule.GuildID); settingsErr == nil {
+		units = domain.NormalizeUnitSystem(settings.Units)
+	}
+	message := render.SafeMessage(render.ReportWithUnits(summary, units), false).
 		WithNonce(boundedNonce(fmt.Sprintf("skyfeed-report-%d-%d", schedule.ID, reportPeriodStart(schedule.Cadence, now).Unix()))).
 		WithEnforceNonce(true)
 	if _, err := client.Rest.CreateMessage(snowflake.ID(schedule.Destination), message, rest.WithCtx(ctx)); err != nil {
@@ -599,7 +603,11 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 	if channel == 0 {
 		return nil
 	}
-	message := render.SafeMessage(render.Status(service.router.snapshots.Current(), time.Since(service.router.startedAt), time.Now(), service.router.enrichment != nil), false)
+	units := domain.UnitsAviation
+	if settings, settingsErr := service.repository.GuildSettings(ctx, guildID); settingsErr == nil {
+		units = domain.NormalizeUnitSystem(settings.Units)
+	}
+	message := render.SafeMessage(render.StatusWithUnits(service.router.snapshots.Current(), time.Since(service.router.startedAt), time.Now(), service.router.enrichment != nil, units), false)
 	binding, found, err := service.repository.MessageBinding(ctx, guildID, "dashboard")
 	if err != nil {
 		return err

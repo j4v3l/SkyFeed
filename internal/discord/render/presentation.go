@@ -9,6 +9,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/storage"
+	trackdata "github.com/j4v3l/SkyFeed/internal/track"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 	EmergencyColor = 0xF05252
 	Muted          = 0x6B7280
 
-	footer = "Live readsb data • ADSBDB enrichment when shown"
+	footer = "SkyFeed • live aviation data"
 )
 
 func SafeMessage(embed discord.Embed, ephemeral bool) discord.MessageCreate {
@@ -35,6 +36,10 @@ func InterestingAlertMessage(alert domain.Alert, ephemeral bool) discord.Message
 }
 
 func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enrichmentEnabled bool) discord.Embed {
+	return StatusWithUnits(snapshot, uptime, now, enrichmentEnabled, domain.UnitsAviation)
+}
+
+func StatusWithUnits(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enrichmentEnabled bool, units domain.UnitSystem) discord.Embed {
 	if snapshot == nil {
 		return base("Status", Muted, now).WithDescription("⚪ **UNKNOWN** — waiting for the first receiver payload.")
 	}
@@ -57,7 +62,7 @@ func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enri
 	}
 	if !snapshot.Health.Stats.LastSuccess.IsZero() {
 		messageRate = fmt.Sprintf("%.1f msg/s", snapshot.Statistics.MessageRate)
-		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
+		maximumRange = distance(snapshot.Statistics.MaxRangeNM, units)
 	}
 	activeProvider := "Unknown"
 	if snapshot.ActiveProvider.Known() {
@@ -79,10 +84,15 @@ func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enri
 		section("Sources", fmt.Sprintf("Aircraft %s\nReceiver %s\nStats %s", sourceLabel(snapshot.Health.Aircraft), sourceLabel(snapshot.Health.Receiver), sourceLabel(snapshot.Health.Stats))),
 		section("Bot", fmt.Sprintf("Up %s · enrichment %s", conciseDuration(uptime), enrichmentStatus)),
 	}
+	embed.Footer = &discord.EmbedFooter{Text: providerFooter(snapshot, nil, nil, now)}
 	return BoundEmbed(embed)
 }
 
 func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
+	return FeederWithUnits(snapshot, now, domain.UnitsAviation)
+}
+
+func FeederWithUnits(snapshot *domain.Snapshot, now time.Time, units domain.UnitSystem) discord.Embed {
 	if snapshot == nil {
 		return base("Feeder", Muted, now).WithDescription("⚪ **UNKNOWN** — waiting for receiver diagnostics.")
 	}
@@ -114,7 +124,7 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 	if statsAvailable {
 		messages = fmt.Sprintf("%d", snapshot.Statistics.Messages)
 		tracks = fmt.Sprintf("%d", snapshot.Statistics.TrackedAircraft)
-		maximumRange = fmt.Sprintf("%.1f NM", snapshot.Statistics.MaxRangeNM)
+		maximumRange = distance(snapshot.Statistics.MaxRangeNM, units)
 	}
 	providerField := "Unknown"
 	if snapshot.ActiveProvider.Known() {
@@ -126,6 +136,7 @@ func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
 		section("Provider", fmt.Sprintf("`%s`", PlainText(providerField))),
 		section("JSON sources", fmt.Sprintf("Aircraft %s\nReceiver %s\nStats %s", sourceLabel(snapshot.Health.Aircraft), sourceLabel(snapshot.Health.Receiver), sourceLabel(snapshot.Health.Stats))),
 	}
+	embed.Footer = &discord.EmbedFooter{Text: providerFooter(snapshot, nil, nil, now)}
 	return BoundEmbed(embed)
 }
 
@@ -164,6 +175,25 @@ func Aircraft(aircraft domain.Aircraft, snapshot *domain.Snapshot, now time.Time
 	return AircraftWithEnrichment(aircraft, snapshot, nil, nil, now)
 }
 
+func AircraftSummary(aircraft domain.Aircraft, snapshot *domain.Snapshot, units domain.UnitSystem, now time.Time) discord.Embed {
+	color := Scope
+	alert := "No active emergency"
+	if domain.EmergencyActive(aircraft) {
+		color = EmergencyColor
+		alert = strings.ToUpper(firstNonEmpty(aircraft.Emergency, domain.SquawkMeaning(aircraft.Squawk)))
+	}
+	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
+	embed := base("Aircraft • "+PlainText(identity), color, now)
+	embed.Description = fmt.Sprintf("`%s` · %s · %s", PlainText(aircraft.ICAO), PlainText(valueOr(aircraft.Registration, "registration unknown")), PlainText(valueOr(aircraft.AircraftType, "type unknown")))
+	embed.Fields = []discord.EmbedField{
+		section("Live", fmt.Sprintf("%s · %s · %s\nTrack %s · %s", positionWithUnits(aircraft, units), altitudeWithUnits(aircraft, units), groundSpeedWithUnits(aircraft, units), track(aircraft), verticalRateWithUnits(aircraft, units))),
+		section("Transponder", fmt.Sprintf("Squawk `%s` · %s", PlainText(valueOr(aircraft.Squawk, "????")), PlainText(alert))),
+		section("Freshness", fmt.Sprintf("Observation age %s · %s", conciseDuration(aircraft.Seen), freshnessLabel(aircraft.Seen))),
+	}
+	embed.Footer = &discord.EmbedFooter{Text: aircraftProviderFooter(aircraft, snapshot, nil, nil, now)}
+	return BoundEmbed(embed)
+}
+
 func Route(route domain.Route, aircraft domain.Aircraft, originMETAR, destinationMETAR string, now time.Time) discord.Embed {
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
 	embed := base("Route • "+PlainText(identity), Scope, now)
@@ -191,9 +221,11 @@ func Route(route domain.Route, aircraft domain.Aircraft, originMETAR, destinatio
 		fields = append(fields, section("Destination METAR", Truncate(PlainText(destinationMETAR), 900)))
 	}
 	embed.Fields = fields
-	if route.Attribution != "" {
-		embed.Footer = &discord.EmbedFooter{Text: PlainText(route.Attribution)}
+	footerParts := []string{aircraftProviderFooter(aircraft, nil, nil, &route, now)}
+	if originMETAR != "" || destinationMETAR != "" {
+		footerParts = append(footerParts, "weather aviationweather.gov")
 	}
+	embed.Footer = &discord.EmbedFooter{Text: Truncate(strings.Join(uniqueStrings(footerParts), " • "), 2048)}
 	return BoundEmbed(embed)
 }
 
@@ -202,6 +234,33 @@ func Airport(airport domain.Airport, now time.Time) discord.Embed {
 }
 
 func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time) discord.Embed {
+	view := WeatherView{METAR: metar, TAF: taf, METARStatus: "not-found", TAFStatus: "not-found"}
+	if metar != "" {
+		view.METARStatus = "available"
+	}
+	if taf != "" {
+		view.TAFStatus = "available"
+	}
+	return AirportWithWeatherView(airport, view, true, now)
+}
+
+type WeatherView struct {
+	METAR          string
+	TAF            string
+	FlightCategory string
+	METARStatus    string
+	TAFStatus      string
+	FetchedAt      time.Time
+	Stale          bool
+	UpstreamFailed bool
+	Attribution    string
+}
+
+func AirportWithWeatherView(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time) discord.Embed {
+	return AirportWithWeatherViewAndUnits(airport, weather, rawDetails, now, domain.UnitsAviation)
+}
+
+func AirportWithWeatherViewAndUnits(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time, units domain.UnitSystem) discord.Embed {
 	title := PlainText(firstNonEmpty(airport.ICAO, airport.IATA, "Airport"))
 	embed := base("Airport • "+title, Scope, now)
 	location := strings.Join(nonEmpty(PlainText(airport.Municipality), PlainText(airport.CountryCode)), ", ")
@@ -210,7 +269,11 @@ func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time
 	}
 	elevation := "Unavailable"
 	if airport.HasElevation {
-		elevation = fmt.Sprintf("%d ft", int(airport.ElevationFeet))
+		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+			elevation = fmt.Sprintf("%.0f m", airport.ElevationFeet*0.3048)
+		} else {
+			elevation = fmt.Sprintf("%d ft", int(airport.ElevationFeet))
+		}
 	}
 	embed.Description = PlainText(valueOr(airport.Name, "Name unavailable"))
 	embed.Fields = []discord.EmbedField{
@@ -218,19 +281,70 @@ func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time
 		section("Location", location),
 		section("Elevation", elevation),
 	}
-	if metar != "" {
-		embed.Fields = append(embed.Fields, section("METAR", Truncate(PlainText(metar), 900)))
+	embed.Fields = append(embed.Fields, section("Weather", weatherSummary(weather, now)))
+	if rawDetails && weather.METAR != "" {
+		embed.Fields = append(embed.Fields, section("Raw METAR", Truncate(PlainText(weather.METAR), 900)))
 	}
-	if taf != "" {
-		embed.Fields = append(embed.Fields, section("TAF", Truncate(PlainText(taf), 900)))
+	if rawDetails && weather.TAF != "" {
+		embed.Fields = append(embed.Fields, section("Raw TAF", Truncate(PlainText(weather.TAF), 900)))
 	}
-	if airport.Attribution != "" {
-		embed.Footer = &discord.EmbedFooter{Text: PlainText(airport.Attribution)}
+	attribution := uniqueStrings([]string{airport.Attribution, weather.Attribution})
+	if len(attribution) > 0 {
+		embed.Footer = &discord.EmbedFooter{Text: PlainText(strings.Join(attribution, " • "))}
 	}
 	return BoundEmbed(embed)
 }
 
+func weatherSummary(weather WeatherView, now time.Time) string {
+	if weather.UpstreamFailed {
+		return "Weather upstream is temporarily unavailable."
+	}
+	status := "Conditions unavailable"
+	if weather.METARStatus == "available" {
+		category := strings.ToUpper(strings.TrimSpace(weather.FlightCategory))
+		switch category {
+		case "VFR":
+			status = "VFR · generally visual conditions"
+		case "MVFR":
+			status = "MVFR · marginal visual conditions"
+		case "IFR":
+			status = "IFR · instrument conditions"
+		case "LIFR":
+			status = "LIFR · low instrument conditions"
+		default:
+			status = "Current METAR available"
+		}
+	} else if weather.METARStatus == "not-found" {
+		status = "No current METAR reported"
+	}
+	taf := "TAF available"
+	switch weather.TAFStatus {
+	case "not-found":
+		taf = "no TAF reported"
+	case "unavailable":
+		taf = "TAF upstream unavailable"
+	case "":
+		taf = "TAF not requested"
+	}
+	parts := []string{status, taf}
+	if weather.Stale {
+		parts = append(parts, "stale cached weather")
+	}
+	if !weather.FetchedAt.IsZero() {
+		age := now.Sub(weather.FetchedAt)
+		if age < 0 {
+			age = 0
+		}
+		parts = append(parts, "age "+conciseDuration(age))
+	}
+	return strings.Join(parts, " · ")
+}
+
 func Airline(airline domain.Airline, flights []domain.Aircraft, now time.Time) discord.Embed {
+	return AirlineWithUnits(airline, flights, now, domain.UnitsAviation)
+}
+
+func AirlineWithUnits(airline domain.Airline, flights []domain.Aircraft, now time.Time, units domain.UnitSystem) discord.Embed {
 	code := firstNonEmpty(airline.ICAO, airline.IATA, "Airline")
 	embed := base("Airline • "+PlainText(code), Scope, now)
 	identity := strings.Join(nonEmpty(PlainText(airline.Name), PlainText(airline.ICAO), PlainText(airline.IATA)), " • ")
@@ -249,9 +363,10 @@ func Airline(airline domain.Airline, flights []domain.Aircraft, now time.Time) d
 	if len(visible) > 20 {
 		visible = visible[:20]
 	}
-	embed.Fields = aircraftRowFields(visible, 0)
-	if airline.Attribution != "" {
-		embed.Footer = &discord.EmbedFooter{Text: PlainText(airline.Attribution)}
+	embed.Fields = aircraftRowFieldsWithUnits(visible, 0, units)
+	footerParts := uniqueStrings([]string{aircraftListFooter(flights), airline.Attribution})
+	if len(footerParts) > 0 {
+		embed.Footer = &discord.EmbedFooter{Text: Truncate(PlainText(strings.Join(footerParts, " • ")), 2048)}
 	}
 	return BoundEmbed(embed)
 }
@@ -260,7 +375,40 @@ func LookingUp(kind, identity string, now time.Time) discord.Embed {
 	return BoundEmbed(base(kind, Muted, now).WithDescription(fmt.Sprintf("Looking up **%s**…", PlainText(identity))))
 }
 
+func TrackSummary(summary trackdata.Summary, units domain.UnitSystem, now time.Time) discord.Embed {
+	embed := base("Track • "+PlainText(summary.ICAO), Scope, now).
+		WithDescription("Memory-only recent track sampled at most every five seconds. This plot is generated locally on demand.")
+	window := fmt.Sprintf("%d points", summary.Points)
+	if !summary.From.IsZero() && !summary.To.IsZero() {
+		window = fmt.Sprintf("%d points · <t:%d:T>–<t:%d:T>", summary.Points, summary.From.Unix(), summary.To.Unix())
+	}
+	closest := "Unavailable"
+	if summary.HasClosestApproach {
+		closest = distance(summary.ClosestApproachNM, units)
+	}
+	altitudeChange := "Unavailable"
+	if summary.HasAltitudeChange {
+		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+			altitudeChange = fmt.Sprintf("%+.0f m", float64(summary.AltitudeChangeFeet)*0.3048)
+		} else {
+			altitudeChange = fmt.Sprintf("%+d ft", summary.AltitudeChangeFeet)
+		}
+	}
+	embed.Fields = []discord.EmbedField{
+		section("Window", window),
+		section("Closest approach", closest),
+		section("Altitude change", altitudeChange),
+		section("Direction", PlainText(summary.Direction)),
+	}
+	embed.Footer = &discord.EmbedFooter{Text: "Memory only • retained up to 15 minutes • not authoritative navigation data"}
+	return BoundEmbed(embed)
+}
+
 func Emergency(aircraft []domain.Aircraft, page, pageSize int, now time.Time) discord.Embed {
+	return EmergencyWithUnits(aircraft, page, pageSize, now, domain.UnitsAviation)
+}
+
+func EmergencyWithUnits(aircraft []domain.Aircraft, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
 	if pageSize < 1 {
 		pageSize = 10
 	}
@@ -280,11 +428,16 @@ func Emergency(aircraft []domain.Aircraft, page, pageSize int, now time.Time) di
 		return BoundEmbed(embed)
 	}
 	embed.Description = fmt.Sprintf("Active 7500 / 7600 / 7700 or emergency flags · %d–%d of %d", min(start+1, len(copyAircraft)), end, len(copyAircraft))
-	embed.Fields = emergencyRowFields(copyAircraft[start:end], start)
+	embed.Fields = emergencyRowFieldsWithUnits(copyAircraft[start:end], start, units)
+	embed.Footer = &discord.EmbedFooter{Text: aircraftListFooter(copyAircraft)}
 	return BoundEmbed(embed)
 }
 
 func Traffic(aircraft []domain.Aircraft, airportCode string, radiusNM float64, page, pageSize int, now time.Time) discord.Embed {
+	return TrafficWithUnits(aircraft, airportCode, radiusNM, page, pageSize, now, domain.UnitsAviation)
+}
+
+func TrafficWithUnits(aircraft []domain.Aircraft, airportCode string, radiusNM float64, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
 	if pageSize < 1 {
 		pageSize = 10
 	}
@@ -300,15 +453,20 @@ func Traffic(aircraft []domain.Aircraft, airportCode string, radiusNM float64, p
 	label := PlainText(valueOr(airportCode, "public airport"))
 	embed := base("Traffic • "+label, Scope, now)
 	if len(copyAircraft) == 0 {
-		embed.Description = fmt.Sprintf("No visible aircraft are currently within %.0f NM of %s.", radiusNM, label)
+		embed.Description = fmt.Sprintf("No visible aircraft are currently within %s of %s.", distance(radiusNM, units), label)
 		return BoundEmbed(embed)
 	}
-	embed.Description = fmt.Sprintf("Near %s within %.0f NM · %d–%d of %d", label, radiusNM, min(start+1, len(copyAircraft)), end, len(copyAircraft))
-	embed.Fields = aircraftRowFields(copyAircraft[start:end], start)
+	embed.Description = fmt.Sprintf("Near %s within %s · %d–%d of %d", label, distance(radiusNM, units), min(start+1, len(copyAircraft)), end, len(copyAircraft))
+	embed.Fields = aircraftRowFieldsWithUnits(copyAircraft[start:end], start, units)
+	embed.Footer = &discord.EmbedFooter{Text: aircraftListFooter(copyAircraft)}
 	return BoundEmbed(embed)
 }
 
 func Squawk(aircraft []domain.Aircraft, code string, page, pageSize int, now time.Time) discord.Embed {
+	return SquawkWithUnits(aircraft, code, page, pageSize, now, domain.UnitsAviation)
+}
+
+func SquawkWithUnits(aircraft []domain.Aircraft, code string, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
 	if pageSize < 1 {
 		pageSize = 10
 	}
@@ -327,11 +485,16 @@ func Squawk(aircraft []domain.Aircraft, code string, page, pageSize int, now tim
 		return BoundEmbed(embed)
 	}
 	embed.Description = squawkMeaning(code) + fmt.Sprintf("\n%d–%d of %d · page %d", min(start+1, len(copyAircraft)), end, len(copyAircraft), page+1)
-	embed.Fields = aircraftRowFields(copyAircraft[start:end], start)
+	embed.Fields = aircraftRowFieldsWithUnits(copyAircraft[start:end], start, units)
+	embed.Footer = &discord.EmbedFooter{Text: aircraftListFooter(copyAircraft)}
 	return BoundEmbed(embed)
 }
 
 func Top(aircraft []domain.Aircraft, metric string, limit int, now time.Time) discord.Embed {
+	return TopWithUnits(aircraft, metric, limit, now, domain.UnitsAviation)
+}
+
+func TopWithUnits(aircraft []domain.Aircraft, metric string, limit int, now time.Time, units domain.UnitSystem) discord.Embed {
 	embed := base("Top aircraft • "+metricLabel(metric), Scope, now)
 	if len(aircraft) == 0 {
 		embed.Description = "No current aircraft are available for this ranking."
@@ -341,10 +504,11 @@ func Top(aircraft []domain.Aircraft, metric string, limit int, now time.Time) di
 	fields := make([]discord.EmbedField, 0, len(aircraft))
 	for index, item := range aircraft {
 		name := fmt.Sprintf("%d. %s", index+1, PlainText(firstNonEmpty(item.Callsign, item.Registration, item.ICAO)))
-		value := fmt.Sprintf("`%s` · %s · %s · %s", PlainText(item.ICAO), metricValue(item, metric), altitude(item), groundSpeed(item))
+		value := fmt.Sprintf("`%s` · %s · %s · %s", PlainText(item.ICAO), metricValueWithUnits(item, metric, units), altitudeWithUnits(item, units), groundSpeedWithUnits(item, units))
 		fields = append(fields, section(name, value))
 	}
 	embed.Fields = fields
+	embed.Footer = &discord.EmbedFooter{Text: aircraftListFooter(aircraft)}
 	return BoundEmbed(embed)
 }
 
@@ -354,7 +518,7 @@ func TopRouteRankings(metric, period string, rows []storage.RouteRankingRow, lim
 	embed.Description = fmt.Sprintf("%s · %s", routeRankingTitle(metric), routeRankingPeriodLabel(period))
 	if len(rows) == 0 {
 		embed.Description = embed.Description + "\nNo ranked route traffic is recorded for this window yet."
-		embed.Footer = &discord.EmbedFooter{Text: "Rankings use cached adsb.lol and ADSBDB routes from visible aircraft sightings"}
+		embed.Footer = &discord.EmbedFooter{Text: "Durable rankings use attributed adsb.lol route sightings"}
 		return BoundEmbed(embed)
 	}
 	fields := make([]discord.EmbedField, 0, min(limit, len(rows)))
@@ -363,14 +527,14 @@ func TopRouteRankings(metric, period string, rows []storage.RouteRankingRow, lim
 			break
 		}
 		name := fmt.Sprintf("%d. %s", index+1, PlainText(row.Label))
-		value := fmt.Sprintf("%d flights", row.Count)
+		value := fmt.Sprintf("%d route sightings", row.Count)
 		if detail := strings.TrimSpace(row.Detail); detail != "" {
 			value = PlainText(detail) + "\n" + value
 		}
 		fields = append(fields, section(name, value))
 	}
 	embed.Fields = fields
-	embed.Footer = &discord.EmbedFooter{Text: "Rankings use cached adsb.lol and ADSBDB routes from visible aircraft sightings"}
+	embed.Footer = &discord.EmbedFooter{Text: "Durable rankings use attributed adsb.lol route sightings"}
 	return BoundEmbed(embed)
 }
 
@@ -416,7 +580,7 @@ func Privacy(disclosure privacy.Disclosure) discord.Embed {
 	if disclosure.PublicAirportCode != "" {
 		center = fmt.Sprintf("External aircraft fallback queries use public airport %s within %d NM (airplanes.live: 1 req/s, max 250 NM).", PlainText(disclosure.PublicAirportCode), disclosure.RadiusNM)
 	}
-	embed.Description = "SkyFeed shares only the data described below. Receiver coordinates, fallback center coordinates, and private site values are never shown, logged, or stored."
+	embed.Description = "SkyFeed shares only the data described below. Receiver coordinates, fallback center coordinates, and private site values are not shown or durably stored; fallback coordinates are used only for configured provider requests."
 	embed.Fields = []discord.EmbedField{
 		{Name: "Providers", Value: PlainText(providers), Inline: ptr(false)},
 		{Name: "Public center", Value: center, Inline: ptr(false)},
@@ -439,15 +603,19 @@ func Privacy(disclosure privacy.Disclosure) discord.Embed {
 }
 
 func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time) discord.Embed {
+	return AircraftWithEnrichmentAndUnits(aircraft, snapshot, enrichment, route, now, domain.UnitsAviation)
+}
+
+func AircraftWithEnrichmentAndUnits(aircraft domain.Aircraft, snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time, units domain.UnitSystem) discord.Embed {
 	color := Scope
 	alert := "None"
-	if aircraft.Emergency != "" && aircraft.Emergency != "none" {
+	if domain.EmergencyActive(aircraft) {
 		color = EmergencyColor
-		alert = "🔴 " + strings.ToUpper(aircraft.Emergency)
+		alert = "🔴 " + strings.ToUpper(firstNonEmpty(aircraft.Emergency, domain.SquawkMeaning(aircraft.Squawk)))
 	}
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
 	embed := base("Aircraft • "+PlainText(identity), color, now)
-	sourceLabel := "readsb"
+	sourceLabel := "unknown"
 	if aircraft.Provider.Known() {
 		sourceLabel = string(aircraft.Provider)
 	}
@@ -459,15 +627,12 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 	)
 	embed.Fields = []discord.EmbedField{
 		section("Live", strings.Join([]string{
-			fmt.Sprintf("%s · %s · %s", position(aircraft), altitude(aircraft), groundSpeed(aircraft)),
-			fmt.Sprintf("Track %s · %s · squawk `%s` · alert %s", track(aircraft), verticalRate(aircraft), PlainText(valueOr(aircraft.Squawk, "????")), alert),
+			fmt.Sprintf("%s · %s · %s", positionWithUnits(aircraft, units), altitudeWithUnits(aircraft, units), groundSpeedWithUnits(aircraft, units)),
+			fmt.Sprintf("Track %s · %s · squawk `%s` · alert %s", track(aircraft), verticalRateWithUnits(aircraft, units), PlainText(valueOr(aircraft.Squawk, "????")), alert),
 		}, "\n")),
 	}
 	if route != nil {
 		embed.Fields = append(embed.Fields, section("Route", routeText(*route)))
-		if route.Attribution != "" {
-			embed.Footer = &discord.EmbedFooter{Text: PlainText(route.Attribution)}
-		}
 	}
 	if enrichment != nil && enrichment.Found {
 		if metadata := enrichment.Aircraft; metadata != nil {
@@ -477,29 +642,25 @@ func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot,
 			if owner := strings.Join(nonEmpty(PlainText(metadata.Owner), PlainText(metadata.OwnerCountry)), " · "); owner != "Unavailable" {
 				embed.Fields = append(embed.Fields, section("Operator", owner))
 			}
-			if metadata.PhotoURL != "" {
-				embed.Image = &discord.EmbedResource{URL: metadata.PhotoURL}
-			}
 			if metadata.ThumbnailURL != "" {
 				embed.Thumbnail = &discord.EmbedResource{URL: metadata.ThumbnailURL}
+			} else if metadata.PhotoURL != "" {
+				embed.Thumbnail = &discord.EmbedResource{URL: metadata.PhotoURL}
 			}
 		}
 		if route == nil && enrichment.Route != nil {
 			embed.Fields = append(embed.Fields, section("Route", routeText(*enrichment.Route)))
 		}
-		stale := ""
-		if enrichment.Stale {
-			stale = " · cached/stale"
-		}
-		embed.Footer = &discord.EmbedFooter{Text: "Live receiver data · ADSBDB enrichment" + stale}
 	}
-	if snapshot != nil && embed.Footer == nil {
-		embed.Footer = &discord.EmbedFooter{Text: fmt.Sprintf("Live receiver data · observation age %s", conciseDuration(aircraft.Seen))}
-	}
+	embed.Footer = &discord.EmbedFooter{Text: aircraftProviderFooter(aircraft, snapshot, enrichment, route, now)}
 	return BoundEmbed(embed)
 }
 
 func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) discord.Embed {
+	return NearbyWithUnits(aircraft, page, pageSize, now, domain.UnitsAviation)
+}
+
+func NearbyWithUnits(aircraft []domain.Aircraft, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
 	if pageSize < 1 {
 		pageSize = 10
 	}
@@ -518,23 +679,31 @@ func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) disco
 		return BoundEmbed(embed)
 	}
 	embed.Description = fmt.Sprintf("%d–%d of %d · page %d", min(start+1, len(copyAircraft)), end, len(copyAircraft), page+1)
-	embed.Fields = aircraftRowFields(copyAircraft[start:end], start)
+	embed.Fields = aircraftRowFieldsWithUnits(copyAircraft[start:end], start, units)
+	embed.Footer = &discord.EmbedFooter{Text: aircraftListFooter(copyAircraft)}
 	return BoundEmbed(embed)
 }
 
 func Help(now time.Time, manageGuild bool) discord.Embed {
-	embed := base("Help", Scope, now).WithDescription("Use SkyFeed’s application commands to inspect live receiver data. Privileged commands appear only for members with the matching Discord permission and SkyFeed role.")
+	embed := base("Help", Scope, now).WithDescription("Start with a task below. Aircraft views open as concise summaries; use their controls for details, tracks, routes/weather, watches, and refreshes.")
 	embed.Fields = []discord.EmbedField{
-		{Name: "Viewer", Value: "`/status` `/nearby` `/traffic` `/aircraft` `/route` `/airport` `/airline` `/squawk` `/top` `/emergency` `/privacy` `/watch` `/feeder` `/help`. `/top` also ranks route traffic (routes, countries, airlines, airports). Right-click a SkyFeed message → Apps → Lookup aircraft."},
-		{Name: "Operator (+ Manage Server)", Value: "`/alerts` `/reports` plus server-scoped `/watch` rules."},
-		{Name: "Moderator (+ Moderate Members)", Value: "`/moderation` warn, timeout, kick, ban, and case history."},
-		{Name: "Admin (+ Manage Roles)", Value: "`/settings` channels, roles, alert pause/mute, dashboard recreate, destination tests, and `/audit` for a private full-system snapshot. Admins also see every lower-tier command. Bind purpose Administration for scheduled digests."},
+		{Name: "Explore aircraft", Value: "`/nearby` `/traffic` `/aircraft` `/route` `/airport` `/airline` `/squawk` `/emergency` `/top live` `/top traffic`"},
+		{Name: "Alerts", Value: "`/watch` manages personal rules. Operators with Manage Server can use `/alerts` and server watch rules."},
+		{Name: "Reports", Value: "`/status` `/feeder` `/privacy` and operator-only `/reports`."},
+		{Name: "Moderation", Value: "Members with the Moderator role and required Discord permissions can use `/moderation` warn, timeout, kick, ban, and case history."},
+		{Name: "Preferences", Value: "Use `/preferences units` for your display. It overrides the server default."},
 	}
 	if manageGuild {
-		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/settings", Value: "Channels, role bindings, alert pause/mute, dashboard recreate, and destination tests."})
-		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "/audit", Value: "Ephemeral system audit: health components, bindings, 24h traffic, route stats, and enrichment circuits."})
+		embed.Fields = append(embed.Fields, discord.EmbedField{Name: "Administration", Value: "`/settings` controls server units, channels, alert pause/mute, dashboard recreation, destination tests, and roles. Role changes additionally require Manage Roles. `/audit` is an ephemeral system audit."})
 	}
 	return BoundEmbed(embed)
+}
+
+func freshnessLabel(age time.Duration) string {
+	if age > 15*time.Second {
+		return "stale"
+	}
+	return "live"
 }
 
 func Alert(alert domain.Alert) discord.Embed {
@@ -583,17 +752,23 @@ func InterestingAlert(alert domain.Alert) discord.Embed {
 		}
 	}
 	if alert.InterestingImage != "" {
-		embed.Thumbnail = &discord.EmbedResource{URL: alert.InterestingImage}
+		if imageURL, ok := SafePlaneAlertImageURL(alert.InterestingImage); ok {
+			embed.Thumbnail = &discord.EmbedResource{URL: imageURL}
+		}
 	}
 	return BoundEmbed(embed)
 }
 
 func Report(summary storage.ReportSummary) discord.Embed {
+	return ReportWithUnits(summary, domain.UnitsAviation)
+}
+
+func ReportWithUnits(summary storage.ReportSummary, units domain.UnitSystem) discord.Embed {
 	embed := base("Report", Scope, summary.To).
 		WithDescription(fmt.Sprintf("<t:%d:f> to <t:%d:f>", summary.From.Unix(), summary.To.Unix()))
 	embed.Fields = []discord.EmbedField{
-		section("Traffic", fmt.Sprintf("%d observations · %d peak ICAOs · %d msgs", summary.AircraftSeen, summary.DistinctICAOs, summary.Messages)),
-		section("Range & alerts", fmt.Sprintf("Max %.1f NM · %d emergencies", summary.MaximumRangeNM, summary.Emergencies)),
+		section("Traffic", fmt.Sprintf("%d aircraft observations · %d peak tracked · %d msgs", summary.AircraftObservations, summary.PeakTracked, summary.Messages)),
+		section("Range & alerts", fmt.Sprintf("Max %s · %d emergency events", distance(summary.MaximumRangeNM, units), summary.EmergencyEvents)),
 	}
 	if !summary.PeakHour.IsZero() {
 		embed.Fields = append(embed.Fields, section("Busiest hour", fmt.Sprintf("<t:%d:f> · %d peak tracked", summary.PeakHour.Unix(), summary.PeakAircraft)))
@@ -654,26 +829,32 @@ func sourceLabel(health domain.SourceHealth) string {
 	return label
 }
 
-func position(aircraft domain.Aircraft) string {
+func positionWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string {
 	if !aircraft.HasDistance {
 		return "Position unavailable"
 	}
-	return fmt.Sprintf("%.1f NM • %03.0f°", aircraft.DistanceNM, aircraft.BearingDegrees)
+	return fmt.Sprintf("%s %s • %03.0f°", compass(aircraft.BearingDegrees), distance(aircraft.DistanceNM, units), aircraft.BearingDegrees)
 }
 
-func altitude(aircraft domain.Aircraft) string {
+func altitudeWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string {
 	if aircraft.OnGround {
 		return "Ground"
 	}
 	if !aircraft.HasAltitude {
 		return "Unknown"
 	}
+	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+		return fmt.Sprintf("%d m", int(float64(aircraft.AltitudeFeet)*0.3048))
+	}
 	return fmt.Sprintf("%d ft", aircraft.AltitudeFeet)
 }
 
-func groundSpeed(aircraft domain.Aircraft) string {
+func groundSpeedWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string {
 	if !aircraft.HasGroundSpeed {
 		return "Unknown"
+	}
+	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+		return fmt.Sprintf("%.0f km/h", aircraft.GroundSpeedKts*1.852)
 	}
 	return fmt.Sprintf("%.0f kt", aircraft.GroundSpeedKts)
 }
@@ -685,11 +866,36 @@ func track(aircraft domain.Aircraft) string {
 	return fmt.Sprintf("%03.0f°", aircraft.TrackDegrees)
 }
 
-func verticalRate(aircraft domain.Aircraft) string {
+func verticalRateWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string {
 	if !aircraft.HasVerticalRate {
 		return "Unknown"
 	}
-	return fmt.Sprintf("%+d ft/min", aircraft.VerticalRateFPM)
+	arrow := "→"
+	if aircraft.VerticalRateFPM > 64 {
+		arrow = "↑"
+	} else if aircraft.VerticalRateFPM < -64 {
+		arrow = "↓"
+	}
+	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+		return fmt.Sprintf("%s %+.1f m/s", arrow, float64(aircraft.VerticalRateFPM)*0.00508)
+	}
+	return fmt.Sprintf("%s %+d ft/min", arrow, aircraft.VerticalRateFPM)
+}
+
+func distance(valueNM float64, units domain.UnitSystem) string {
+	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+		return fmt.Sprintf("%.1f km", valueNM*1.852)
+	}
+	return fmt.Sprintf("%.1f NM", valueNM)
+}
+
+func compass(degrees float64) string {
+	directions := [...]string{"N", "NE", "E", "SE", "S", "SW", "W", "NW"}
+	index := int((degrees+22.5)/45) % len(directions)
+	if index < 0 {
+		index += len(directions)
+	}
+	return directions[index]
 }
 
 func conciseDuration(value time.Duration) string {
@@ -746,16 +952,7 @@ func routeText(route domain.Route) string {
 }
 
 func squawkMeaning(code string) string {
-	switch code {
-	case "7500":
-		return "7500 — unlawful interference (hijack)"
-	case "7600":
-		return "7600 — radio failure"
-	case "7700":
-		return "7700 — general emergency"
-	default:
-		return PlainText(code) + " — assigned transponder code"
-	}
+	return PlainText(code) + " — " + domain.SquawkMeaning(code)
 }
 
 func metricLabel(metric string) string {
@@ -773,12 +970,12 @@ func metricLabel(metric string) string {
 	}
 }
 
-func metricValue(aircraft domain.Aircraft, metric string) string {
+func metricValueWithUnits(aircraft domain.Aircraft, metric string, units domain.UnitSystem) string {
 	switch metric {
 	case "altitude":
-		return altitude(aircraft)
+		return altitudeWithUnits(aircraft, units)
 	case "speed":
-		return groundSpeed(aircraft)
+		return groundSpeedWithUnits(aircraft, units)
 	case "messages":
 		return fmt.Sprintf("%d msgs", aircraft.Messages)
 	case "signal":
@@ -787,7 +984,7 @@ func metricValue(aircraft domain.Aircraft, metric string) string {
 		}
 		return fmt.Sprintf("%.1f dBm", aircraft.RSSI)
 	default:
-		return position(aircraft)
+		return positionWithUnits(aircraft, units)
 	}
 }
 
@@ -795,17 +992,21 @@ func section(name, value string) discord.EmbedField {
 	return discord.EmbedField{Name: name, Value: value, Inline: ptr(false)}
 }
 
-func aircraftRowFields(aircraft []domain.Aircraft, startIndex int) []discord.EmbedField {
+func aircraftRowFieldsWithUnits(aircraft []domain.Aircraft, startIndex int, units domain.UnitSystem) []discord.EmbedField {
 	fields := make([]discord.EmbedField, 0, len(aircraft))
 	for index, item := range aircraft {
 		name := fmt.Sprintf("%d. %s", startIndex+index+1, PlainText(firstNonEmpty(item.Callsign, item.Registration, item.ICAO)))
-		value := fmt.Sprintf("`%s` · %s · %s · %s", PlainText(item.ICAO), position(item), altitude(item), groundSpeed(item))
+		freshness := "live"
+		if item.Seen > 15*time.Second {
+			freshness = "stale"
+		}
+		value := fmt.Sprintf("`%s` · %s · %s · %s\n%s · age %s · %s", PlainText(item.ICAO), positionWithUnits(item, units), altitudeWithUnits(item, units), groundSpeedWithUnits(item, units), verticalRateWithUnits(item, units), conciseDuration(item.Seen), freshness)
 		fields = append(fields, section(name, value))
 	}
 	return fields
 }
 
-func emergencyRowFields(aircraft []domain.Aircraft, startIndex int) []discord.EmbedField {
+func emergencyRowFieldsWithUnits(aircraft []domain.Aircraft, startIndex int, units domain.UnitSystem) []discord.EmbedField {
 	fields := make([]discord.EmbedField, 0, len(aircraft))
 	for index, item := range aircraft {
 		name := fmt.Sprintf("%d. %s", startIndex+index+1, PlainText(firstNonEmpty(item.Callsign, item.Registration, item.ICAO)))
@@ -813,10 +1014,106 @@ func emergencyRowFields(aircraft []domain.Aircraft, startIndex int) []discord.Em
 		if item.Emergency != "" && item.Emergency != "none" {
 			detail = strings.ToUpper(item.Emergency)
 		}
-		value := fmt.Sprintf("`%s` · squawk `%s` · %s\n%s · %s", PlainText(item.ICAO), PlainText(valueOr(item.Squawk, "????")), detail, position(item), altitude(item))
+		value := fmt.Sprintf("`%s` · squawk `%s` · %s\n%s · %s · age %s", PlainText(item.ICAO), PlainText(valueOr(item.Squawk, "????")), detail, positionWithUnits(item, units), altitudeWithUnits(item, units), conciseDuration(item.Seen))
 		fields = append(fields, section(name, value))
 	}
 	return fields
+}
+
+func providerFooter(snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time) string {
+	parts := make([]string, 0, 5)
+	if snapshot != nil && snapshot.ActiveProvider.Known() {
+		parts = append(parts, "live "+string(snapshot.ActiveProvider))
+	} else {
+		parts = append(parts, "live provider unknown")
+	}
+	if snapshot != nil && !snapshot.FetchedAt.IsZero() {
+		age := now.Sub(snapshot.FetchedAt)
+		if age < 0 {
+			age = 0
+		}
+		parts = append(parts, "snapshot age "+conciseDuration(age))
+	}
+	if enrichment != nil && enrichment.Found {
+		label := "ADSBDB enrichment"
+		if enrichment.Stale {
+			label += " stale"
+		}
+		if !enrichment.FetchedAt.IsZero() {
+			age := now.Sub(enrichment.FetchedAt)
+			if age < 0 {
+				age = 0
+			}
+			label += " age " + conciseDuration(age)
+		}
+		parts = append(parts, label)
+	}
+	selectedRoute := route
+	if selectedRoute == nil && enrichment != nil {
+		selectedRoute = enrichment.Route
+	}
+	if selectedRoute != nil {
+		if selectedRoute.Source.Known() {
+			parts = append(parts, "route "+string(selectedRoute.Source))
+		}
+		if selectedRoute.Attribution != "" {
+			parts = append(parts, PlainText(selectedRoute.Attribution))
+		}
+	}
+	return Truncate(strings.Join(uniqueStrings(parts), " • "), 2048)
+}
+
+func aircraftProviderFooter(aircraft domain.Aircraft, snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time) string {
+	if snapshot != nil && snapshot.ActiveProvider.Known() {
+		return providerFooter(snapshot, enrichment, route, now)
+	}
+	fallback := domain.Snapshot{}
+	if snapshot != nil {
+		fallback = *snapshot
+	}
+	if aircraft.Provider.Known() {
+		fallback.ActiveProvider = aircraft.Provider
+	}
+	if fallback.FetchedAt.IsZero() && aircraft.Seen >= 0 {
+		fallback.FetchedAt = now.Add(-aircraft.Seen)
+	}
+	return providerFooter(&fallback, enrichment, route, now)
+}
+
+func aircraftListFooter(aircraft []domain.Aircraft) string {
+	providers := make([]string, 0, 2)
+	maxAge := time.Duration(0)
+	for _, item := range aircraft {
+		if item.Provider.Known() {
+			providers = append(providers, string(item.Provider))
+		}
+		if item.Seen > maxAge {
+			maxAge = item.Seen
+		}
+	}
+	providers = uniqueStrings(providers)
+	providerText := "live provider unknown"
+	if len(providers) > 0 {
+		providerText = "live " + strings.Join(providers, ", ")
+	}
+	return providerText + " • observations up to " + conciseDuration(maxAge) + " old"
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
 }
 
 func ptr[T any](value T) *T { return &value }

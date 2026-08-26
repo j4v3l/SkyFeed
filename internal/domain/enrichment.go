@@ -3,6 +3,7 @@ package domain
 import "time"
 
 type AircraftMetadata struct {
+	Source       DataSource
 	Registration string
 	AircraftType string
 	ICAOType     string
@@ -42,6 +43,7 @@ type Airport struct {
 }
 
 type Route struct {
+	Source            DataSource
 	Callsign          string
 	AirlineName       string
 	AirlineICAO       string

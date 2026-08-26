@@ -8,6 +8,7 @@ import (
 )
 
 type RouteCatalog struct {
+	Source                domain.DataSource
 	Callsign              string
 	AirlineName           string
 	AirlineICAO           string
@@ -44,6 +45,9 @@ type RouteRankingRow struct {
 }
 
 func RouteCatalogFromDomain(route domain.Route) (RouteCatalog, bool) {
+	if route.Source != domain.DataSourceADSBLOL {
+		return RouteCatalog{}, false
+	}
 	if route.Midpoint != nil {
 		return RouteCatalog{}, false
 	}
@@ -64,6 +68,7 @@ func RouteCatalogFromDomain(route domain.Route) (RouteCatalog, bool) {
 		updatedAt = time.Now().UTC()
 	}
 	return RouteCatalog{
+		Source:                route.Source,
 		Callsign:              callsign,
 		AirlineName:           strings.TrimSpace(route.AirlineName),
 		AirlineICAO:           strings.ToUpper(strings.TrimSpace(route.AirlineICAO)),

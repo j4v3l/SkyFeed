@@ -1,8 +1,12 @@
 package planealert
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseCSVMapsPlaneAlertFields(t *testing.T) {
@@ -26,5 +30,51 @@ func TestParseCSVMapsPlaneAlertFields(t *testing.T) {
 	}
 	if record.PrimaryImage() != "https://example.com/1.jpg" {
 		t.Fatalf("image=%q", record.PrimaryImage())
+	}
+}
+
+func TestParseCSVRejectsOversizedFieldAndMalformedInput(t *testing.T) {
+	header := "$ICAO,$Registration\n"
+	if _, err := parseCSV(strings.NewReader(header + "ABC123," + strings.Repeat("x", maxCSVFieldBytes+1))); err == nil || !strings.Contains(err.Error(), "oversized field") {
+		t.Fatalf("oversized field error = %v", err)
+	}
+	if _, err := parseCSV(strings.NewReader(header + `"unterminated`)); err == nil {
+		t.Fatal("malformed CSV accepted")
+	}
+}
+
+func TestLoaderRejectsRedirectAndOversizedContentLength(t *testing.T) {
+	t.Run("redirect", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			http.Redirect(writer, request, "https://example.com/untrusted.csv", http.StatusFound)
+		}))
+		defer server.Close()
+		loader := NewLoader(server.URL, time.Second)
+		if _, _, err := loader.FetchRecords(context.Background()); err == nil || !strings.Contains(err.Error(), "302") {
+			t.Fatalf("redirect error = %v", err)
+		}
+	})
+	t.Run("content-length", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Length", "40000000")
+			writer.WriteHeader(http.StatusOK)
+		}))
+		defer server.Close()
+		loader := NewLoader(server.URL, time.Second)
+		if _, _, err := loader.FetchRecords(context.Background()); err == nil || !strings.Contains(err.Error(), "too large") {
+			t.Fatalf("oversized response error = %v", err)
+		}
+	})
+}
+
+func TestSafeSourceURLRejectsCredentialsQueryAndNonLoopbackHTTP(t *testing.T) {
+	for _, raw := range []string{"http://example.com/data.csv", "https://user@example.com/data.csv", "https://example.com/data.csv?q=1"} {
+		request, err := http.NewRequest(http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if safeSourceURL(request.URL) {
+			t.Fatalf("unsafe URL accepted: %s", raw)
+		}
 	}
 }

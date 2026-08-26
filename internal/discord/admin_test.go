@@ -3,9 +3,12 @@ package discord
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	disgocord "github.com/disgoorg/disgo/discord"
+	"github.com/j4v3l/SkyFeed/internal/storage"
 	"github.com/j4v3l/SkyFeed/internal/storage/sqlite"
 )
 
@@ -96,5 +99,45 @@ func TestAdministrativeCommandsPersistAndAuthorize(t *testing.T) {
 	}
 	if !resetCalled || len(reset.created) != 1 {
 		t.Fatalf("resetCalled=%v responses=%d", resetCalled, len(reset.created))
+	}
+}
+
+func TestSettingsPermissionAgreementForRoleChanges(t *testing.T) {
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	if err := repository.EnsureGuild(context.Background(), 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpsertRoleBinding(context.Background(), storage.RoleBinding{GuildID: 42, Tier: "admin", RoleID: 88}); err != nil {
+		t.Fatal(err)
+	}
+	router := NewRouter(snapshotStub{testSnapshot(time.Now())}, NewSessionManager(100, 10, time.Minute), 42, time.Now())
+	router.SetRepository(repository)
+	base := CommandRequest{Name: "settings", UserID: 7, GuildID: 42, ChannelID: 9, ManageGuild: true, Permissions: disgocord.PermissionManageGuild, RoleIDs: []uint64{88}}
+	normal := &responseRecorder{}
+	request := base
+	request.Subcommand = "units"
+	request.Strings = map[string]string{"system": "metric"}
+	if err := router.HandleCommand(request, normal); err != nil || len(normal.created) != 1 || strings.Contains(normal.created[0].Embeds[0].Title, "Error") {
+		t.Fatalf("general setting denied: err=%v response=%#v", err, normal.created)
+	}
+	roleChange := &responseRecorder{}
+	request = base
+	request.Group, request.Subcommand = "roles", "bind"
+	request.Strings, request.IDs = map[string]string{"tier": "operator"}, map[string]uint64{"role": 99}
+	if err := router.HandleCommand(request, roleChange); err != nil {
+		t.Fatal(err)
+	}
+	if len(roleChange.created) != 1 || !strings.Contains(roleChange.created[0].Embeds[0].Description, "Manage Roles") {
+		t.Fatalf("role change was not denied consistently: %#v", roleChange.created)
+	}
+	roleList := &responseRecorder{}
+	request = base
+	request.Group, request.Subcommand = "roles", "list"
+	if err := router.HandleCommand(request, roleList); err != nil || len(roleList.created) != 1 || strings.Contains(roleList.created[0].Embeds[0].Title, "Error") {
+		t.Fatalf("read-only role list denied: err=%v response=%#v", err, roleList.created)
 	}
 }

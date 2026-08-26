@@ -8,7 +8,7 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 20 {
+	if len(commands) != 21 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {
@@ -91,11 +91,11 @@ func TestAircraftUsesAutocomplete(t *testing.T) {
 	t.Fatal("aircraft command not found")
 }
 
-func TestSettingsDefaultsToManageRoles(t *testing.T) {
+func TestSettingsDefaultsToManageGuild(t *testing.T) {
 	for _, command := range DesiredCommands() {
 		if command.CommandName() == "settings" {
 			settings := command.(disgocord.SlashCommandCreate)
-			if !settings.DefaultMemberPermissions.OK || settings.DefaultMemberPermissions.Value == nil || *settings.DefaultMemberPermissions.Value != disgocord.PermissionManageRoles {
+			if !settings.DefaultMemberPermissions.OK || settings.DefaultMemberPermissions.Value == nil || *settings.DefaultMemberPermissions.Value != disgocord.PermissionManageGuild {
 				t.Fatalf("settings permissions = %+v", settings.DefaultMemberPermissions)
 			}
 			return
@@ -108,9 +108,9 @@ func TestCommandPickerPermissionsMatchAccessTiers(t *testing.T) {
 	want := map[string]disgocord.Permissions{
 		"alerts":     disgocord.PermissionManageGuild,
 		"reports":    disgocord.PermissionManageGuild,
-		"audit":      disgocord.PermissionManageRoles,
+		"audit":      disgocord.PermissionManageGuild,
 		"moderation": disgocord.PermissionModerateMembers,
-		"settings":   disgocord.PermissionManageRoles,
+		"settings":   disgocord.PermissionManageGuild,
 	}
 	for _, command := range DesiredCommands() {
 		slash, ok := command.(disgocord.SlashCommandCreate)

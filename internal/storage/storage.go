@@ -17,6 +17,13 @@ type GuildSettings struct {
 	UpdatedAt    time.Time
 }
 
+type UserPreference struct {
+	GuildID   uint64
+	UserID    uint64
+	Units     string
+	UpdatedAt time.Time
+}
+
 type ChannelBinding struct {
 	GuildID   uint64
 	Purpose   string
@@ -64,13 +71,14 @@ type FeederEvent struct {
 }
 
 type ReportRollup struct {
-	GuildID       uint64
-	BucketStart   time.Time
-	AircraftSeen  int64
-	Messages      int64
-	Emergencies   int64
-	MaximumRange  float64
-	DistinctICAOs int64
+	GuildID               uint64
+	BucketStart           time.Time
+	AircraftObservations  int64
+	Messages              int64
+	EmergencyObservations int64
+	EmergencyEvents       int64
+	MaximumRange          float64
+	PeakTracked           int64
 }
 
 type AlertConfig struct {
@@ -93,15 +101,16 @@ type ReportSchedule struct {
 }
 
 type ReportSummary struct {
-	From           time.Time
-	To             time.Time
-	AircraftSeen   int64
-	Messages       int64
-	Emergencies    int64
-	MaximumRangeNM float64
-	DistinctICAOs  int64
-	PeakHour       time.Time
-	PeakAircraft   int64
+	From                  time.Time
+	To                    time.Time
+	AircraftObservations  int64
+	Messages              int64
+	EmergencyObservations int64
+	EmergencyEvents       int64
+	MaximumRangeNM        float64
+	PeakTracked           int64
+	PeakHour              time.Time
+	PeakAircraft          int64
 }
 
 type PlaneAlertReference struct {
@@ -145,6 +154,8 @@ type Repository interface {
 	EnsureGuild(context.Context, uint64) error
 	UpsertGuildSettings(context.Context, GuildSettings) error
 	GuildSettings(context.Context, uint64) (GuildSettings, error)
+	UpsertUserPreference(context.Context, UserPreference) error
+	UserPreference(context.Context, uint64, uint64) (UserPreference, error)
 	UpsertChannelBinding(context.Context, ChannelBinding) error
 	ChannelBindings(context.Context, uint64) ([]ChannelBinding, error)
 	UpsertRoleBinding(context.Context, RoleBinding) error
@@ -157,6 +168,7 @@ type Repository interface {
 	AllWatchRules(context.Context, uint64, int) ([]domain.WatchRule, error)
 	UpsertAlertState(context.Context, domain.AlertState) error
 	AlertStates(context.Context, int) ([]domain.AlertState, error)
+	PurgeAlertStates(context.Context, time.Time, int) (int64, error)
 	AppendFeederEvent(context.Context, FeederEvent) error
 	RecentFeederEvents(context.Context, uint64, int) ([]FeederEvent, error)
 	AddReportRollup(context.Context, ReportRollup) error

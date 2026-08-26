@@ -1,7 +1,6 @@
 package report
 
 import (
-	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -14,13 +13,8 @@ type RouteLookup interface {
 	CachedRoute(callsign string) (domain.Route, bool, error)
 }
 
-type AircraftEnrichmentLookup interface {
-	Cached(icao, callsign string) (domain.Enrichment, bool, error)
-}
-
 type RouteStatsLookup struct {
 	AdsbLol RouteLookup
-	AdsbDB  AircraftEnrichmentLookup
 }
 
 func (lookup RouteStatsLookup) routeFor(icao, callsign string) (domain.Route, bool) {
@@ -32,24 +26,22 @@ func (lookup RouteStatsLookup) routeFor(icao, callsign string) (domain.Route, bo
 			}
 		}
 	}
-	if lookup.AdsbDB != nil {
-		enrichment, found, err := lookup.AdsbDB.Cached(icao, callsign)
-		if err == nil && found && enrichment.Route != nil {
-			if _, ok := storage.RouteCatalogFromDomain(*enrichment.Route); ok {
-				return *enrichment.Route, true
-			}
-		}
-	}
 	return domain.Route{}, false
+}
+
+type routeSightingKey struct {
+	guildID uint64
+	icao    string
+	bucket  int64
 }
 
 type RouteStatsCollector struct {
 	mu   sync.Mutex
-	seen map[string]struct{}
+	seen map[routeSightingKey]struct{}
 }
 
 func NewRouteStatsCollector() *RouteStatsCollector {
-	return &RouteStatsCollector{seen: make(map[string]struct{})}
+	return &RouteStatsCollector{seen: make(map[routeSightingKey]struct{})}
 }
 
 func (collector *RouteStatsCollector) Observe(guildID uint64, snapshot *domain.Snapshot, routes RouteStatsLookup, now time.Time) storage.RouteSightingsBatch {
@@ -69,7 +61,7 @@ func (collector *RouteStatsCollector) Observe(guildID uint64, snapshot *domain.S
 		if callsign == "" {
 			continue
 		}
-		key := sightingKey(guildID, aircraft.ICAO, bucket)
+		key := routeSightingKey{guildID: guildID, icao: strings.ToUpper(strings.TrimSpace(aircraft.ICAO)), bucket: bucket.Unix()}
 		if _, exists := collector.seen[key]; exists {
 			continue
 		}
@@ -95,15 +87,10 @@ func (collector *RouteStatsCollector) Observe(guildID uint64, snapshot *domain.S
 }
 
 func (collector *RouteStatsCollector) pruneLocked(bucket time.Time) {
-	cutoff := bucket.Add(-2 * time.Hour).Format(time.RFC3339)
+	cutoff := bucket.Add(-2 * time.Hour).Unix()
 	for key := range collector.seen {
-		parts := strings.Split(key, "|")
-		if len(parts) != 3 || parts[2] < cutoff {
+		if key.bucket < cutoff {
 			delete(collector.seen, key)
 		}
 	}
-}
-
-func sightingKey(guildID uint64, icao string, bucket time.Time) string {
-	return fmt.Sprintf("%d|%s|%s", guildID, strings.ToUpper(strings.TrimSpace(icao)), bucket.UTC().Truncate(time.Hour).Format(time.RFC3339))
 }

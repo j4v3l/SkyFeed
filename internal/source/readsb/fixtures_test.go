@@ -8,6 +8,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +47,57 @@ func TestNormalizeSyntheticFixtures(t *testing.T) {
 	if statistics.Messages != 900 || statistics.MessageRate != 30 || statistics.MaxRangeNM != 100 {
 		t.Fatalf("unexpected statistics: %#v", statistics)
 	}
+}
+
+func TestClientToleratesAdditiveFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`{"now":1787414400,"messages":1,"aircraft":[],"future_field":{"enabled":true}}`))
+	}))
+	defer server.Close()
+	baseURL, _ := url.Parse(server.URL + "/data")
+	if _, err := NewClient(baseURL, time.Second).FetchAircraft(context.Background()); err != nil {
+		t.Fatalf("additive field rejected: %v", err)
+	}
+}
+
+func TestClientRejectsOversizedRedirectAndTimeout(t *testing.T) {
+	t.Run("oversized", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			_, _ = writer.Write([]byte(`{"refresh":1000}` + strings.Repeat(" ", maxReceiverBytes)))
+		}))
+		defer server.Close()
+		baseURL, _ := url.Parse(server.URL + "/data")
+		if _, err := NewClient(baseURL, time.Second).FetchReceiver(context.Background()); err == nil || source.ClassifyError(err) != source.ErrorPayload {
+			t.Fatalf("oversized error = %v", err)
+		}
+	})
+	t.Run("redirect", func(t *testing.T) {
+		var followed atomic.Bool
+		target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			followed.Store(true)
+			_, _ = writer.Write([]byte(`{"now":1,"messages":1,"aircraft":[]}`))
+		}))
+		defer target.Close()
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			http.Redirect(writer, request, target.URL, http.StatusFound)
+		}))
+		defer server.Close()
+		baseURL, _ := url.Parse(server.URL + "/data")
+		if _, err := NewClient(baseURL, time.Second).FetchAircraft(context.Background()); err == nil || followed.Load() {
+			t.Fatalf("redirect error=%v followed=%t", err, followed.Load())
+		}
+	})
+	t.Run("timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			time.Sleep(25 * time.Millisecond)
+			_, _ = writer.Write([]byte(`{"now":1,"messages":1,"aircraft":[]}`))
+		}))
+		defer server.Close()
+		baseURL, _ := url.Parse(server.URL + "/data")
+		if _, err := NewClient(baseURL, time.Millisecond).FetchAircraft(context.Background()); err == nil || source.ClassifyError(err) != source.ErrorTimeout {
+			t.Fatalf("timeout error = %v", err)
+		}
+	})
 }
 
 func TestNormalizeCurrentStatsFixture(t *testing.T) {

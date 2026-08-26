@@ -7,7 +7,7 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 13
+const CommandSchemaVersion = 14
 
 const LookupAircraftCommand = "Lookup aircraft"
 
@@ -17,7 +17,7 @@ const LookupAircraftCommand = "Lookup aircraft"
 // owned by another application feature.
 var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
-	"watch": {}, "alerts": {}, "reports": {}, "audit": {}, "feeder": {}, "settings": {}, "help": {},
+	"watch": {}, "alerts": {}, "reports": {}, "audit": {}, "feeder": {}, "settings": {}, "preferences": {}, "help": {},
 	"moderation": {}, "airline": {}, LookupAircraftCommand: {},
 }
 
@@ -27,7 +27,7 @@ var ownedCommandNames = map[string]struct{}{
 //	Viewer   — no DefaultMemberPermissions (everyone)
 //	Operator — Manage Server (server watch / alert configure / report schedule are runtime-gated)
 //	Moderator — Moderate Members (+ Kick/Ban as needed at runtime)
-//	Admin    — Manage Roles so only the Admin staff role sees /settings among SkyFeed roles
+//	Admin    — Manage Server for /settings; role bind/remove additionally require Manage Roles at runtime
 //
 // Discord Administrators always see every command. Bot DMs ignore these bits;
 // DM use is still Admin-only at runtime.
@@ -37,7 +37,6 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	minLimit, maxLimit := 1, 25
 	operator := disgocord.Permissions(disgocord.PermissionManageGuild)
 	moderator := disgocord.Permissions(disgocord.PermissionModerateMembers)
-	admin := disgocord.Permissions(disgocord.PermissionManageRoles)
 	commands := []disgocord.ApplicationCommandCreate{
 		disgocord.SlashCommandCreate{Name: "status", Description: "Show receiver, source, and SkyFeed health"},
 		disgocord.SlashCommandCreate{
@@ -92,18 +91,23 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			},
 		},
 		disgocord.SlashCommandCreate{
-			Name: "top", Description: "Show top live aircraft metrics or route traffic rankings",
+			Name: "top", Description: "Show live aircraft leaders or historical traffic rankings",
 			Options: []disgocord.ApplicationCommandOption{
-				disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-					{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Ground speed", Value: "speed"},
-					{Name: "Messages", Value: "messages"}, {Name: "Signal", Value: "signal"},
-					{Name: "Routes", Value: "routes"}, {Name: "Origin countries", Value: "origin-countries"}, {Name: "Destination countries", Value: "destination-countries"},
-					{Name: "Airlines", Value: "airlines"}, {Name: "Domestic airports", Value: "domestic-airports"}, {Name: "International airports", Value: "international-airports"},
+				disgocord.ApplicationCommandOptionSubCommand{Name: "live", Description: "Rank aircraft visible right now", Options: []disgocord.ApplicationCommandOption{
+					disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Live ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
+						{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Ground speed", Value: "speed"}, {Name: "Messages", Value: "messages"}, {Name: "Signal", Value: "signal"},
+					}},
+					disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft to show", MinValue: &minLimit, MaxValue: &maxLimit},
 				}},
-				disgocord.ApplicationCommandOptionString{Name: "period", Description: "Route ranking window (route metrics only)", Choices: []disgocord.ApplicationCommandOptionChoiceString{
-					{Name: "Last 24 hours", Value: "24h"}, {Name: "Last 7 days", Value: "7d"}, {Name: "Last 30 days", Value: "30d"}, {Name: "All time", Value: "all"},
+				disgocord.ApplicationCommandOptionSubCommand{Name: "traffic", Description: "Rank attributed route sightings over time", Options: []disgocord.ApplicationCommandOption{
+					disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Traffic ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
+						{Name: "Routes", Value: "routes"}, {Name: "Origin countries", Value: "origin-countries"}, {Name: "Destination countries", Value: "destination-countries"}, {Name: "Airlines", Value: "airlines"}, {Name: "Domestic airports", Value: "domestic-airports"}, {Name: "International airports", Value: "international-airports"},
+					}},
+					disgocord.ApplicationCommandOptionString{Name: "period", Description: "Traffic ranking window", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
+						{Name: "Last 24 hours", Value: "24h"}, {Name: "Last 7 days", Value: "7d"}, {Name: "Last 30 days", Value: "30d"}, {Name: "All time", Value: "all"},
+					}},
+					disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of rows to show", MinValue: &minLimit, MaxValue: &maxLimit},
 				}},
-				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of rows to show", MinValue: &minLimit, MaxValue: &maxLimit},
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -113,6 +117,11 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			},
 		},
 		disgocord.SlashCommandCreate{Name: "privacy", Description: "Show how SkyFeed shares provider data in this server"},
+		disgocord.SlashCommandCreate{Name: "preferences", Description: "Configure your personal SkyFeed display", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionSubCommand{Name: "units", Description: "Choose your preferred units", Options: []disgocord.ApplicationCommandOption{
+				disgocord.ApplicationCommandOptionString{Name: "system", Description: "Unit system", Required: true, Choices: unitChoices()},
+			}},
+		}},
 		disgocord.SlashCommandCreate{Name: "watch", Description: "Manage personal or server aircraft watch rules", Options: watchOptions()},
 		disgocord.SlashCommandCreate{
 			Name: "alerts", Description: "View or configure alert delivery", DefaultMemberPermissions: omit.NewPtr(operator),
@@ -123,7 +132,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			Options: reportOptions(),
 		},
 		disgocord.SlashCommandCreate{
-			Name: "audit", Description: "Admin-only full system health and configuration audit", DefaultMemberPermissions: omit.NewPtr(admin),
+			Name: "audit", Description: "Admin-only full system health and configuration audit", DefaultMemberPermissions: omit.NewPtr(operator),
 		},
 		disgocord.SlashCommandCreate{Name: "feeder", Description: "Show receiver, statistics, range, and source diagnostics"},
 		disgocord.SlashCommandCreate{
@@ -131,7 +140,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			Options: moderationOptions(),
 		},
 		disgocord.SlashCommandCreate{
-			Name: "settings", Description: "Configure SkyFeed for this server", DefaultMemberPermissions: omit.NewPtr(admin),
+			Name: "settings", Description: "Configure SkyFeed for this server", DefaultMemberPermissions: omit.NewPtr(operator),
 			Options: settingsOptions(),
 		},
 		disgocord.SlashCommandCreate{Name: "help", Description: "Show a permission-aware SkyFeed task guide"},
@@ -222,6 +231,9 @@ func reportOptions() []disgocord.ApplicationCommandOption {
 
 func settingsOptions() []disgocord.ApplicationCommandOption {
 	return []disgocord.ApplicationCommandOption{
+		disgocord.ApplicationCommandOptionSubCommand{Name: "units", Description: "Set the server default units", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionString{Name: "system", Description: "Default unit system", Required: true, Choices: unitChoices()},
+		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "channels", Description: "Configure a durable channel binding", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "purpose", Description: "Channel purpose", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
 				{Name: "Live dashboard", Value: "live"}, {Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"}, {Name: "Moderation log", Value: "moderation"},
@@ -252,6 +264,13 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 			disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "recreate-dashboard", Description: "Clear the live dashboard binding so SkyFeed posts a fresh message"},
+	}
+}
+
+func unitChoices() []disgocord.ApplicationCommandOptionChoiceString {
+	return []disgocord.ApplicationCommandOptionChoiceString{
+		{Name: "Aviation (NM, ft, kt)", Value: "aviation"},
+		{Name: "Metric (km, m, km/h)", Value: "metric"},
 	}
 }
 

@@ -92,6 +92,35 @@ func TestRouteServicePrefetchBatchesFiftyVisibleAircraft(t *testing.T) {
 	}
 }
 
+func TestRouteServicePrefetchSkipsCachedEntriesAndRotatesBeyondFifty(t *testing.T) {
+	service := NewRouteService(&routeUpstreamStub{}, fastRouteConfig())
+	now := time.Now()
+	service.now = func() time.Time { return now }
+	service.routes.now = service.now
+	aircraft := make([]domain.Aircraft, 120)
+	for index := range aircraft {
+		callsign := fmt.Sprintf("SF%04d", index)
+		aircraft[index] = domain.Aircraft{Callsign: callsign, Latitude: 1, Longitude: 2, HasPosition: true}
+		if index < 50 {
+			service.routes.set(callsign, testRoute(callsign), nil, time.Hour, time.Hour)
+		}
+	}
+	if queued := service.Prefetch(aircraft); queued != MaxRouteBatchSize {
+		t.Fatalf("first queued = %d", queued)
+	}
+	if queued := service.Prefetch(aircraft); queued != 20 {
+		t.Fatalf("second queued = %d", queued)
+	}
+	service.pendingMu.Lock()
+	defer service.pendingMu.Unlock()
+	for _, index := range []int{50, 99, 100, 119} {
+		callsign := fmt.Sprintf("SF%04d", index)
+		if _, ok := service.pendingRoute[callsign]; !ok {
+			t.Fatalf("%s was not admitted", callsign)
+		}
+	}
+}
+
 func TestRouteServiceQueueCoalescesNormalizedCallsigns(t *testing.T) {
 	stub := &routeUpstreamStub{}
 	service := NewRouteService(stub, fastRouteConfig())
@@ -100,8 +129,9 @@ func TestRouteServiceQueueCoalescesNormalizedCallsigns(t *testing.T) {
 		if index%2 == 0 {
 			callsign = "SKY123"
 		}
-		if !service.EnqueueRoute(RouteRequest{Callsign: callsign, Latitude: 1, Longitude: 2}) {
-			t.Fatal("enqueue failed")
+		result := service.EnqueueRoute(RouteRequest{Callsign: callsign, Latitude: 1, Longitude: 2})
+		if (index == 0 && result != AdmissionEnqueued) || (index > 0 && result != AdmissionCoalesced) {
+			t.Fatalf("admission %d = %v", index, result)
 		}
 	}
 

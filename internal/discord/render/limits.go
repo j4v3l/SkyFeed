@@ -18,6 +18,12 @@ const (
 	maxEmbedText   = 6000
 )
 
+var plainTextReplacer = strings.NewReplacer(
+	"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "~", "\\~", "|", "\\|",
+	">", "\\>", "#", "\\#", "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
+	"https://", "https[:]//", "http://", "http[:]//",
+)
+
 func Truncate(value string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -42,11 +48,7 @@ func PlainText(value string) string {
 		}
 		return r
 	}, value)
-	value = strings.NewReplacer(
-		"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_", "~", "\\~", "|", "\\|",
-		">", "\\>", "#", "\\#", "[", "\\[", "]", "\\]", "(", "\\(", ")", "\\)",
-		"https://", "https[:]//", "http://", "http[:]//",
-	).Replace(value)
+	value = plainTextReplacer.Replace(value)
 	return value
 }
 

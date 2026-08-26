@@ -28,7 +28,7 @@ func TestSystemAuditAndAdminDigestEmbeds(t *testing.T) {
 		WatchRules:        3,
 		AlertConfigs:      2,
 		ReportSchedules:   1,
-		Report24h:         storage.ReportSummary{AircraftSeen: 100, DistinctICAOs: 40, Messages: 1000, MaximumRangeNM: 95, Emergencies: 1},
+		Report24h:         storage.ReportSummary{AircraftObservations: 100, PeakTracked: 40, Messages: 1000, MaximumRangeNM: 95, EmergencyEvents: 1},
 		RouteCatalog:      20,
 		RouteSightings24h: 15,
 		ADSBDBEnabled:     true,

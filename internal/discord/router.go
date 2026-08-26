@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/enrichment"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/storage"
+	"github.com/j4v3l/SkyFeed/internal/track"
 )
 
 type SnapshotProvider interface {
@@ -23,8 +25,13 @@ type SnapshotProvider interface {
 
 type EnrichmentProvider interface {
 	Cached(icao, callsign string) (domain.Enrichment, bool, error)
-	Enqueue(icao, callsign string) bool
+	Enqueue(icao, callsign string) enrichment.AdmissionResult
 	Lookup(ctx context.Context, icao, callsign string) (domain.Enrichment, error)
+}
+
+type TrackProvider interface {
+	Summary(icao string) (track.Summary, error)
+	Plot(icao string) ([]byte, track.Summary, error)
 }
 
 type InteractionResponder interface {
@@ -112,6 +119,7 @@ type Router struct {
 	health             HealthViewer
 	enrichmentAudit    EnrichmentAuditor
 	routeAudit         RouteAuditor
+	tracks             TrackProvider
 }
 
 func (router *Router) SetRepository(repository storage.Repository) { router.repository = repository }
@@ -127,6 +135,7 @@ func (router *Router) SetDashboardReset(reset func(context.Context) error) {
 	router.dashboardReset = reset
 }
 func (router *Router) SetModeration(executor ModerationExecutor) { router.moderation = executor }
+func (router *Router) SetTracks(provider TrackProvider)          { router.tracks = provider }
 func (router *Router) SetGuildMemberProvider(provider GuildMemberProvider) {
 	router.members = provider
 }
@@ -153,9 +162,10 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		}
 	}
 	snapshot := router.snapshots.Current()
+	units := router.effectiveUnits(request.GuildID, request.UserID)
 	switch request.Name {
 	case "status":
-		return responder.CreateMessage(render.SafeMessage(render.Status(snapshot, router.now().Sub(router.startedAt), router.now(), router.enrichment != nil), false))
+		return responder.CreateMessage(render.SafeMessage(render.StatusWithUnits(snapshot, router.now().Sub(router.startedAt), router.now(), router.enrichment != nil, units), false))
 	case "nearby":
 		return router.handleNearby(request, responder, snapshot)
 	case "aircraft":
@@ -174,6 +184,8 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleTop(request, responder, snapshot)
 	case "privacy":
 		return router.handlePrivacy(responder)
+	case "preferences":
+		return router.handlePreferences(request, responder)
 	case "help":
 		return responder.CreateMessage(render.SafeMessage(render.Help(router.now(), request.ManageGuild), false))
 	case "settings":
@@ -189,12 +201,48 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 	case "audit":
 		return router.handleAudit(request, responder)
 	case "feeder":
-		return responder.CreateMessage(render.SafeMessage(render.Feeder(snapshot, router.now()), false))
+		return responder.CreateMessage(render.SafeMessage(render.FeederWithUnits(snapshot, router.now(), units), false))
 	case "airline":
 		return router.handleAirline(request, responder, snapshot)
 	default:
 		return responder.CreateMessage(errorMessage("Unknown SkyFeed command."))
 	}
+}
+
+func (router *Router) effectiveUnits(guildID, userID uint64) domain.UnitSystem {
+	if router.repository == nil {
+		return domain.UnitsAviation
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	if userID != 0 {
+		if preference, err := router.repository.UserPreference(ctx, guildID, userID); err == nil {
+			return domain.NormalizeUnitSystem(preference.Units)
+		}
+	}
+	if settings, err := router.repository.GuildSettings(ctx, guildID); err == nil {
+		return domain.NormalizeUnitSystem(settings.Units)
+	}
+	return domain.UnitsAviation
+}
+
+func (router *Router) handlePreferences(request CommandRequest, responder InteractionResponder) error {
+	if router.repository == nil {
+		return responder.CreateMessage(errorMessage("Personal preferences are temporarily unavailable."))
+	}
+	units, ok := domain.ParseUnitSystem(request.Strings["system"])
+	if request.Subcommand != "units" || !ok {
+		return responder.CreateMessage(errorMessage("Choose aviation or metric units."))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := router.ensureGuild(ctx, request.GuildID); err != nil {
+		return responder.CreateMessage(errorMessage("Personal preferences are temporarily unavailable."))
+	}
+	if err := router.repository.UpsertUserPreference(ctx, storage.UserPreference{GuildID: request.GuildID, UserID: request.UserID, Units: string(units)}); err != nil {
+		return responder.CreateMessage(errorMessage("Your unit preference could not be saved."))
+	}
+	return responder.CreateMessage(infoMessage("Units updated", fmt.Sprintf("Your SkyFeed views now use %s units. Your preference overrides the server default.", units)))
 }
 
 func (router *Router) HandleComponent(request ComponentRequest, responder InteractionResponder) error {
@@ -238,6 +286,15 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		session.Page = 0
 	case "route":
 		return router.handleAircraftRouteAction(request, responder, session)
+	case "details":
+		session.Action = "details"
+	case "weather-details":
+		if session.View != "airport" {
+			return responder.CreateMessage(errorMessage("Weather details are not available for this view."))
+		}
+		session.Action = "weather-details"
+	case "track":
+		return router.handleAircraftTrackAction(responder, session)
 	case "airport":
 		if len(request.Values) != 1 {
 			return responder.CreateMessage(errorMessage("That airport selection is not valid."))
@@ -450,6 +507,7 @@ func (router *Router) handleNearby(request CommandRequest, responder Interaction
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
 	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
+	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	session.RadiusNM = request.Floats["radius-nm"]
 	if minFeet, ok := request.Ints["altitude-min"]; ok {
 		session.MinFeet, session.HasMin = minFeet, true
@@ -487,6 +545,10 @@ func (router *Router) handleAircraft(request CommandRequest, responder Interacti
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
+	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	if err := router.sessions.Update(session); err != nil {
+		return err
+	}
 	if err := responder.CreateMessage(router.aircraftMessage(session, aircraft, snapshot)); err != nil {
 		return err
 	}
@@ -519,7 +581,7 @@ func (router *Router) unseenAircraftMessage(query string) (disgocord.MessageCrea
 	if err != nil || !value.Found {
 		return disgocord.MessageCreate{}, false
 	}
-	embed := render.AircraftWithEnrichment(domain.Aircraft{ICAO: query}, nil, &value, nil, router.now())
+	embed := render.AircraftWithEnrichmentAndUnits(domain.Aircraft{ICAO: query}, nil, &value, nil, router.now(), domain.UnitsAviation)
 	embed.Description = "Not currently visible to this receiver. Cached ADSBDB metadata is shown."
 	return render.SafeMessage(embed, false), true
 }
@@ -564,12 +626,33 @@ func (router *Router) handleAircraftRouteAction(request ComponentRequest, respon
 	return router.handleRoute(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"flight": aircraft.ICAO}}, responder, snapshot)
 }
 
+func (router *Router) handleAircraftTrackAction(responder InteractionResponder, session Session) error {
+	if router.tracks == nil {
+		return responder.CreateMessage(errorMessage("Recent track data is unavailable."))
+	}
+	data, summary, err := router.tracks.Plot(session.Query)
+	if err != nil {
+		return responder.CreateMessage(errorMessage("There are not enough recent samples to draw this track yet."))
+	}
+	name := strings.ToLower(summary.ICAO) + "-track.png"
+	message := render.SafeMessage(render.TrackSummary(summary, session.Units, router.now()), true).
+		WithFiles(disgocord.NewFile(name, "SkyFeed 15-minute local radar track", bytes.NewReader(data)))
+	message.Embeds[0].Image = &disgocord.EmbedResource{URL: "attachment://" + name}
+	return responder.CreateMessage(message)
+}
+
 func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft, snapshot *domain.Snapshot) disgocord.MessageCreate {
 	watchID, _ := CustomID(session.ID, "watch")
+	trackID, _ := CustomID(session.ID, "track")
+	detailsID, _ := CustomID(session.ID, "details")
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
-	message := render.SafeMessage(router.aircraftEmbed(aircraft, snapshot), false).
-		AddActionRow(disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
+	embed := render.AircraftSummary(aircraft, snapshot, session.Units, router.now())
+	if session.Action == "details" {
+		embed = router.aircraftEmbedWithUnits(aircraft, snapshot, session.Units)
+	}
+	message := render.SafeMessage(embed, false).
+		AddActionRow(disgocord.NewPrimaryButton("Details", detailsID).WithDisabled(session.Action == "details"), disgocord.NewSecondaryButton("Track", trackID).WithDisabled(router.tracks == nil), disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
 	photoURL := ""
 	if router.enrichment != nil {
 		if value, ok, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign); ok && value.Aircraft != nil {
@@ -581,7 +664,7 @@ func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft,
 	}
 	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
 		routeID, _ := CustomID(session.ID, "route")
-		message = message.AddActionRow(disgocord.NewSecondaryButton("Route", routeID))
+		message = message.AddActionRow(disgocord.NewSecondaryButton("Route / Weather", routeID))
 		if route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign))); found {
 			if options := airportSelectOptions(route); len(options) > 0 {
 				airportID, _ := CustomID(session.ID, "airport")
@@ -625,12 +708,21 @@ func (router *Router) updateSession(session Session, responder InteractionRespon
 			return responder.UpdateMessage(disgocord.NewMessageUpdate().WithContent("This aircraft is no longer visible.").ClearEmbeds().ClearComponents())
 		}
 		return responder.UpdateMessage(messageUpdate(router.aircraftMessage(session, aircraft, snapshot)))
+	case "airport":
+		if router.routes == nil {
+			return responder.CreateMessage(errorMessage("Airport enrichment is not configured."))
+		}
+		airport, found, err := router.routes.CachedAirport(session.Query)
+		if err != nil || !found {
+			return responder.CreateMessage(errorMessage("Airport data is temporarily unavailable. Run `/airport` again."))
+		}
+		return responder.UpdateMessage(messageUpdate(router.airportMessage(session, airport)))
 	default:
 		return responder.CreateMessage(errorMessage("This view is no longer supported."))
 	}
 }
 
-func (router *Router) aircraftEmbed(aircraft domain.Aircraft, snapshot *domain.Snapshot) disgocord.Embed {
+func (router *Router) aircraftEmbedWithUnits(aircraft domain.Aircraft, snapshot *domain.Snapshot, units domain.UnitSystem) disgocord.Embed {
 	var enrichmentValue *domain.Enrichment
 	if router.enrichment != nil {
 		value, ok, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign)
@@ -646,7 +738,7 @@ func (router *Router) aircraftEmbed(aircraft domain.Aircraft, snapshot *domain.S
 			routeValue = &copyRoute
 		}
 	}
-	return router.withRouteWeather(render.AircraftWithEnrichment(aircraft, snapshot, enrichmentValue, routeValue, router.now()), routeValue)
+	return router.withRouteWeather(render.AircraftWithEnrichmentAndUnits(aircraft, snapshot, enrichmentValue, routeValue, router.now(), units), routeValue)
 }
 
 func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) (disgocord.MessageCreate, error) {
@@ -665,7 +757,7 @@ func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) 
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
 	sortID, _ := CustomID(session.ID, "sort")
-	message := render.SafeMessage(render.Nearby(aircraft, session.Page, session.PageSize, router.now()), false)
+	message := render.SafeMessage(render.NearbyWithUnits(aircraft, session.Page, session.PageSize, router.now(), session.Units), false)
 	message = message.AddActionRow(
 		disgocord.NewSecondaryButton("Previous", previousID).WithDisabled(session.Page == 0),
 		disgocord.NewSecondaryButton("Next", nextID).WithDisabled(session.Page >= maxPage),

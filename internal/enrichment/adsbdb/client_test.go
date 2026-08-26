@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,6 +30,25 @@ func TestClientMapsCombinedResponseAndNormalizes(t *testing.T) {
 	}
 	if result.Aircraft == nil || result.Aircraft.Registration != "N123SF" || result.Route == nil || result.Route.Destination.ICAO != "KBBB" {
 		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestClientRejectsRedirect(t *testing.T) {
+	var followed atomic.Bool
+	target := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		followed.Store(true)
+		_, _ = writer.Write([]byte(`{"response":{}}`))
+	}))
+	defer target.Close()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		http.Redirect(writer, request, target.URL, http.StatusFound)
+	}))
+	defer server.Close()
+	base, _ := url.Parse(server.URL)
+	_, err := NewClientWithHTTP(base, server.Client()).Lookup(context.Background(), "ABC123", "")
+	var requestErr *RequestError
+	if !errors.As(err, &requestErr) || requestErr.StatusCode != http.StatusFound || followed.Load() {
+		t.Fatalf("err=%v followed=%t", err, followed.Load())
 	}
 }
 

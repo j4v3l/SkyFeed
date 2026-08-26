@@ -294,5 +294,9 @@ func (catalogRouteStub) LookupAirport(_ context.Context, code string) (domain.Ai
 	airport, _, _ := catalogRouteStub{}.CachedAirport(code)
 	return airport, nil
 }
-func (catalogRouteStub) EnqueueRoute(enrichment.RouteRequest) bool { return true }
-func (catalogRouteStub) EnqueueAirport(string) bool                { return true }
+func (catalogRouteStub) EnqueueRoute(enrichment.RouteRequest) enrichment.AdmissionResult {
+	return enrichment.AdmissionEnqueued
+}
+func (catalogRouteStub) EnqueueAirport(string) enrichment.AdmissionResult {
+	return enrichment.AdmissionEnqueued
+}

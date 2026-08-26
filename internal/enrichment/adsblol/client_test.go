@@ -166,14 +166,13 @@ func TestClientDoesNotForwardRoutePayloadOnRedirect(t *testing.T) {
 	}
 }
 
-func TestClientRejectsMalformedOversizedAndUnexpectedFields(t *testing.T) {
+func TestClientRejectsMalformedAndOversizedFields(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 	}{
 		{name: "malformed", body: `[`},
 		{name: "oversized", body: `[]` + strings.Repeat(" ", maxResponseBytes)},
-		{name: "unexpected field", body: `[{"callsign":"SKY1","airport_codes":"unknown","_airports":[],"unexpected":true}]`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -186,6 +185,17 @@ func TestClientRejectsMalformedOversizedAndUnexpectedFields(t *testing.T) {
 				t.Fatal("expected decode error")
 			}
 		})
+	}
+}
+
+func TestClientToleratesAdditiveFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		_, _ = writer.Write([]byte(`[{"callsign":"SKY1","airport_codes":"unknown","_airports":[],"unexpected":true}]`))
+	}))
+	defer server.Close()
+	client := testClient(t, server)
+	if _, err := client.LookupRoutes(context.Background(), []enrichment.RouteRequest{{Callsign: "SKY1", Latitude: 1, Longitude: 2}}); err != nil {
+		t.Fatalf("additive field rejected: %v", err)
 	}
 }
 
