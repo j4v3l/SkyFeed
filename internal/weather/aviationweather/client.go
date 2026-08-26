@@ -28,14 +28,36 @@ const (
 )
 
 type Observation struct {
-	METAR          string
-	TAF            string
-	FlightCategory string
-	METARStatus    string
-	TAFStatus      string
-	FetchedAt      time.Time
-	Attribution    string
-	Stale          bool
+	METAR                string
+	TAF                  string
+	FlightCategory       string
+	METARStatus          string
+	TAFStatus            string
+	FetchedAt            time.Time
+	Attribution          string
+	Stale                bool
+	WindDirectionDegrees int
+	WindVariable         bool
+	WindSpeedKts         int
+	WindGustKts          int
+	HasWind              bool
+	VisibilitySM         float64
+	VisibilityAtLeast    bool
+	HasVisibility        bool
+	TemperatureC         int
+	DewpointC            int
+	HasTemperature       bool
+	HasDewpoint          bool
+	AltimeterInHg        float64
+	HasAltimeter         bool
+	Clouds               []CloudLayer
+	Conditions           []string
+}
+
+type CloudLayer struct {
+	Cover    string
+	BaseFeet int
+	HasBase  bool
 }
 
 type Client struct {
@@ -110,6 +132,7 @@ func (client *Client) Lookup(ctx context.Context, icao string) (Observation, err
 		}
 		taf, tafErr := client.fetchRaw(ctx, "taf", code)
 		observation := Observation{METAR: metar.Raw, TAF: taf.Raw, FlightCategory: metar.FlightCategory, FetchedAt: client.now().UTC(), Attribution: Attribution}
+		populateMETAR(&observation)
 		if observation.METAR == "" {
 			observation.METARStatus = "not-found"
 		} else {

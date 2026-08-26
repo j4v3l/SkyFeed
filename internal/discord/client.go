@@ -607,7 +607,17 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 	if settings, settingsErr := service.repository.GuildSettings(ctx, guildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
-	message := render.SafeMessage(render.StatusWithUnits(service.router.snapshots.Current(), time.Since(service.router.startedAt), time.Now(), service.router.enrichment != nil, units), false)
+	now := time.Now()
+	embed := render.StatusWithUnits(service.router.snapshots.Current(), time.Since(service.router.startedAt), now, service.router.enrichment != nil, units)
+	if airportCode := strings.ToUpper(strings.TrimSpace(service.router.privacy.PublicAirportCode)); airportCode != "" {
+		weather := service.router.lookupWeatherView(airportCode)
+		activity := domain.AirportActivity{}
+		if service.router.activity != nil {
+			activity = service.router.activity.Activity()
+		}
+		embed = render.WithAirportUpdate(embed, airportCode, weather, activity, units, now)
+	}
+	message := render.SafeMessage(embed, false)
 	binding, found, err := service.repository.MessageBinding(ctx, guildID, "dashboard")
 	if err != nil {
 		return err

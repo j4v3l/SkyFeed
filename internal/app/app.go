@@ -133,7 +133,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	movementConfig := rules.MovementConfig{}
 	if cfg.AirplanesLive.Latitude != nil && cfg.AirplanesLive.Longitude != nil {
-		movementConfig = rules.MovementConfig{Latitude: *cfg.AirplanesLive.Latitude, Longitude: *cfg.AirplanesLive.Longitude, HasCenter: true}
+		movementConfig = rules.MovementConfig{AirportCode: cfg.AirplanesLive.PublicAirportCode, Latitude: *cfg.AirplanesLive.Latitude, Longitude: *cfg.AirplanesLive.Longitude, HasCenter: true}
 	}
 	movementMonitor := rules.NewMovementMonitor(movementConfig)
 	trackStore := track.NewStore()
@@ -313,6 +313,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
 	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
 	router.SetTracks(trackStore)
+	router.SetAirportActivity(movementMonitor)
 	router.SetPrivacyDisclosure(privacyDisclosure(cfg))
 	router.SetDomesticCountryISO(cfg.AirplanesLive.DomesticCountryISO)
 	ruleReload := make(chan struct{}, 1)
@@ -517,12 +518,13 @@ func sourceHealthMessage(value domain.SourceHealth) string {
 func privacyDisclosure(cfg config.Config) privacy.Disclosure {
 	providers := []string{"readsb"}
 	attribution := []privacy.Attribution{}
-	publicAirportCode := ""
+	publicAirportCode := cfg.AirplanesLive.PublicAirportCode
 	radiusNM := 0
+	if publicAirportCode != "" {
+		radiusNM = cfg.AirplanesLive.RadiusNM
+	}
 	if airplanesLiveConfigured(cfg) {
 		providers = append(providers, "airplanes.live")
-		publicAirportCode = cfg.AirplanesLive.PublicAirportCode
-		radiusNM = cfg.AirplanesLive.RadiusNM
 		attribution = append(attribution, privacy.Attribution{
 			Provider: "airplanes.live",
 			Notice:   airplaneslive.Attribution,

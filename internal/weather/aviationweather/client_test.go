@@ -50,6 +50,12 @@ func TestLookupFetchesMETARAndTAF(t *testing.T) {
 	if observation.Attribution != Attribution {
 		t.Fatalf("attribution = %q", observation.Attribution)
 	}
+	if !observation.HasWind || observation.WindDirectionDegrees != 140 || observation.WindSpeedKts != 8 ||
+		!observation.HasVisibility || observation.VisibilitySM != 10 || !observation.HasTemperature || observation.TemperatureC != 28 ||
+		!observation.HasDewpoint || observation.DewpointC != 22 || !observation.HasAltimeter || observation.AltimeterInHg != 30.01 ||
+		observation.FlightCategory != "VFR" || len(observation.Clouds) != 1 || observation.Clouds[0].BaseFeet != 4000 {
+		t.Fatalf("decoded human weather = %+v", observation)
+	}
 	if hits != 2 {
 		t.Fatalf("hits = %d, want 2", hits)
 	}
@@ -60,6 +66,21 @@ func TestLookupFetchesMETARAndTAF(t *testing.T) {
 	}
 	if cached.METAR != observation.METAR || hits != 2 {
 		t.Fatalf("cache miss: hits=%d cached=%+v", hits, cached)
+	}
+}
+
+func TestPopulateMETARHandlesVariableWindFractionsAndConditions(t *testing.T) {
+	observation := Observation{METAR: "KXYZ 231453Z VRB12G20KT 1/2SM -RA BR BKN008 M02/M05 A2988"}
+	populateMETAR(&observation)
+	if !observation.WindVariable || observation.WindSpeedKts != 12 || observation.WindGustKts != 20 {
+		t.Fatalf("wind = %+v", observation)
+	}
+	if observation.VisibilitySM != 0.5 || observation.TemperatureC != -2 || observation.DewpointC != -5 || observation.FlightCategory != "LIFR" {
+		t.Fatalf("conditions = %+v", observation)
+	}
+	joined := strings.Join(observation.Conditions, " ")
+	if !strings.Contains(joined, "light rain") || !strings.Contains(joined, "mist") {
+		t.Fatalf("weather labels = %v", observation.Conditions)
 	}
 }
 

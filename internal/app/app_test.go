@@ -111,6 +111,21 @@ func TestPrivacyDisclosureIncludesExplicitPublicPointProvider(t *testing.T) {
 	}
 }
 
+func TestPrivacyDisclosureIncludesLocalAirportWithoutExternalFallback(t *testing.T) {
+	latitude, longitude := 1.25, -2.5
+	disclosure := privacyDisclosure(config.Config{AirplanesLive: config.AirplanesLive{
+		PublicAirportCode: "KXYZ", Latitude: &latitude, Longitude: &longitude, RadiusNM: 25,
+	}})
+	if disclosure.PublicAirportCode != "KXYZ" || disclosure.RadiusNM != 25 {
+		t.Fatalf("local airport disclosure = %+v", disclosure)
+	}
+	for _, provider := range disclosure.Providers {
+		if provider == "airplanes.live" {
+			t.Fatalf("disabled external fallback disclosed: %v", disclosure.Providers)
+		}
+	}
+}
+
 func TestPrivacyDisclosureNamesTransientTracksAndProviderSpecificRetention(t *testing.T) {
 	disclosure := privacyDisclosure(config.Config{
 		ADSBDB:     config.ADSBDB{Enabled: true, RouteEnabled: true},

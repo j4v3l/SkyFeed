@@ -34,6 +34,10 @@ type TrackProvider interface {
 	Plot(icao string) ([]byte, track.Summary, error)
 }
 
+type AirportActivityProvider interface {
+	Activity() domain.AirportActivity
+}
+
 type InteractionResponder interface {
 	CreateMessage(disgocord.MessageCreate) error
 	UpdateMessage(disgocord.MessageUpdate) error
@@ -120,6 +124,7 @@ type Router struct {
 	enrichmentAudit    EnrichmentAuditor
 	routeAudit         RouteAuditor
 	tracks             TrackProvider
+	activity           AirportActivityProvider
 }
 
 func (router *Router) SetRepository(repository storage.Repository) { router.repository = repository }
@@ -136,6 +141,9 @@ func (router *Router) SetDashboardReset(reset func(context.Context) error) {
 }
 func (router *Router) SetModeration(executor ModerationExecutor) { router.moderation = executor }
 func (router *Router) SetTracks(provider TrackProvider)          { router.tracks = provider }
+func (router *Router) SetAirportActivity(provider AirportActivityProvider) {
+	router.activity = provider
+}
 func (router *Router) SetGuildMemberProvider(provider GuildMemberProvider) {
 	router.members = provider
 }
@@ -293,6 +301,13 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 			return responder.CreateMessage(errorMessage("Weather details are not available for this view."))
 		}
 		session.Action = "weather-details"
+	case "airport-activity":
+		if session.View != "airport" {
+			return responder.CreateMessage(errorMessage("Airport activity is not available for this view."))
+		}
+		session.Action = "activity"
+	case "overview":
+		session.Action = ""
 	case "track":
 		return router.handleAircraftTrackAction(responder, session)
 	case "airport":

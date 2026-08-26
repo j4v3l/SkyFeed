@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -140,6 +141,15 @@ func FeederWithUnits(snapshot *domain.Snapshot, now time.Time, units domain.Unit
 	return BoundEmbed(embed)
 }
 
+func WithAirportUpdate(embed discord.Embed, airportCode string, weather WeatherView, activity domain.AirportActivity, units domain.UnitSystem, now time.Time) discord.Embed {
+	code := PlainText(valueOr(airportCode, "Local airport"))
+	embed.Fields = append(embed.Fields,
+		section("🌤️ "+code+" weather", weatherSummary(weather, now, units)),
+		section("✈️ "+code+" movements", activitySummary(activity, units, now)),
+	)
+	return BoundEmbed(embed)
+}
+
 func ModerationCase(value storage.ModerationCase) discord.Embed {
 	color := Radar
 	if value.Status == "failed" {
@@ -254,6 +264,28 @@ type WeatherView struct {
 	Stale          bool
 	UpstreamFailed bool
 	Attribution    string
+	WindDirectionDegrees int
+	WindVariable         bool
+	WindSpeedKts         int
+	WindGustKts          int
+	HasWind              bool
+	VisibilitySM         float64
+	VisibilityAtLeast    bool
+	HasVisibility        bool
+	TemperatureC         int
+	DewpointC            int
+	HasTemperature       bool
+	HasDewpoint          bool
+	AltimeterInHg        float64
+	HasAltimeter         bool
+	Clouds               []WeatherCloudView
+	Conditions           []string
+}
+
+type WeatherCloudView struct {
+	Cover    string
+	BaseFeet int
+	HasBase  bool
 }
 
 func AirportWithWeatherView(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time) discord.Embed {
@@ -261,8 +293,17 @@ func AirportWithWeatherView(airport domain.Airport, weather WeatherView, rawDeta
 }
 
 func AirportWithWeatherViewAndUnits(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time, units domain.UnitSystem) discord.Embed {
+	mode := ""
+	if rawDetails {
+		mode = "weather-details"
+	}
+	return AirportDashboard(airport, weather, domain.AirportActivity{}, mode, now, units)
+}
+
+func AirportDashboard(airport domain.Airport, weather WeatherView, activity domain.AirportActivity, mode string, now time.Time, units domain.UnitSystem) discord.Embed {
 	title := PlainText(firstNonEmpty(airport.ICAO, airport.IATA, "Airport"))
-	embed := base("Airport • "+title, Scope, now)
+	color := weatherColor(weather)
+	embed := base("Airport • "+title, color, now)
 	location := strings.Join(nonEmpty(PlainText(airport.Municipality), PlainText(airport.CountryCode)), ", ")
 	if location == "" {
 		location = "Location unavailable"
@@ -275,18 +316,32 @@ func AirportWithWeatherViewAndUnits(airport domain.Airport, weather WeatherView,
 			elevation = fmt.Sprintf("%d ft", int(airport.ElevationFeet))
 		}
 	}
-	embed.Description = PlainText(valueOr(airport.Name, "Name unavailable"))
-	embed.Fields = []discord.EmbedField{
-		section("Codes", fmt.Sprintf("`%s` / `%s`", PlainText(valueOr(airport.ICAO, "????")), PlainText(valueOr(airport.IATA, "—")))),
-		section("Location", location),
-		section("Elevation", elevation),
-	}
-	embed.Fields = append(embed.Fields, section("Weather", weatherSummary(weather, now)))
-	if rawDetails && weather.METAR != "" {
-		embed.Fields = append(embed.Fields, section("Raw METAR", Truncate(PlainText(weather.METAR), 900)))
-	}
-	if rawDetails && weather.TAF != "" {
-		embed.Fields = append(embed.Fields, section("Raw TAF", Truncate(PlainText(weather.TAF), 900)))
+	embed.Description = "📍 **" + PlainText(valueOr(airport.Name, "Name unavailable")) + "**\n" + location
+	identity := fmt.Sprintf("`%s` / `%s` · elevation %s", PlainText(valueOr(airport.ICAO, "????")), PlainText(valueOr(airport.IATA, "—")), elevation)
+	switch mode {
+	case "activity":
+		embed.Description += "\nLikely arrivals and departures inferred from your local ADS-B feed."
+		embed.Fields = []discord.EmbedField{section("Airport", identity)}
+		embed.Fields = append(embed.Fields, activityFields(activity, units, now)...)
+	case "weather-details":
+		embed.Description += "\nCurrent flying weather in plain language, with the original reports below."
+		embed.Fields = []discord.EmbedField{
+			section("Airport", identity),
+			section("Current conditions", weatherSummary(weather, now, units)),
+		}
+		if weather.METAR != "" {
+			embed.Fields = append(embed.Fields, section("Raw METAR", Truncate(PlainText(weather.METAR), 900)))
+		}
+		if weather.TAF != "" {
+			embed.Fields = append(embed.Fields, section("Raw TAF", Truncate(PlainText(weather.TAF), 900)))
+		}
+	default:
+		embed.Description += "\nA quick look at flying weather and nearby airport activity."
+		embed.Fields = []discord.EmbedField{
+			section("At a glance", identity),
+			section("🌤️ Flying weather", weatherSummary(weather, now, units)),
+			section("✈️ Arrivals & departures", activitySummary(activity, units, now)),
+		}
 	}
 	attribution := uniqueStrings([]string{airport.Attribution, weather.Attribution})
 	if len(attribution) > 0 {
@@ -295,49 +350,251 @@ func AirportWithWeatherViewAndUnits(airport domain.Airport, weather WeatherView,
 	return BoundEmbed(embed)
 }
 
-func weatherSummary(weather WeatherView, now time.Time) string {
+func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem) string {
 	if weather.UpstreamFailed {
-		return "Weather upstream is temporarily unavailable."
+		return "⚪ Weather is temporarily unavailable. SkyFeed will try again on refresh."
 	}
-	status := "Conditions unavailable"
+	status := "⚪ Conditions unavailable"
 	if weather.METARStatus == "available" {
 		category := strings.ToUpper(strings.TrimSpace(weather.FlightCategory))
 		switch category {
 		case "VFR":
-			status = "VFR · generally visual conditions"
+			status = "🟢 **VFR** — generally good visual flying conditions"
 		case "MVFR":
-			status = "MVFR · marginal visual conditions"
+			status = "🟡 **MVFR** — visibility or clouds may need extra attention"
 		case "IFR":
-			status = "IFR · instrument conditions"
+			status = "🟠 **IFR** — instrument conditions are being reported"
 		case "LIFR":
-			status = "LIFR · low instrument conditions"
+			status = "🔴 **LIFR** — very low visibility or cloud ceiling"
 		default:
-			status = "Current METAR available"
+			status = "🔵 Current airport weather is available"
 		}
 	} else if weather.METARStatus == "not-found" {
-		status = "No current METAR reported"
+		status = "⚪ No current METAR is being reported"
 	}
-	taf := "TAF available"
+	lines := []string{status}
+	if weather.HasWind {
+		wind := "variable wind"
+		if !weather.WindVariable {
+			wind = strings.ToLower(compassLong(float64(weather.WindDirectionDegrees))) + fmt.Sprintf(" wind from %03d°", weather.WindDirectionDegrees)
+		}
+		speed := fmt.Sprintf("%d kt", weather.WindSpeedKts)
+		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+			speed = fmt.Sprintf("%.0f km/h", float64(weather.WindSpeedKts)*1.852)
+		}
+		if weather.WindGustKts > 0 {
+			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+				speed += fmt.Sprintf(", gusting %.0f km/h", float64(weather.WindGustKts)*1.852)
+			} else {
+				speed += fmt.Sprintf(", gusting %d kt", weather.WindGustKts)
+			}
+		}
+		lines = append(lines, "💨 "+wind+" at "+speed)
+	}
+	if weather.HasVisibility {
+		prefix := ""
+		if weather.VisibilityAtLeast {
+			prefix = "at least "
+		}
+		visibility := fmt.Sprintf("%s%.1f statute miles", prefix, weather.VisibilitySM)
+		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+			visibility = fmt.Sprintf("%s%.1f km", prefix, weather.VisibilitySM*1.609344)
+		}
+		lines = append(lines, "👁️ Visibility "+visibility)
+	}
+	if clouds := cloudSummary(weather.Clouds, units); clouds != "" {
+		lines = append(lines, "☁️ "+clouds)
+	}
+	if len(weather.Conditions) > 0 {
+		lines = append(lines, "🌧️ "+PlainText(strings.Join(weather.Conditions, ", ")))
+	}
+	measurements := make([]string, 0, 3)
+	if weather.HasTemperature {
+		measurements = append(measurements, fmt.Sprintf("temperature %d°C", weather.TemperatureC))
+	}
+	if weather.HasDewpoint {
+		measurements = append(measurements, fmt.Sprintf("dew point %d°C", weather.DewpointC))
+	}
+	if weather.HasAltimeter {
+		pressure := fmt.Sprintf("%.2f inHg", weather.AltimeterInHg)
+		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+			pressure = fmt.Sprintf("%.0f hPa", weather.AltimeterInHg*33.8639)
+		}
+		measurements = append(measurements, "pressure "+pressure)
+	}
+	if len(measurements) > 0 {
+		lines = append(lines, "🌡️ "+strings.Join(measurements, " · "))
+	}
+	taf := "forecast available"
 	switch weather.TAFStatus {
 	case "not-found":
-		taf = "no TAF reported"
+		taf = "no airport forecast is being reported"
 	case "unavailable":
-		taf = "TAF upstream unavailable"
+		taf = "airport forecast is temporarily unavailable"
 	case "":
-		taf = "TAF not requested"
+		taf = "airport forecast not requested"
 	}
-	parts := []string{status, taf}
-	if weather.Stale {
-		parts = append(parts, "stale cached weather")
-	}
+	ageText := ""
 	if !weather.FetchedAt.IsZero() {
 		age := now.Sub(weather.FetchedAt)
 		if age < 0 {
 			age = 0
 		}
-		parts = append(parts, "age "+conciseDuration(age))
+		ageText = " · updated " + conciseDuration(age) + " ago"
+	}
+	if weather.Stale {
+		ageText += " · showing the last cached report"
+	}
+	lines = append(lines, "🕒 "+taf+ageText)
+	return strings.Join(lines, "\n")
+}
+
+func weatherColor(weather WeatherView) int {
+	switch strings.ToUpper(strings.TrimSpace(weather.FlightCategory)) {
+	case "VFR":
+		return Radar
+	case "MVFR":
+		return Caution
+	case "IFR", "LIFR":
+		return EmergencyColor
+	default:
+		return Scope
+	}
+}
+
+func cloudSummary(clouds []WeatherCloudView, units domain.UnitSystem) string {
+	if len(clouds) == 0 {
+		return "No significant cloud layer reported"
+	}
+	parts := make([]string, 0, min(3, len(clouds)))
+	for _, cloud := range clouds {
+		if len(parts) >= 3 {
+			break
+		}
+		cover := map[string]string{"FEW": "few clouds", "SCT": "scattered clouds", "BKN": "broken ceiling", "OVC": "overcast ceiling", "VV": "vertical visibility"}[cloud.Cover]
+		if cover == "" {
+			cover = strings.ToLower(cloud.Cover)
+		}
+		if cloud.HasBase {
+			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+				cover += fmt.Sprintf(" at %.0f m", float64(cloud.BaseFeet)*0.3048)
+			} else {
+				cover += fmt.Sprintf(" at %s ft", commaInt(cloud.BaseFeet))
+			}
+		}
+		parts = append(parts, cover)
 	}
 	return strings.Join(parts, " · ")
+}
+
+func activitySummary(activity domain.AirportActivity, units domain.UnitSystem, now time.Time) string {
+	if !activity.Configured {
+		return "⚪ Airport activity needs a configured public airport center."
+	}
+	if len(activity.Movements) == 0 {
+		return "🟢 No likely arrivals or departures detected right now.\nSkyFeed waits for three compatible local ADS-B updates before showing a trend."
+	}
+	lines := make([]string, 0, min(4, len(activity.Movements))+1)
+	for _, movement := range activity.Movements[:min(4, len(activity.Movements))] {
+		lines = append(lines, movementOneLine(movement, units))
+	}
+	if len(activity.Movements) > 4 {
+		lines = append(lines, fmt.Sprintf("…and %d more. Open **Arrivals & departures** for the full view.", len(activity.Movements)-4))
+	}
+	if !activity.UpdatedAt.IsZero() {
+		age := now.Sub(activity.UpdatedAt)
+		if age < 0 {
+			age = 0
+		}
+		lines = append(lines, "Updated "+conciseDuration(age)+" ago")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func activityFields(activity domain.AirportActivity, units domain.UnitSystem, now time.Time) []discord.EmbedField {
+	if !activity.Configured || len(activity.Movements) == 0 {
+		return []discord.EmbedField{section("No likely movements right now", activitySummary(activity, units, now))}
+	}
+	limit := min(10, len(activity.Movements))
+	fields := make([]discord.EmbedField, 0, limit+1)
+	for _, movement := range activity.Movements[:limit] {
+		identity := PlainText(firstNonEmpty(movement.Callsign, movement.ICAO))
+		facts := movementFacts(movement, units)
+		value := facts + "\nWhy: " + PlainText(movement.Evidence) + fmt.Sprintf(" · confidence %d%%", movement.Confidence)
+		if !movement.ObservedAt.IsZero() {
+			value += fmt.Sprintf("\nLast seen <t:%d:R>", movement.ObservedAt.Unix())
+		}
+		fields = append(fields, section(movementIcon(movement.Phase)+" "+movementLabel(movement.Phase)+" • "+identity, value))
+	}
+	fields = append(fields, section("How SkyFeed decides", "SkyFeed checks airport distance, heading, climb/descent, radial motion, altitude, speed, ground state, and three consecutive samples. These are likely movements—not official runway or flight-status data."))
+	return fields
+}
+
+func movementOneLine(movement domain.AirportMovement, units domain.UnitSystem) string {
+	identity := PlainText(firstNonEmpty(movement.Callsign, movement.ICAO))
+	return fmt.Sprintf("%s **%s** — %s · %s", movementIcon(movement.Phase), identity, movementLabel(movement.Phase), movementFacts(movement, units))
+}
+
+func movementFacts(movement domain.AirportMovement, units domain.UnitSystem) string {
+	parts := make([]string, 0, 4)
+	if movement.HasDistance {
+		parts = append(parts, strings.ToLower(compassLong(movement.BearingDegrees))+" of airport at "+distance(movement.DistanceNM, units))
+	}
+	if movement.HasAltitude {
+		aircraft := domain.Aircraft{HasAltitude: true, AltitudeFeet: movement.AltitudeFeet}
+		parts = append(parts, altitudeWithUnits(aircraft, units))
+	}
+	if movement.HasVerticalRate {
+		aircraft := domain.Aircraft{HasVerticalRate: true, VerticalRateFPM: movement.VerticalRateFPM}
+		parts = append(parts, verticalRateWithUnits(aircraft, units))
+	}
+	if movement.HasGroundSpeed {
+		aircraft := domain.Aircraft{HasGroundSpeed: true, GroundSpeedKts: movement.GroundSpeedKts}
+		parts = append(parts, groundSpeedWithUnits(aircraft, units))
+	}
+	if len(parts) == 0 {
+		return "live position details unavailable"
+	}
+	return strings.Join(parts, " · ")
+}
+
+func movementIcon(phase domain.MovementPhase) string {
+	switch phase {
+	case domain.MovementApproach:
+		return "🛬"
+	case domain.MovementDeparture:
+		return "🛫"
+	default:
+		return "✅"
+	}
+}
+
+func movementLabel(phase domain.MovementPhase) string {
+	switch phase {
+	case domain.MovementApproach:
+		return "likely approaching"
+	case domain.MovementDeparture:
+		return "likely departing"
+	default:
+		return "likely landed"
+	}
+}
+
+func compassLong(degrees float64) string {
+	directions := [...]string{"North", "Northeast", "East", "Southeast", "South", "Southwest", "West", "Northwest"}
+	index := int((degrees+22.5)/45) % len(directions)
+	if index < 0 {
+		index += len(directions)
+	}
+	return directions[index]
+}
+
+func commaInt(value int) string {
+	text := strconv.Itoa(value)
+	for index := len(text) - 3; index > 0; index -= 3 {
+		text = text[:index] + "," + text[index:]
+	}
+	return text
 }
 
 func Airline(airline domain.Airline, flights []domain.Aircraft, now time.Time) discord.Embed {
@@ -578,7 +835,18 @@ func Privacy(disclosure privacy.Disclosure) discord.Embed {
 	}
 	center := "No external point-query source is configured."
 	if disclosure.PublicAirportCode != "" {
-		center = fmt.Sprintf("External aircraft fallback queries use public airport %s within %d NM (airplanes.live: 1 req/s, max 250 NM).", PlainText(disclosure.PublicAirportCode), disclosure.RadiusNM)
+		externalFallback := false
+		for _, provider := range disclosure.Providers {
+			if strings.EqualFold(provider, "airplanes.live") {
+				externalFallback = true
+				break
+			}
+		}
+		if externalFallback {
+			center = fmt.Sprintf("Airport activity and external fallback use public airport %s within %d NM (airplanes.live: 1 req/s, max 250 NM).", PlainText(disclosure.PublicAirportCode), disclosure.RadiusNM)
+		} else {
+			center = fmt.Sprintf("Airport activity uses published airport %s as its reference point. No external aircraft fallback is configured.", PlainText(disclosure.PublicAirportCode))
+		}
 	}
 	embed.Description = "SkyFeed shares only the data described below. Receiver coordinates, fallback center coordinates, and private site values are not shown or durably stored; fallback coordinates are used only for configured provider requests."
 	embed.Fields = []discord.EmbedField{
@@ -715,14 +983,32 @@ func Alert(alert domain.Alert) discord.Embed {
 		view = "Emergency"
 		priority = "EMERGENCY"
 	}
+	if alert.Title != "" {
+		view = PlainText(alert.Title)
+	}
+	if alert.Type == domain.RuleTakeoff {
+		view = "🛫 Likely departure"
+		color = Radar
+	} else if alert.Type == domain.RuleLanding {
+		view = "✅ Likely landing"
+		color = Scope
+	} else if alert.Type == domain.RuleApproach {
+		view = "🛬 Likely approach"
+		color = Caution
+	}
 	description := PlainText(alert.Description)
 	if alert.RouteSummary != "" {
 		description = description + "\n**Route** " + PlainText(alert.RouteSummary)
 	}
 	embed := base(view, color, alert.ObservedAt).WithDescription(description)
-	embed.Fields = []discord.EmbedField{
-		section("Aircraft", fmt.Sprintf("`%s` · %s", PlainText(valueOr(alert.AircraftICAO, "Unknown")), PlainText(valueOr(alert.Callsign, "Unknown")))),
-		section("Rule", fmt.Sprintf("%s · %s", string(alert.Type), priority)),
+	embed.Fields = []discord.EmbedField{section("Aircraft", fmt.Sprintf("`%s` · %s", PlainText(valueOr(alert.AircraftICAO, "Unknown")), PlainText(valueOr(alert.Callsign, "Unknown"))))}
+	if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
+		embed.Fields = append(embed.Fields,
+			section("How confident is this?", "Three consecutive local ADS-B samples matched the airport-relative movement pattern."),
+			section("Friendly reminder", "This is a likely movement, not confirmation from air traffic control or the airport."),
+		)
+	} else {
+		embed.Fields = append(embed.Fields, section("Rule", fmt.Sprintf("%s · %s", string(alert.Type), priority)))
 	}
 	return BoundEmbed(embed)
 }

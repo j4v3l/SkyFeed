@@ -116,10 +116,7 @@ func validateProviderOrder(providers []domain.ProviderID) (bool, error) {
 
 func validateAirplanesLive(value AirplanesLive, enabled bool) error {
 	centerConfigured := value.PublicAirportCode != "" || value.Latitude != nil || value.Longitude != nil
-	if !enabled {
-		if centerConfigured {
-			return errors.New("airplanes-live public center settings require airplanes-live in SKYFEED_AIRCRAFT_PROVIDER_ORDER")
-		}
+	if !enabled && !centerConfigured {
 		return nil
 	}
 
@@ -128,7 +125,7 @@ func validateAirplanesLive(value AirplanesLive, enabled bool) error {
 		errs = append(errs, errors.New("SKYFEED_PUBLIC_CENTER_AIRPORT_CODE must be a four-letter airport code"))
 	}
 	if value.Latitude == nil || value.Longitude == nil {
-		errs = append(errs, errors.New("airplanes-live requires both public center coordinates"))
+		errs = append(errs, errors.New("airport activity and airplanes-live require both public center coordinates"))
 	} else {
 		if *value.Latitude < -90 || *value.Latitude > 90 {
 			errs = append(errs, errors.New("SKYFEED_PUBLIC_CENTER_LATITUDE must be between -90 and 90"))

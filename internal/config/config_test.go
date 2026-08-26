@@ -104,7 +104,7 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 		{name: "unknown aircraft provider", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,other" }, wantError: "airplanes-live"},
 		{name: "reversed aircraft providers", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "airplanes-live,readsb" }, wantError: "start with readsb"},
 		{name: "fallback without public center", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live" }, wantError: "public center"},
-		{name: "center without fallback", mutate: func(values map[string]string) { values["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ" }, wantError: "require airplanes-live"},
+		{name: "incomplete activity center", mutate: func(values map[string]string) { values["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ" }, wantError: "both public center coordinates"},
 		{name: "fast airplanes live polling", mutate: func(values map[string]string) { values["SKYFEED_AIRPLANES_LIVE_POLL"] = "500ms" }, wantError: "AIRPLANES_LIVE_POLL"},
 		{name: "invalid airplanes live radius", mutate: func(values map[string]string) {
 			values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live"
@@ -127,6 +127,20 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestLoadWithLocalAirportActivityWithoutExternalFallback(t *testing.T) {
+	environment := validEnvironment()
+	environment["SKYFEED_PUBLIC_CENTER_AIRPORT_CODE"] = "KXYZ"
+	environment["SKYFEED_PUBLIC_CENTER_LATITUDE"] = "1.25"
+	environment["SKYFEED_PUBLIC_CENTER_LONGITUDE"] = "-2.5"
+	cfg, err := LoadWith(mapLookup(environment), func(string) ([]byte, error) { return []byte("token"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.ADSB.ProviderOrder) != 1 || cfg.AirplanesLive.PublicAirportCode != "KXYZ" {
+		t.Fatalf("local activity config = %+v", cfg)
 	}
 }
 

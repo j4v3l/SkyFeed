@@ -137,12 +137,23 @@ func (router *Router) newAirportMessage(request CommandRequest, airport domain.A
 
 func (router *Router) airportMessage(session Session, airport domain.Airport) disgocord.MessageCreate {
 	detailsID, _ := CustomID(session.ID, "weather-details")
+	activityID, _ := CustomID(session.ID, "airport-activity")
+	overviewID, _ := CustomID(session.ID, "overview")
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
 	weather := router.lookupWeatherView(session.Query)
-	return render.SafeMessage(render.AirportWithWeatherViewAndUnits(airport, weather, session.Action == "weather-details", router.now(), session.Units), false).
+	activity := domain.AirportActivity{}
+	if router.activity != nil {
+		candidate := router.activity.Activity()
+		if strings.EqualFold(candidate.AirportCode, session.Query) {
+			activity = candidate
+		}
+	}
+	return render.SafeMessage(render.AirportDashboard(airport, weather, activity, session.Action, router.now(), session.Units), false).
 		AddActionRow(
-			disgocord.NewPrimaryButton("Weather details", detailsID).WithDisabled(session.Action == "weather-details"),
+			disgocord.NewPrimaryButton("Arrivals & departures", activityID).WithDisabled(session.Action == "activity" || !activity.Configured),
+			disgocord.NewSecondaryButton("Weather report", detailsID).WithDisabled(session.Action == "weather-details"),
+			disgocord.NewSecondaryButton("Overview", overviewID).WithDisabled(session.Action == ""),
 			disgocord.NewSecondaryButton("Refresh", refreshID),
 			disgocord.NewDangerButton("Close", closeID),
 		)
@@ -158,10 +169,21 @@ func (router *Router) lookupWeatherView(code string) render.WeatherView {
 	if err != nil {
 		return render.WeatherView{METARStatus: "unavailable", TAFStatus: "unavailable", UpstreamFailed: true}
 	}
+	clouds := make([]render.WeatherCloudView, 0, len(observation.Clouds))
+	for _, cloud := range observation.Clouds {
+		clouds = append(clouds, render.WeatherCloudView{Cover: cloud.Cover, BaseFeet: cloud.BaseFeet, HasBase: cloud.HasBase})
+	}
 	return render.WeatherView{
 		METAR: observation.METAR, TAF: observation.TAF, FlightCategory: observation.FlightCategory,
 		METARStatus: observation.METARStatus, TAFStatus: observation.TAFStatus, FetchedAt: observation.FetchedAt,
 		Stale: observation.Stale, Attribution: observation.Attribution,
+		WindDirectionDegrees: observation.WindDirectionDegrees, WindVariable: observation.WindVariable,
+		WindSpeedKts: observation.WindSpeedKts, WindGustKts: observation.WindGustKts, HasWind: observation.HasWind,
+		VisibilitySM: observation.VisibilitySM, VisibilityAtLeast: observation.VisibilityAtLeast, HasVisibility: observation.HasVisibility,
+		TemperatureC: observation.TemperatureC, DewpointC: observation.DewpointC,
+		HasTemperature: observation.HasTemperature, HasDewpoint: observation.HasDewpoint,
+		AltimeterInHg: observation.AltimeterInHg, HasAltimeter: observation.HasAltimeter,
+		Clouds: clouds, Conditions: append([]string(nil), observation.Conditions...),
 	}
 }
 
