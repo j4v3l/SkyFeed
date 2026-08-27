@@ -6,7 +6,7 @@ require (
 	github.com/disgoorg/disgo v0.19.6
 	github.com/disgoorg/omit v1.0.0
 	github.com/disgoorg/snowflake/v2 v2.0.3
-	github.com/klauspost/compress v1.18.4
+	github.com/klauspost/compress v1.19.2
 	golang.org/x/sync v0.22.0
 	modernc.org/sqlite v1.57.0
 )
