@@ -6,12 +6,12 @@ body:
   - type: markdown
     attributes:
       value: |
-        SkyFeed is intentionally local-first and privacy-conscious. Feature ideas that require Message Content intent, public exposure of receiver coordinates, or cloud-hosted multi-tenant tracking are out of scope.
+        SkyFeed is intentionally local-first and privacy-conscious. Feature ideas that require Message Content intent, public receiver exposure, or arbitrary receiver URLs are out of scope.
   - type: textarea
     id: problem
     attributes:
       label: Problem
-      description: What problem does this solve for a single-feeder Discord bot?
+      description: What problem does this solve for a local or invited-community-feeder deployment?
     validations:
       required: true
   - type: textarea

@@ -1,6 +1,12 @@
+---
+layout: default
+title: SkyFeed Terms of Service
+permalink: /legal/terms/
+---
+
 # SkyFeed Terms of Service
 
-Effective date: August 22, 2026
+Effective date: August 27, 2026
 
 These Terms govern access to and use of SkyFeed, an independently operated
 ADS-B Discord bot. By installing, configuring, or using SkyFeed, you agree to
@@ -38,11 +44,14 @@ targets or reasons.
 
 ## Third-party services
 
-SkyFeed depends on Discord and may optionally use ADSBDB, network, hosting,
-registry, VPN, and secret-management providers selected by the operator. Their
-availability and terms are outside SkyFeed's control. ADSBDB route data must not
-be durably stored, bulk exported, or redistributed unless the operator has
-separately confirmed permission to do so.
+SkyFeed depends on Discord and may optionally use ADSBDB, adsb.lol,
+airplanes.live, AviationWeather.gov, plane-alert-db, and network, hosting,
+registry, VPN, or secret-management providers selected by the operator. Their
+availability, accuracy, and terms are outside SkyFeed's control. ADSBDB route
+data must not be durably stored, bulk exported, or redistributed unless the
+operator has separately confirmed permission to do so. Community-maintained
+aircraft classifications are leads to verify, not authoritative statements
+about an aircraft, operator, passenger, or mission.
 
 ## Availability and changes
 

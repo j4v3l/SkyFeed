@@ -1,8 +1,9 @@
 # Contributing to SkyFeed
 
 Thanks for helping improve SkyFeed. This project is a **local-first** ADS-B
-Discord bot for a single readsb/tar1090 feeder. Contributions should preserve
-privacy defaults, avoid the Message Content intent, and keep secrets out of the
+Discord bot for one directly connected readsb/tar1090 feeder and optional
+administrator-invited community feeders. Contributions should preserve privacy
+defaults, avoid the Message Content intent, and keep secrets out of the
 repository.
 
 Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
@@ -54,6 +55,7 @@ See [SECURITY.md](SECURITY.md).
 
 ## Out of scope (default)
 
-- Multi-tenant / cloud-hosted tracking of private receivers
+- Publicly exposing receivers or accepting arbitrary receiver URLs
+- Multiple active Discord Gateway or alert-processing leaders
 - Features that require Discord Message Content intent
 - Publishing private home or receiver coordinates in Discord, logs, metrics, or health JSON

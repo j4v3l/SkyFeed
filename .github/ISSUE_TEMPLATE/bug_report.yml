@@ -53,7 +53,7 @@ body:
     id: version
     attributes:
       label: SkyFeed version
-      description: Output of `skyfeed version` or the image tag (e.g. `ghcr.io/j4v3l/skyfeed:1.0.0`).
+      description: Output of `skyfeed version` or the image tag (e.g. `ghcr.io/j4v3l/skyfeed:0.1.0`).
       placeholder: version=… commit=… build_date=…
     validations:
       required: true

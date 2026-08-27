@@ -3,7 +3,8 @@
 [![CI](https://github.com/j4v3l/SkyFeed/actions/workflows/ci.yaml/badge.svg)](https://github.com/j4v3l/SkyFeed/actions/workflows/ci.yaml)
 [![License](https://img.shields.io/github/license/j4v3l/SkyFeed)](LICENSE)
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
-[![GHCR](https://img.shields.io/badge/GHCR-skyfeed-blue?logo=github)](https://ghcr.io/j4v3l/skyfeed)
+[![Release](https://img.shields.io/github/v/release/j4v3l/SkyFeed?include_prereleases&label=preview)](https://github.com/j4v3l/SkyFeed/releases)
+[![GHCR](https://img.shields.io/badge/GHCR-skyfeed-blue?logo=github)](https://github.com/j4v3l/SkyFeed/pkgs/container/skyfeed)
 
 **Local-first ADS-B Discord bot with a private path for invited community [readsb](https://github.com/wiedehopf/readsb)/tar1090 feeders.**
 
@@ -20,7 +21,7 @@ enrichment stay off the ingest critical path.
 | **Deploy** | Docker Compose (Pi/ARM64 + amd64) or Nix / NixOS flake |
 | **Privacy** | No Message Content intent; health/metrics omit private coordinates |
 
-Public policy pages: [Terms](https://skyfeed-policies.javel-palmer.chatgpt.site/terms) · [Privacy](https://skyfeed-policies.javel-palmer.chatgpt.site/privacy)
+Public policy pages: [Terms](https://j4v3l.github.io/SkyFeed/legal/terms/) · [Privacy](https://j4v3l.github.io/SkyFeed/legal/privacy/)
 
 ## Table of contents
 
@@ -117,10 +118,11 @@ SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
 `/airline`, `/squawk`, `/emergency`, `/traffic`, `/top live`, `/top traffic`,
 `/privacy`, `/preferences units`, `/watch`, `/alerts`, `/reports`, `/audit`,
 `/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
-message context menu. Aircraft results begin with a concise card; invoker-bound
-**Details**, **Track**, **Route / Weather**, **Watch**, **Refresh**, and **Close**
-actions reveal more only when requested. Track plots are generated locally from
-a bounded, memory-only 15-minute history and are never written to SQLite.
+message context menu. Aircraft results begin with a concise card. The primary
+row contains **Details**, **Refresh**, and **Close**; an invoker-bound **More
+aircraft actions…** menu offers Track, Watch, and Route & weather when those
+actions are available. Track plots are generated locally from a bounded,
+memory-only 15-minute history and are never written to SQLite.
 Nearby pages and component sessions expire. Buttons, select menus, HTTPS link
 buttons, modals, and autocomplete use opaque versioned session IDs. Settings
 and durable administration are private; allowed mentions default to none.
@@ -294,11 +296,24 @@ the bot to Send Messages and Embed Links—the same pattern as `#flight-alerts`)
 
 ```text
 /settings channels purpose:Interesting aircraft channel:#interesting-aircraft
+/settings channels purpose:High-interest aircraft channel:#high-interest-flights
 /settings test purpose:Interesting aircraft
+/settings test purpose:High-interest aircraft
 ```
 
-Tune delivery with `/alerts configure category:Interesting aircraft`. Alerts
-respect `/settings pause-alerts` like other non-emergency categories.
+The high-interest destination receives red, text-labeled cards for narrowly
+matched custody and transport metadata such as Guantanamo, GTMO, offshore
+detention, deportation/removal flights, rendition, detainee or prisoner
+transport, Immigration and Customs Enforcement, and word-level `ICE` tags.
+These labels come from a community-maintained reference list. They are useful
+leads, not proof of an aircraft's operator, passengers, mission, origin, or
+destination, and should be independently verified. `Police` does not match
+`ICE`. If the high-interest destination is not bound, these alerts safely fall
+back to the ordinary interesting-aircraft channel.
+
+Tune delivery independently with `/alerts configure category:Interesting aircraft`
+and `/alerts configure category:High-interest aircraft`. Alerts respect
+`/settings pause-alerts` like other non-emergency categories.
 
 Enable in `.env`:
 
@@ -365,11 +380,12 @@ docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.ya
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml up -d
 ```
 
-Upgrade and rollback with immutable image tags:
+Run the public preview with its semantic-version tag, or pin the digest recorded
+in the GitHub Release for the strongest reproducibility:
 
 ```sh
-SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed:1.0.1 docker compose --env-file .env -f deploy/compose.yaml up -d
-SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed:1.0.0 docker compose --env-file .env -f deploy/compose.yaml up -d
+SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed:0.1.0 docker compose --env-file .env -f deploy/compose.yaml up -d
+SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed@sha256:RELEASE_DIGEST docker compose --env-file .env -f deploy/compose.yaml up -d
 ```
 
 To rotate the Discord token, stop SkyFeed, replace
@@ -385,10 +401,10 @@ See [operations.md](docs/operations.md) for failure and recovery procedures and
 
 ## Nix / NixOS
 
-SkyFeed also ships a Nix flake for native binaries and a `services.skyfeed` NixOS
-module. Configuration uses the same `SKYFEED_*` keys as `.env.example`; on NixOS
-the file lives at `/etc/skyfeed/skyfeed.env` with the Discord token at
-`/etc/skyfeed/secrets/discord_token` (never in the Nix store).
+SkyFeed also ships a Nix flake for native binaries and hardened bot and agent
+NixOS modules. Configuration uses the same `SKYFEED_*` keys as `.env.example`;
+the NixOS service receives the Discord token through systemd `LoadCredential`
+from a root-owned source file, never through the Nix store.
 
 ```sh
 nix run github:j4v3l/SkyFeed -- version
@@ -432,8 +448,9 @@ provenance attestations, scans dependencies/images, and signs pushed images.
 PGO is deliberately deferred until a representative ARM64 profile exists; see
 [ADR 0007](docs/adr/0007-pgo-deferred.md).
 
-The current measured baseline and remaining release gates are recorded in the
-[implementation checkpoint](docs/checkpoints/implementation-status.md).
+The current measured baseline is recorded in [performance.md](docs/performance.md).
+Implemented capabilities and preview limitations are tracked in
+[project-status.md](docs/project-status.md) and [roadmap.md](docs/roadmap.md).
 
 Tests never contact Discord, a live receiver, or public enrichment APIs.
 
@@ -442,6 +459,8 @@ Tests never contact Discord, a live receiver, or public enrichment APIs.
 | Resource | Link |
 | --- | --- |
 | Contributing guide | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| Changelog | [CHANGELOG.md](CHANGELOG.md) |
+| Architecture | [docs/architecture.md](docs/architecture.md) |
 | Code of conduct | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) |
 | Support / help | [SUPPORT.md](SUPPORT.md) |
 | Security policy | [SECURITY.md](SECURITY.md) |

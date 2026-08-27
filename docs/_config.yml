@@ -1,0 +1,12 @@
+title: SkyFeed
+description: Documentation and policies for the SkyFeed ADS-B Discord bot
+theme: jekyll-theme-minimal
+url: https://j4v3l.github.io
+baseurl: /SkyFeed
+repository: j4v3l/SkyFeed
+show_downloads: false
+plugins:
+  - jekyll-relative-links
+relative_links:
+  enabled: true
+  collections: true

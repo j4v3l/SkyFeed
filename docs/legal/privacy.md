@@ -1,11 +1,18 @@
+---
+layout: default
+title: SkyFeed Privacy Policy
+permalink: /legal/privacy/
+---
+
 # SkyFeed Privacy Policy
 
-Effective date: August 25, 2026
+Effective date: August 27, 2026
 
 SkyFeed is an independently operated Discord bot that presents aircraft data
-from an operator-controlled ADS-B receiver. This policy explains what SkyFeed
-processes, why it is processed, how long it is retained, and the choices
-available to Discord users and server operators.
+from an operator-controlled ADS-B receiver and optional invited community
+feeders. This policy explains what SkyFeed processes, why it is processed, how
+long it is retained, and the choices available to Discord users and server
+operators.
 
 ## Information SkyFeed processes
 
@@ -18,14 +25,17 @@ Depending on enabled features, SkyFeed may process:
   reason, timing, result, and warning-DM delivery status;
 - operational events and low-cardinality service logs needed for security,
   reliability, and troubleshooting;
-- live ADS-B aircraft observations supplied by the configured receiver; and
+- live ADS-B aircraft observations supplied by the configured receiver;
 - transient aircraft and callsign lookup values sent to ADSBDB when enrichment
   is explicitly enabled;
 - callsigns and already-public aircraft positions sent to adsb.lol for route
   enrichment when that provider is enabled;
 - the configured public airport center and radius sent to airplanes.live only
   while external fallback is active; and
-- airport codes sent to AviationWeather.gov for current METAR/TAF information.
+- airport codes sent to AviationWeather.gov for current METAR/TAF information;
+- normalized, coordinate-stripped snapshots, feeder identifiers, signed
+  sequence metadata, and approved public airport/area labels received from
+  administrator-invited SkyFeed agents.
 
 SkyFeed does not request Discord's Message Content intent. It does not sell
 personal information or use information for advertising. ADSBDB route

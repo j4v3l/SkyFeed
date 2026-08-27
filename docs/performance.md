@@ -1,3 +1,8 @@
+---
+layout: default
+title: Performance evidence
+---
+
 # Performance evidence
 
 - Host: Apple M3 Pro, darwin/arm64, Go 1.27.0
@@ -43,10 +48,10 @@ most four times per second; emergency rules still run on each feeder
 publication rather than waiting for the aggregate.
 
 The wider, semantically correct report row makes one isolated SQLite upsert
-slower than the earlier narrow row. This is accepted in [ADR 0009](../adr/0009-provenance-and-rollup-batching.md):
+slower than the earlier narrow row. This is accepted in [ADR 0009](adr/0009-provenance-and-rollup-batching.md):
 15-second coalescing reduces expected report writes by about 93%, so aggregate
 database work is lower while provenance and emergency-transition semantics are
 correct.
 
-PGO remains excluded under [ADR 0007](../adr/0007-pgo-deferred.md): no
+PGO remains excluded under [ADR 0007](adr/0007-pgo-deferred.md): no
 representative intended-host CPU profile exists yet.
