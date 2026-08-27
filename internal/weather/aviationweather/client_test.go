@@ -2,6 +2,7 @@ package aviationweather
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,17 +71,28 @@ func TestLookupFetchesMETARAndTAF(t *testing.T) {
 }
 
 func TestPopulateMETARHandlesVariableWindFractionsAndConditions(t *testing.T) {
-	observation := Observation{METAR: "KXYZ 231453Z VRB12G20KT 1/2SM -RA BR BKN008 M02/M05 A2988"}
+	observation := Observation{METAR: "KXYZ 231453Z VRB12G20KT 1 1/2SM -RA BR BKN008 M02/M05 A2988"}
 	populateMETAR(&observation)
 	if !observation.WindVariable || observation.WindSpeedKts != 12 || observation.WindGustKts != 20 {
 		t.Fatalf("wind = %+v", observation)
 	}
-	if observation.VisibilitySM != 0.5 || observation.TemperatureC != -2 || observation.DewpointC != -5 || observation.FlightCategory != "LIFR" {
+	if observation.VisibilitySM != 1.5 || observation.TemperatureC != -2 || observation.DewpointC != -5 || observation.FlightCategory != "IFR" {
 		t.Fatalf("conditions = %+v", observation)
 	}
 	joined := strings.Join(observation.Conditions, " ")
 	if !strings.Contains(joined, "light rain") || !strings.Contains(joined, "mist") {
 		t.Fatalf("weather labels = %v", observation.Conditions)
+	}
+}
+
+func TestPopulateMETARHandlesLessThanVisibility(t *testing.T) {
+	observation := Observation{METAR: "KXYZ 231453Z 00000KT M1/4SM FG VV002 12/12 A2992"}
+	populateMETAR(&observation)
+	if !observation.HasVisibility || !observation.VisibilityLessThan || observation.VisibilityAtLeast || observation.VisibilitySM != 0.25 {
+		t.Fatalf("visibility = %+v", observation)
+	}
+	if observation.FlightCategory != "LIFR" {
+		t.Fatalf("flight category = %q", observation.FlightCategory)
 	}
 }
 
@@ -223,5 +235,137 @@ func TestLookupRejectsNonICAO(t *testing.T) {
 	}
 	if _, err := client.Lookup(context.Background(), "PBI"); err == nil {
 		t.Fatal("expected ICAO validation error")
+	}
+}
+
+func TestLookupResolvesRenamedReportingStationAndUsesTypedFields(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		requests = append(requests, request.URL.Path+"?"+request.URL.RawQuery)
+		if !strings.HasPrefix(request.UserAgent(), "SkyFeed/") {
+			t.Fatalf("user agent = %q", request.UserAgent())
+		}
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/metar") && request.URL.Query().Get("ids") == "KPBI":
+			writer.WriteHeader(http.StatusNoContent)
+		case strings.HasSuffix(request.URL.Path, "/airport"):
+			_, _ = writer.Write([]byte(`[{"icaoId":"KPBI","lat":26.6832,"lon":-80.0956}]`))
+		case strings.HasSuffix(request.URL.Path, "/metar") && request.URL.Query().Get("bbox") != "":
+			_, _ = writer.Write([]byte(`[{"icaoId":"KDJT","rawOb":"KDJT 261153Z 00000KT 1SM OVC002 00/00 A2900","reportTime":"2026-08-26T11:53:00Z","temp":28.4,"dewp":22.1,"wdir":140,"wspd":8,"wgst":15,"visib":"10+","altim":1017.0,"wxString":"-RA BR","clouds":[{"cover":"SCT","base":4000}],"fltCat":"VFR","lat":26.6832,"lon":-80.0956}]`))
+		case strings.HasSuffix(request.URL.Path, "/taf") && request.URL.Query().Get("ids") == "KDJT":
+			_, _ = writer.Write([]byte(`[{"rawTAF":"KDJT 261120Z 2612/2712 14010KT P6SM SCT040"}]`))
+		default:
+			t.Fatalf("unexpected weather request %s?%s", request.URL.Path, request.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+	client, _ := NewClient(time.Second)
+	client.base, _ = url.Parse(server.URL)
+	client.now = func() time.Time { return now }
+
+	observation, err := client.Lookup(context.Background(), "KPBI")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.RequestedICAO != "KPBI" || observation.ReportingICAO != "KDJT" || observation.StationStatus != stationStatusAlias || !observation.HasStationDistance || observation.StationDistanceNM > 0.01 {
+		t.Fatalf("station resolution = %+v", observation)
+	}
+	if observation.TemperatureC != 28 || observation.DewpointC != 22 || observation.WindDirectionDegrees != 140 || observation.WindSpeedKts != 8 || observation.WindGustKts != 15 {
+		t.Fatalf("typed conditions = %+v", observation)
+	}
+	if observation.VisibilitySM != 10 || !observation.VisibilityAtLeast || observation.FlightCategory != "VFR" || len(observation.Clouds) != 1 || observation.Clouds[0].BaseFeet != 4000 {
+		t.Fatalf("typed visibility/clouds = %+v", observation)
+	}
+	if observation.AltimeterInHg < 30.03 || observation.AltimeterInHg > 30.04 || observation.ObservedAt.IsZero() || observation.TAFStatus != "available" {
+		t.Fatalf("typed pressure/time/taf = %+v", observation)
+	}
+	if len(requests) != 4 {
+		t.Fatalf("requests = %v", requests)
+	}
+}
+
+func TestLookupTreatsNoContentAsNoWeather(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client, _ := NewClient(time.Second)
+	client.base, _ = url.Parse(server.URL)
+	observation, err := client.Lookup(context.Background(), "KZZZ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.METARStatus != "not-found" || observation.TAFStatus != "not-found" || observation.StationStatus != stationStatusUnavailable {
+		t.Fatalf("no-content observation = %+v", observation)
+	}
+}
+
+func TestLookupAtUsesApprovedReportingStationWithoutChangingAirport(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch {
+		case strings.HasSuffix(request.URL.Path, "/metar") && request.URL.Query().Get("ids") == "KDJT":
+			_, _ = writer.Write([]byte(`[{"icaoId":"KDJT","rawOb":"KDJT 261153Z 14008KT 10SM CLR 28/22 A3001","reportTime":"2026-08-26T11:53:00Z","lat":26.6832,"lon":-80.0956}]`))
+		case strings.HasSuffix(request.URL.Path, "/airport") && request.URL.Query().Get("ids") == "KPBI":
+			_, _ = writer.Write([]byte(`[{"icaoId":"KPBI","lat":26.6832,"lon":-80.0956}]`))
+		case strings.HasSuffix(request.URL.Path, "/taf") && request.URL.Query().Get("ids") == "KDJT":
+			writer.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected request %s?%s", request.URL.Path, request.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+	client, _ := NewClient(time.Second)
+	client.base, _ = url.Parse(server.URL)
+	client.now = func() time.Time { return now }
+
+	observation, err := client.LookupAt(context.Background(), "KPBI", "KDJT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.RequestedICAO != "KPBI" || observation.ReportingICAO != "KDJT" || observation.StationStatus != stationStatusAlias || observation.TAFStatus != "not-found" {
+		t.Fatalf("override observation = %+v", observation)
+	}
+}
+
+func TestLookupCancellationDoesNotCancelSharedFetch(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/metar") {
+			select {
+			case <-started:
+			default:
+				close(started)
+			}
+			<-release
+			_, _ = writer.Write([]byte(`[{"icaoId":"KAAA","rawOb":"KAAA 261153Z 00000KT 10SM CLR 20/10 A3000"}]`))
+			return
+		}
+		_, _ = writer.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	client, _ := NewClient(time.Second)
+	client.base, _ = url.Parse(server.URL)
+	firstContext, cancel := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := client.Lookup(firstContext, "KAAA")
+		firstResult <- err
+	}()
+	<-started
+	cancel()
+	if err := <-firstResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("first lookup error = %v", err)
+	}
+	secondResult := make(chan error, 1)
+	go func() {
+		_, err := client.Lookup(context.Background(), "KAAA")
+		secondResult <- err
+	}()
+	close(release)
+	if err := <-secondResult; err != nil {
+		t.Fatalf("shared lookup error = %v", err)
 	}
 }

@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 var ErrWriterFull = errors.New("persistence queue full")
@@ -120,6 +122,7 @@ func (writer *Writer) drainInto(batch *[]WriteEvent, rollups map[reportRollupKey
 
 type reportRollupKey struct {
 	guildID uint64
+	scope   domain.FeederID
 	bucket  int64
 }
 
@@ -130,7 +133,7 @@ func (writer *Writer) addEvent(batch *[]WriteEvent, rollups map[reportRollupKey]
 	}
 	value := event.Rollup
 	value.BucketStart = value.BucketStart.UTC().Truncate(time.Hour)
-	key := reportRollupKey{guildID: value.GuildID, bucket: value.BucketStart.Unix()}
+	key := reportRollupKey{guildID: value.GuildID, scope: value.FeederScope, bucket: value.BucketStart.Unix()}
 	if current, exists := rollups[key]; exists {
 		current.AircraftObservations += value.AircraftObservations
 		current.Messages += value.Messages

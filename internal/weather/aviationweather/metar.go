@@ -8,7 +8,8 @@ import (
 
 var (
 	windPattern        = regexp.MustCompile(`^(VRB|[0-9]{3})([0-9]{2,3})(?:G([0-9]{2,3}))?KT$`)
-	visibilityPattern  = regexp.MustCompile(`^(P)?([0-9]+(?:\.[0-9]+)?|[0-9]+/[0-9]+)SM$`)
+	visibilityPattern  = regexp.MustCompile(`^(M|P)?([0-9]+(?:\.[0-9]+)?|[0-9]+/[0-9]+)SM$`)
+	wholeNumberPattern = regexp.MustCompile(`^[0-9]+$`)
 	temperaturePattern = regexp.MustCompile(`^(M?[0-9]{2})/(M?[0-9]{2}|//)$`)
 	altimeterPattern   = regexp.MustCompile(`^A([0-9]{4})$`)
 	cloudPattern       = regexp.MustCompile(`^(FEW|SCT|BKN|OVC|VV)([0-9]{3}|///)(?:CB|TCU)?$`)
@@ -26,7 +27,8 @@ func populateMETAR(observation *Observation) {
 		return
 	}
 	tokens := strings.Fields(strings.ToUpper(observation.METAR))
-	for _, token := range tokens {
+	for index := 0; index < len(tokens); index++ {
+		token := tokens[index]
 		if match := windPattern.FindStringSubmatch(token); match != nil {
 			observation.HasWind = true
 			observation.WindVariable = match[1] == "VRB"
@@ -37,10 +39,25 @@ func populateMETAR(observation *Observation) {
 			observation.WindGustKts, _ = strconv.Atoi(match[3])
 			continue
 		}
+		if wholeNumberPattern.MatchString(token) && index+1 < len(tokens) {
+			if match := visibilityPattern.FindStringSubmatch(tokens[index+1]); match != nil && strings.Contains(match[2], "/") {
+				whole, wholeErr := strconv.ParseFloat(token, 64)
+				fraction, fractionOK := parseVisibility(match[2])
+				if wholeErr == nil && fractionOK {
+					observation.HasVisibility = true
+					observation.VisibilityAtLeast = match[1] == "P"
+					observation.VisibilityLessThan = match[1] == "M"
+					observation.VisibilitySM = whole + fraction
+					index++
+					continue
+				}
+			}
+		}
 		if match := visibilityPattern.FindStringSubmatch(token); match != nil {
 			if value, ok := parseVisibility(match[2]); ok {
 				observation.HasVisibility = true
 				observation.VisibilityAtLeast = match[1] == "P"
+				observation.VisibilityLessThan = match[1] == "M"
 				observation.VisibilitySM = value
 			}
 			continue

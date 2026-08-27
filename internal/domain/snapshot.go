@@ -52,6 +52,8 @@ type Statistics struct {
 // Snapshot is immutable after publication. Writers must build fresh slices and
 // maps; readers load one pointer and never alter its contents.
 type Snapshot struct {
+	FeederID            FeederID
+	Feeders             []FeederSummary
 	Sequence            uint64
 	ActiveProvider      ProviderID
 	ProviderChangedAt   time.Time

@@ -72,6 +72,39 @@ func TestStatusHasAccessibleHealthTextAndNoMentions(t *testing.T) {
 	}
 }
 
+func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	snapshot := &domain.Snapshot{PublishedAt: now, FetchedAt: now, Feeders: []domain.FeederSummary{
+		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-one", DisplayName: "Coast", PublicArea: "Palm Beach", Enabled: true}, Health: domain.HealthHealthy},
+		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-two", DisplayName: "North", PublicArea: "Palm Beach", Enabled: true}, Health: domain.HealthStale},
+		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-three", DisplayName: "Paused", Enabled: false}, Health: domain.HealthUnknown},
+	}}
+	embed := StatusWithUnits(snapshot, time.Hour, now, false, domain.UnitsAviation)
+	values := embedFieldValues(embed)
+	for _, expected := range []string{"1 healthy", "1 attention", "1 paused", "Palm Beach ×2"} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("community status missing %q: %q", expected, values)
+		}
+	}
+	if strings.Contains(values, "private-owner") {
+		t.Fatalf("private feeder ID leaked: %q", values)
+	}
+}
+
+func TestCommunityActivityIsGroupedByApprovedArea(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	embed := WithCommunityActivity(base("Status", Radar, now), []CommunityActivityView{
+		{Area: "Palm Beach", Airport: "KPBI", Activity: domain.AirportActivity{Configured: true, Movements: []domain.AirportMovement{{Phase: domain.MovementLanded}, {Phase: domain.MovementDeparture}}}},
+		{Area: "Treasure Coast", Airport: "KFPR", Activity: domain.AirportActivity{Configured: true}},
+	}, now)
+	values := embedFieldValues(embed)
+	for _, expected := range []string{"Palm Beach", "KPBI", "1 likely landing", "1 likely departure", "Treasure Coast", "quiet right now"} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("community activity missing %q: %q", expected, values)
+		}
+	}
+}
+
 func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	for _, test := range []struct {
@@ -361,7 +394,7 @@ func TestListFooterUsesActualLiveProvider(t *testing.T) {
 func TestAirportAirlineAndReportRespectMetricUnits(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	airport := AirportWithWeatherViewAndUnits(domain.Airport{ICAO: "KJFK", HasElevation: true, ElevationFeet: 1000}, WeatherView{}, false, now, domain.UnitsMetric)
-	if got := fieldMap(airport)["Elevation"]; got != "305 m" {
+	if got := fieldMap(airport)["At a glance"]; !strings.Contains(got, "elevation 305 m") {
 		t.Fatalf("metric airport elevation = %q", got)
 	}
 
@@ -376,6 +409,64 @@ func TestAirportAirlineAndReportRespectMetricUnits(t *testing.T) {
 	if got := fieldMap(report)["Range & alerts"]; !strings.Contains(got, "18.5 km") {
 		t.Fatalf("metric report = %q", got)
 	}
+}
+
+func TestAirportDashboardUsesFriendlyWeatherActivityAndAttribution(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	embed := AirportDashboard(domain.Airport{ICAO: "KXYZ", Name: "Example Airport", Attribution: "Airport directory"}, WeatherView{
+		METAR: "KXYZ 231453Z 18012KT P6SM SCT040 20/10 A3000", FlightCategory: "VFR", METARStatus: "available", TAFStatus: "available",
+		FetchedAt: now.Add(-2 * time.Minute), Attribution: "Weather by example", HasWind: true, WindDirectionDegrees: 180, WindSpeedKts: 12,
+		HasVisibility: true, VisibilityAtLeast: true, VisibilitySM: 6, Clouds: []WeatherCloudView{{Cover: "SCT", BaseFeet: 4000, HasBase: true}},
+	}, domain.AirportActivity{AirportCode: "KXYZ", Configured: true, UpdatedAt: now, Movements: []domain.AirportMovement{{
+		Phase: domain.MovementApproach, ICAO: "ABC123", Callsign: "SKY123", Confidence: 85, DistanceNM: 3.2, HasDistance: true, BearingDegrees: 180,
+		AltitudeFeet: 1800, HasAltitude: true, VerticalRateFPM: -700, HasVerticalRate: true, GroundSpeedKts: 130, HasGroundSpeed: true, ObservedAt: now, Evidence: "descending and converging on the airport",
+	}}}, "", now, domain.UnitsMetric)
+	fields := embedFieldValues(embed)
+	for _, expected := range []string{"generally good visual flying conditions", "22 km/h", "at least 9.7 km", "likely approaching", "5.9 km", "548 m"} {
+		if !strings.Contains(fields, expected) {
+			t.Fatalf("airport dashboard missing %q: %q", expected, fields)
+		}
+	}
+	if strings.Contains(fields, "231453Z") {
+		t.Fatalf("overview unexpectedly showed raw METAR: %q", fields)
+	}
+	if embed.Footer == nil || !strings.Contains(embed.Footer.Text, "Airport directory") || !strings.Contains(embed.Footer.Text, "Weather by example") {
+		t.Fatalf("composite attribution = %#v", embed.Footer)
+	}
+	for _, field := range embed.Fields {
+		if field.Inline == nil || *field.Inline {
+			t.Fatalf("airport field must remain readable on narrow screens: %#v", field)
+		}
+	}
+
+	details := AirportDashboard(domain.Airport{ICAO: "KXYZ"}, WeatherView{METAR: "KXYZ 231453Z 18012KT", METARStatus: "available"}, domain.AirportActivity{Configured: true}, "weather-details", now, domain.UnitsAviation)
+	if !strings.Contains(embedFieldValues(details), "231453Z") {
+		t.Fatalf("weather details omitted raw report: %q", embedFieldValues(details))
+	}
+}
+
+func TestAirportDashboardExplainsReplacementWeatherStation(t *testing.T) {
+	now := time.Date(2026, 8, 26, 12, 0, 0, 0, time.UTC)
+	embed := AirportDashboard(domain.Airport{ICAO: "KPBI", Name: "West Palm Beach"}, WeatherView{
+		RequestedICAO: "KPBI", ReportingICAO: "KDJT", StationStatus: "alias", HasStationDistance: true,
+		StationDistanceNM: 0.02, METARStatus: "available", TAFStatus: "not-found", FlightCategory: "VFR",
+		ObservedAt: now.Add(-7 * time.Minute),
+	}, domain.AirportActivity{}, "", now, domain.UnitsAviation)
+	values := embedFieldValues(embed)
+	for _, expected := range []string{"Observed at", "KDJT", "KPBI", "renamed/replacement station", "observed 7m0s ago"} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("weather summary missing %q: %s", expected, values)
+		}
+	}
+}
+
+func embedFieldValues(embed discord.Embed) string {
+	var builder strings.Builder
+	for _, field := range embed.Fields {
+		builder.WriteString(field.Value)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 func TestPlaneAlertURLAllowlistsRejectArbitraryHTTPS(t *testing.T) {

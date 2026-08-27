@@ -7,7 +7,7 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 14
+const CommandSchemaVersion = 15
 
 const LookupAircraftCommand = "Lookup aircraft"
 
@@ -19,6 +19,7 @@ var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
 	"watch": {}, "alerts": {}, "reports": {}, "audit": {}, "feeder": {}, "settings": {}, "preferences": {}, "help": {},
 	"moderation": {}, "airline": {}, LookupAircraftCommand: {},
+	"feeders": {},
 }
 
 // Discord command-picker visibility uses native permission bits only (not custom
@@ -38,7 +39,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 	operator := disgocord.Permissions(disgocord.PermissionManageGuild)
 	moderator := disgocord.Permissions(disgocord.PermissionModerateMembers)
 	commands := []disgocord.ApplicationCommandCreate{
-		disgocord.SlashCommandCreate{Name: "status", Description: "Show receiver, source, and SkyFeed health"},
+		disgocord.SlashCommandCreate{Name: "status", Description: "Show receiver, source, and SkyFeed health", Options: []disgocord.ApplicationCommandOption{feederOption()}},
 		disgocord.SlashCommandCreate{
 			Name: "nearby", Description: "Browse aircraft currently visible to this receiver",
 			Options: []disgocord.ApplicationCommandOption{
@@ -51,36 +52,42 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 					{Name: "Ground speed", Value: "speed"}, {Name: "Messages", Value: "messages"},
 				}},
 				disgocord.ApplicationCommandOptionString{Name: "squawk", Description: "Filter by transponder code", MinLength: intPtr(4), MaxLength: intPtr(4)},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
 			Name: "aircraft", Description: "Show one currently visible aircraft",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "query", Description: "ICAO, registration, or callsign", Required: true, Autocomplete: true},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
 			Name: "route", Description: "Show the filed route for a visible aircraft",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "flight", Description: "Visible aircraft callsign or ICAO", Required: true, Autocomplete: true},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
-			Name: "airport", Description: "Show airport details and cached route context",
+			Name: "airport", Description: "Show airport weather, activity, and details",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "code", Description: "ICAO airport code", Required: true, Autocomplete: true},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
 			Name: "squawk", Description: "List visible aircraft matching a transponder code",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionString{Name: "code", Description: "Four-digit squawk code (0–7)", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
 			Name: "emergency", Description: "Browse currently visible emergency squawks and flags",
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft per page", MinValue: &minLimit, MaxValue: &maxLimit},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -88,6 +95,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 			Options: []disgocord.ApplicationCommandOption{
 				disgocord.ApplicationCommandOptionFloat{Name: "radius-nm", Description: "Maximum distance from the public airport area in nautical miles", MinValue: &minRadius, MaxValue: &maxRadius},
 				disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft per page", MinValue: &minLimit, MaxValue: &maxLimit},
+				feederOption(),
 			},
 		},
 		disgocord.SlashCommandCreate{
@@ -98,6 +106,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 						{Name: "Distance", Value: "distance"}, {Name: "Altitude", Value: "altitude"}, {Name: "Ground speed", Value: "speed"}, {Name: "Messages", Value: "messages"}, {Name: "Signal", Value: "signal"},
 					}},
 					disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of aircraft to show", MinValue: &minLimit, MaxValue: &maxLimit},
+					feederOption(),
 				}},
 				disgocord.ApplicationCommandOptionSubCommand{Name: "traffic", Description: "Rank attributed route sightings over time", Options: []disgocord.ApplicationCommandOption{
 					disgocord.ApplicationCommandOptionString{Name: "metric", Description: "Traffic ranking metric", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
@@ -107,6 +116,7 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 						{Name: "Last 24 hours", Value: "24h"}, {Name: "Last 7 days", Value: "7d"}, {Name: "Last 30 days", Value: "30d"}, {Name: "All time", Value: "all"},
 					}},
 					disgocord.ApplicationCommandOptionInt{Name: "limit", Description: "Number of rows to show", MinValue: &minLimit, MaxValue: &maxLimit},
+					feederOption(),
 				}},
 			},
 		},
@@ -134,7 +144,8 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 		disgocord.SlashCommandCreate{
 			Name: "audit", Description: "Admin-only full system health and configuration audit", DefaultMemberPermissions: omit.NewPtr(operator),
 		},
-		disgocord.SlashCommandCreate{Name: "feeder", Description: "Show receiver, statistics, range, and source diagnostics"},
+		disgocord.SlashCommandCreate{Name: "feeder", Description: "Show receiver, statistics, range, and source diagnostics", Options: []disgocord.ApplicationCommandOption{feederOption()}},
+		disgocord.SlashCommandCreate{Name: "feeders", Description: "Browse or administer approved community feeders", Options: feederAdminOptions()},
 		disgocord.SlashCommandCreate{
 			Name: "moderation", Description: "Moderate server members with durable private case records", DefaultMemberPermissions: omit.NewPtr(moderator),
 			Options: moderationOptions(),
@@ -188,13 +199,14 @@ func watchOptions() []disgocord.ApplicationCommandOption {
 			disgocord.ApplicationCommandOptionString{Name: "kind", Description: "Rule type", Required: true, Choices: ruleKindChoices()},
 			disgocord.ApplicationCommandOptionString{Name: "value", Description: "Normalized rule value", Required: true, MinLength: intPtr(1), MaxLength: intPtr(64)},
 			disgocord.ApplicationCommandOptionBool{Name: "server", Description: "Create a server rule instead of a personal rule"},
+			feederOption(),
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "remove", Description: "Remove a saved watch rule", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "rule", Description: "Saved rule", Required: true, Autocomplete: true},
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "enable", Description: "Enable a saved watch rule", Options: ruleChoiceOption()},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "disable", Description: "Disable a saved watch rule", Options: ruleChoiceOption()},
-		disgocord.ApplicationCommandOptionSubCommand{Name: "list", Description: "List watch rules visible to you"},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "list", Description: "List watch rules visible to you", Options: []disgocord.ApplicationCommandOption{feederOption()}},
 	}
 }
 
@@ -218,6 +230,7 @@ func reportOptions() []disgocord.ApplicationCommandOption {
 			disgocord.ApplicationCommandOptionString{Name: "period", Description: "Report period", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
 				{Name: "Last hour", Value: "1h"}, {Name: "Last day", Value: "24h"}, {Name: "Last 7 days", Value: "168h"},
 			}},
+			feederOption(),
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "schedule", Description: "Create or update a report schedule", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "cadence", Description: "Schedule cadence", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
@@ -226,6 +239,50 @@ func reportOptions() []disgocord.ApplicationCommandOption {
 			disgocord.ApplicationCommandOptionChannel{Name: "destination", Description: "Report channel", Required: true},
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "list", Description: "List scheduled reports"},
+	}
+}
+
+func feederOption() disgocord.ApplicationCommandOptionString {
+	return disgocord.ApplicationCommandOptionString{
+		Name: "feeder", Description: "Approved feeder (defaults to All feeders)", Autocomplete: true,
+		MinLength: intPtr(1), MaxLength: intPtr(48),
+	}
+}
+
+func feederAdminOptions() []disgocord.ApplicationCommandOption {
+	latitudeMin, latitudeMax := -90.0, 90.0
+	longitudeMin, longitudeMax := -180.0, 180.0
+	id := func() disgocord.ApplicationCommandOptionString {
+		return disgocord.ApplicationCommandOptionString{Name: "feeder", Description: "Approved feeder", Required: true, Autocomplete: true, MinLength: intPtr(1), MaxLength: intPtr(48)}
+	}
+	return []disgocord.ApplicationCommandOption{
+		disgocord.ApplicationCommandOptionSubCommand{Name: "list", Description: "List approved public feeder summaries"},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "show", Description: "Show one approved feeder", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "invite", Description: "Create a private 15-minute agent invitation", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionString{Name: "name", Description: "Public display name", Required: true, MinLength: intPtr(1), MaxLength: intPtr(80)},
+			disgocord.ApplicationCommandOptionString{Name: "area", Description: "Approved public airport or area", Required: true, MinLength: intPtr(1), MaxLength: intPtr(80)},
+			disgocord.ApplicationCommandOptionString{Name: "airport", Description: "Public four-character ICAO airport code", MinLength: intPtr(4), MaxLength: intPtr(4)},
+			disgocord.ApplicationCommandOptionUser{Name: "owner", Description: "Private Discord owner record"},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "rename", Description: "Change a feeder's public name", Options: []disgocord.ApplicationCommandOption{
+			id(), disgocord.ApplicationCommandOptionString{Name: "name", Description: "New public display name", Required: true, MinLength: intPtr(1), MaxLength: intPtr(80)},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "set-area", Description: "Set the approved public airport area and coordinates", Options: []disgocord.ApplicationCommandOption{
+			id(),
+			disgocord.ApplicationCommandOptionString{Name: "area", Description: "Approved public airport or area", Required: true, MinLength: intPtr(1), MaxLength: intPtr(80)},
+			disgocord.ApplicationCommandOptionString{Name: "airport", Description: "Public four-character ICAO airport code", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+			disgocord.ApplicationCommandOptionFloat{Name: "latitude", Description: "Approved public airport latitude", Required: true, MinValue: &latitudeMin, MaxValue: &latitudeMax},
+			disgocord.ApplicationCommandOptionFloat{Name: "longitude", Description: "Approved public airport longitude", Required: true, MinValue: &longitudeMin, MaxValue: &longitudeMax},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "set-weather-station", Description: "Override the METAR reporting station", Options: []disgocord.ApplicationCommandOption{
+			id(), disgocord.ApplicationCommandOptionString{Name: "station", Description: "Four-character reporting station ICAO", Required: true, MinLength: intPtr(4), MaxLength: intPtr(4)},
+		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "enable", Description: "Enable an enrolled feeder", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "disable", Description: "Pause a feeder without revoking its key", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "set-default", Description: "Set the server's default feeder view", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "rotate", Description: "Revoke the old key and create a new invitation", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "revoke", Description: "Revoke an agent and disable its feeder", Options: []disgocord.ApplicationCommandOption{id()}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "test", Description: "Show private enrollment and delivery diagnostics", Options: []disgocord.ApplicationCommandOption{id()}},
 	}
 }
 

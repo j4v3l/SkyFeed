@@ -84,6 +84,7 @@ type Aircraft struct {
 	DistanceNM      float64
 	BearingDegrees  float64
 	HasDistance     bool
+	SeenBy          []FeederID
 }
 
 type AircraftBatch struct {

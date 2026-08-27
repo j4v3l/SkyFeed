@@ -27,6 +27,7 @@ const (
 type WatchRule struct {
 	ID                   int64
 	GuildID              uint64
+	FeederScope          FeederID
 	UserID               uint64
 	ServerScope          bool
 	Type                 RuleType
@@ -52,6 +53,7 @@ type Alert struct {
 	ID                   string
 	RuleID               int64
 	GuildID              uint64
+	FeederID             FeederID
 	UserID               uint64
 	AircraftICAO         string
 	Callsign             string
@@ -72,6 +74,7 @@ type Alert struct {
 
 type AlertState struct {
 	RuleID               int64
+	FeederScope          FeederID
 	AircraftICAO         string
 	ConditionFingerprint string
 	LastFiredAt          time.Time

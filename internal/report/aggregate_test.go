@@ -67,3 +67,20 @@ func TestAggregatorResetsMessageBaselineAcrossProvidersAndInvalidCounters(t *tes
 		t.Fatalf("counter recovery produced discontinuity %d", rollup.Messages)
 	}
 }
+
+func TestAggregateSamplingDoesNotInflateObservationCounts(t *testing.T) {
+	aggregator := NewAggregator()
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := &domain.Snapshot{FeederID: domain.FeederAll, PublishedAt: now, Aircraft: []domain.Aircraft{{ICAO: "ABC123"}}, ByICAO: map[string]int{"ABC123": 0}}
+	if _, accepted := aggregator.ObserveSampled(1, snapshot, time.Second); !accepted {
+		t.Fatal("first aggregate sample was rejected")
+	}
+	snapshot.PublishedAt = now.Add(250 * time.Millisecond)
+	if _, accepted := aggregator.ObserveSampled(1, snapshot, time.Second); accepted {
+		t.Fatal("sub-second aggregate sample inflated observations")
+	}
+	snapshot.PublishedAt = now.Add(time.Second)
+	if rollup, accepted := aggregator.ObserveSampled(1, snapshot, time.Second); !accepted || rollup.AircraftObservations != 1 {
+		t.Fatalf("next aggregate sample accepted=%t rollup=%+v", accepted, rollup)
+	}
+}

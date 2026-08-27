@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -85,8 +86,49 @@ func StatusWithUnits(snapshot *domain.Snapshot, uptime time.Duration, now time.T
 		section("Sources", fmt.Sprintf("Aircraft %s\nReceiver %s\nStats %s", sourceLabel(snapshot.Health.Aircraft), sourceLabel(snapshot.Health.Receiver), sourceLabel(snapshot.Health.Stats))),
 		section("Bot", fmt.Sprintf("Up %s · enrichment %s", conciseDuration(uptime), enrichmentStatus)),
 	}
+	if overview := feederOverview(snapshot.Feeders); overview != "" {
+		embed.Fields = append(embed.Fields, section("Community coverage", overview))
+	}
 	embed.Footer = &discord.EmbedFooter{Text: providerFooter(snapshot, nil, nil, now)}
 	return BoundEmbed(embed)
+}
+
+func feederOverview(feeders []domain.FeederSummary) string {
+	if len(feeders) == 0 {
+		return ""
+	}
+	healthy, attention, offline, disabled := 0, 0, 0, 0
+	areas := make(map[string]int)
+	for _, feeder := range feeders {
+		if !feeder.Enabled {
+			disabled++
+			continue
+		}
+		switch feeder.Health {
+		case domain.HealthHealthy:
+			healthy++
+		case domain.HealthOffline:
+			offline++
+		default:
+			attention++
+		}
+		if area := strings.TrimSpace(feeder.PublicArea); area != "" {
+			areas[PlainText(area)]++
+		}
+	}
+	areaNames := make([]string, 0, len(areas))
+	for area, count := range areas {
+		if count > 1 {
+			area += fmt.Sprintf(" ×%d", count)
+		}
+		areaNames = append(areaNames, area)
+	}
+	sort.Strings(areaNames)
+	coverage := "No public areas configured"
+	if len(areaNames) > 0 {
+		coverage = strings.Join(areaNames, " · ")
+	}
+	return Truncate(fmt.Sprintf("🟢 %d healthy · 🟡 %d attention · 🔴 %d offline · ⚪ %d paused\n%s", healthy, attention, offline, disabled, coverage), 1000)
 }
 
 func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
@@ -147,6 +189,49 @@ func WithAirportUpdate(embed discord.Embed, airportCode string, weather WeatherV
 		section("🌤️ "+code+" weather", weatherSummary(weather, now, units)),
 		section("✈️ "+code+" movements", activitySummary(activity, units, now)),
 	)
+	return BoundEmbed(embed)
+}
+
+func WithAirportWeather(embed discord.Embed, airportCode string, weather WeatherView, units domain.UnitSystem, now time.Time) discord.Embed {
+	code := PlainText(valueOr(airportCode, "Local airport"))
+	embed.Fields = append(embed.Fields, section("🌤️ "+code+" weather", weatherSummary(weather, now, units)))
+	return BoundEmbed(embed)
+}
+
+func WithCommunityActivity(embed discord.Embed, views []CommunityActivityView, now time.Time) discord.Embed {
+	lines := make([]string, 0, min(len(views), 8))
+	for _, view := range views {
+		if !view.Activity.Configured {
+			continue
+		}
+		landings, departures, approaches := 0, 0, 0
+		for _, movement := range view.Activity.Movements {
+			switch movement.Phase {
+			case domain.MovementLanded:
+				landings++
+			case domain.MovementDeparture:
+				departures++
+			case domain.MovementApproach:
+				approaches++
+			}
+		}
+		label := PlainText(firstNonEmpty(view.Area, view.Airport, "Approved area"))
+		if airport := strings.ToUpper(strings.TrimSpace(view.Airport)); airport != "" && !strings.EqualFold(label, airport) {
+			label += " (`" + PlainText(airport) + "`)"
+		}
+		trend := "quiet right now"
+		if landings+departures+approaches > 0 {
+			trend = fmt.Sprintf("%d likely landing · %d likely departure · %d approach trend", landings, departures, approaches)
+		}
+		lines = append(lines, "**"+label+"** — "+trend)
+		if len(lines) == 8 {
+			break
+		}
+	}
+	if len(lines) == 0 {
+		return embed
+	}
+	embed.Fields = append(embed.Fields, section("✈️ Activity by area", strings.Join(lines, "\n")))
 	return BoundEmbed(embed)
 }
 
@@ -255,15 +340,21 @@ func AirportWithWeather(airport domain.Airport, metar, taf string, now time.Time
 }
 
 type WeatherView struct {
-	METAR          string
-	TAF            string
-	FlightCategory string
-	METARStatus    string
-	TAFStatus      string
-	FetchedAt      time.Time
-	Stale          bool
-	UpstreamFailed bool
-	Attribution    string
+	RequestedICAO        string
+	ReportingICAO        string
+	StationStatus        string
+	StationDistanceNM    float64
+	HasStationDistance   bool
+	METAR                string
+	TAF                  string
+	FlightCategory       string
+	METARStatus          string
+	TAFStatus            string
+	ObservedAt           time.Time
+	FetchedAt            time.Time
+	Stale                bool
+	UpstreamFailed       bool
+	Attribution          string
 	WindDirectionDegrees int
 	WindVariable         bool
 	WindSpeedKts         int
@@ -271,6 +362,7 @@ type WeatherView struct {
 	HasWind              bool
 	VisibilitySM         float64
 	VisibilityAtLeast    bool
+	VisibilityLessThan   bool
 	HasVisibility        bool
 	TemperatureC         int
 	DewpointC            int
@@ -286,6 +378,12 @@ type WeatherCloudView struct {
 	Cover    string
 	BaseFeet int
 	HasBase  bool
+}
+
+type CommunityActivityView struct {
+	Area     string
+	Airport  string
+	Activity domain.AirportActivity
 }
 
 func AirportWithWeatherView(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time) discord.Embed {
@@ -373,9 +471,27 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		status = "⚪ No current METAR is being reported"
 	}
 	lines := []string{status}
+	if weather.ReportingICAO != "" && weather.RequestedICAO != "" && !strings.EqualFold(weather.ReportingICAO, weather.RequestedICAO) {
+		station := fmt.Sprintf("📡 Observed at **%s** for %s", PlainText(weather.ReportingICAO), PlainText(weather.RequestedICAO))
+		if weather.HasStationDistance {
+			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
+				station += fmt.Sprintf(" · %.1f km away", weather.StationDistanceNM*1.852)
+			} else {
+				station += fmt.Sprintf(" · %.1f NM away", weather.StationDistanceNM)
+			}
+		}
+		if weather.StationStatus == "nearby" {
+			station += " · nearest reporting station"
+		} else {
+			station += " · renamed/replacement station"
+		}
+		lines = append(lines, station)
+	}
 	if weather.HasWind {
 		wind := "variable wind"
-		if !weather.WindVariable {
+		if weather.WindSpeedKts == 0 && weather.WindGustKts == 0 {
+			wind = "calm wind"
+		} else if !weather.WindVariable {
 			wind = strings.ToLower(compassLong(float64(weather.WindDirectionDegrees))) + fmt.Sprintf(" wind from %03d°", weather.WindDirectionDegrees)
 		}
 		speed := fmt.Sprintf("%d kt", weather.WindSpeedKts)
@@ -395,6 +511,8 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		prefix := ""
 		if weather.VisibilityAtLeast {
 			prefix = "at least "
+		} else if weather.VisibilityLessThan {
+			prefix = "less than "
 		}
 		visibility := fmt.Sprintf("%s%.1f statute miles", prefix, weather.VisibilitySM)
 		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
@@ -435,12 +553,16 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		taf = "airport forecast not requested"
 	}
 	ageText := ""
-	if !weather.FetchedAt.IsZero() {
-		age := now.Sub(weather.FetchedAt)
+	weatherTime := weather.ObservedAt
+	if weatherTime.IsZero() {
+		weatherTime = weather.FetchedAt
+	}
+	if !weatherTime.IsZero() {
+		age := now.Sub(weatherTime)
 		if age < 0 {
 			age = 0
 		}
-		ageText = " · updated " + conciseDuration(age) + " ago"
+		ageText = " · observed " + conciseDuration(age) + " ago"
 	}
 	if weather.Stale {
 		ageText += " · showing the last cached report"

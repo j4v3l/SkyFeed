@@ -68,6 +68,16 @@ type ADSBDB struct {
 	StaleTTL     time.Duration
 }
 
+type AgentIngress struct {
+	Enabled      bool
+	Addr         string
+	PublicURL    *url.URL
+	MaxFeeders   int
+	Workers      int
+	Queue        int
+	MaxBodyBytes int
+}
+
 type Config struct {
 	Discord             Discord
 	ADSB                ADSB
@@ -75,6 +85,7 @@ type Config struct {
 	AdsbLol             AdsbLol
 	PlaneAlert          PlaneAlert
 	ADSBDB              ADSBDB
+	AgentIngress        AgentIngress
 	DatabasePath        string
 	DashboardInterval   time.Duration
 	AdminDigestInterval time.Duration
@@ -114,6 +125,9 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 			ErrorTTL:    30 * time.Second,
 			StaleTTL:    24 * time.Hour,
 		},
+		AgentIngress: AgentIngress{
+			Addr: "127.0.0.1:9091", MaxFeeders: 100, Workers: 4, Queue: 256, MaxBodyBytes: 3 << 20,
+		},
 		AdsbLol: AdsbLol{
 			Enabled: true,
 			Timeout: 4 * time.Second,
@@ -136,6 +150,7 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 	cfg.DatabasePath = env(lookup, "SKYFEED_DATABASE_PATH", cfg.DatabasePath)
 	cfg.HealthAddr = env(lookup, "SKYFEED_HEALTH_ADDR", cfg.HealthAddr)
 	cfg.PprofAddr = env(lookup, "SKYFEED_PPROF_ADDR", "")
+	cfg.AgentIngress.Addr = env(lookup, "SKYFEED_AGENT_ADDR", cfg.AgentIngress.Addr)
 	cfg.LogLevel = strings.ToLower(env(lookup, "SKYFEED_LOG_LEVEL", cfg.LogLevel))
 	cfg.LogFormat = strings.ToLower(env(lookup, "SKYFEED_LOG_FORMAT", cfg.LogFormat))
 
@@ -215,6 +230,21 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 	if cfg.ADSBDB.RouteEnabled, err = parseBool(lookup, "SKYFEED_ADSBDB_ROUTE_ENABLED", cfg.ADSBDB.RouteEnabled); err != nil {
 		return Config{}, err
 	}
+	if cfg.AgentIngress.Enabled, err = parseBool(lookup, "SKYFEED_AGENT_ENABLED", false); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentIngress.MaxFeeders, err = parseInt(lookup, "SKYFEED_AGENT_MAX_FEEDERS", cfg.AgentIngress.MaxFeeders); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentIngress.Workers, err = parseInt(lookup, "SKYFEED_AGENT_WORKERS", cfg.AgentIngress.Workers); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentIngress.Queue, err = parseInt(lookup, "SKYFEED_AGENT_QUEUE", cfg.AgentIngress.Queue); err != nil {
+		return Config{}, err
+	}
+	if cfg.AgentIngress.MaxBodyBytes, err = parseInt(lookup, "SKYFEED_AGENT_MAX_BODY_BYTES", cfg.AgentIngress.MaxBodyBytes); err != nil {
+		return Config{}, err
+	}
 	if cfg.AdsbLol.Enabled, err = parseBool(lookup, "SKYFEED_ADSBLOL_ENABLED", cfg.AdsbLol.Enabled); err != nil {
 		return Config{}, err
 	}
@@ -248,6 +278,12 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		cfg.AdsbLol.BaseURL, err = url.Parse(raw)
 		if err != nil {
 			return Config{}, fmt.Errorf("SKYFEED_ADSBLOL_BASE_URL: %w", err)
+		}
+	}
+	if raw := env(lookup, "SKYFEED_AGENT_PUBLIC_URL", ""); raw != "" {
+		cfg.AgentIngress.PublicURL, err = url.Parse(raw)
+		if err != nil {
+			return Config{}, fmt.Errorf("SKYFEED_AGENT_PUBLIC_URL: %w", err)
 		}
 	}
 	cfg.AirplanesLive.PublicAirportCode = strings.ToUpper(env(lookup, "SKYFEED_PUBLIC_CENTER_AIRPORT_CODE", ""))

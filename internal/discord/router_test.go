@@ -475,11 +475,21 @@ func TestAirportWeatherUsesSummaryBeforeRawDetailsAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	fields := fieldValues(initial.created[0].Embeds[0])
-	if !strings.Contains(fields, "generally visual conditions") || strings.Contains(fields, "231453Z") {
+	if !strings.Contains(fields, "generally good visual flying conditions") || strings.Contains(fields, "231453Z") {
 		t.Fatalf("initial airport fields = %q", fields)
 	}
 	row := initial.created[0].Components[0].(disgocord.ActionRowComponent)
-	button := row.Components[0].(disgocord.ButtonComponent)
+	var button disgocord.ButtonComponent
+	for _, component := range row.Components {
+		candidate, ok := component.(disgocord.ButtonComponent)
+		if ok && candidate.Label == "Weather report" {
+			button = candidate
+			break
+		}
+	}
+	if button.CustomID == "" {
+		t.Fatal("weather report button missing")
+	}
 	details := &responseRecorder{}
 	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, details); err != nil {
 		t.Fatal(err)
@@ -488,6 +498,63 @@ func TestAirportWeatherUsesSummaryBeforeRawDetailsAction(t *testing.T) {
 		t.Fatalf("weather details = %#v", details.updated)
 	}
 }
+
+func TestAirportShowsWeatherWithoutAirportDirectory(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	router.SetWeather(weatherStub{observation: aviationweather.Observation{
+		METAR: "KJFK 231453Z 18010KT P6SM SCT040 20/10 A3000", FlightCategory: "VFR", METARStatus: "available", FetchedAt: now,
+	}})
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "airport", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "KJFK"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if len(recorder.created) != 1 || !strings.Contains(fieldValues(recorder.created[0].Embeds[0]), "VFR") {
+		t.Fatalf("weather-only airport response = %#v", recorder.created)
+	}
+}
+
+func TestAirportActivityButtonShowsLocalMovementExplanation(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	router.SetRoutes(catalogRouteStub{})
+	router.SetAirportActivity(activityStub{value: domain.AirportActivity{AirportCode: "KJFK", Configured: true, UpdatedAt: now, Movements: []domain.AirportMovement{{
+		Phase: domain.MovementDeparture, ICAO: "ABC123", Callsign: "SKY123", Confidence: 90, DistanceNM: 2, HasDistance: true, ObservedAt: now, Evidence: "climbing away after being on the ground nearby",
+	}}}})
+	initial := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "airport", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "KJFK"}}, initial); err != nil {
+		t.Fatal(err)
+	}
+	row := initial.created[0].Components[0].(disgocord.ActionRowComponent)
+	var activityButton disgocord.ButtonComponent
+	for _, component := range row.Components {
+		candidate, ok := component.(disgocord.ButtonComponent)
+		if ok && candidate.Label == "Arrivals & departures" {
+			activityButton = candidate
+			break
+		}
+	}
+	if activityButton.CustomID == "" || activityButton.Disabled {
+		t.Fatalf("activity button = %#v", activityButton)
+	}
+	updated := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: activityButton.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, updated); err != nil {
+		t.Fatal(err)
+	}
+	updatedFields := ""
+	if len(updated.updated) == 1 && updated.updated[0].Embeds != nil && len(*updated.updated[0].Embeds) > 0 {
+		updatedFields = fieldValues((*updated.updated[0].Embeds)[0])
+	}
+	if len(updated.updated) != 1 || !strings.Contains(updatedFields, "These are likely movements") {
+		t.Fatalf("activity details = %q", updatedFields)
+	}
+}
+
+type activityStub struct{ value domain.AirportActivity }
+
+func (stub activityStub) Activity() domain.AirportActivity { return stub.value }
 
 type weatherStub struct{ observation aviationweather.Observation }
 

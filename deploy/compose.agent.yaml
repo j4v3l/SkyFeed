@@ -1,0 +1,44 @@
+name: skyfeed-agent
+
+services:
+  skyfeed-agent:
+    image: ${SKYFEED_IMAGE:-skyfeed:local}
+    entrypoint: ["/skyfeed-agent"]
+    command: ["run"]
+    restart: unless-stopped
+    init: true
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      SKYFEED_AGENT_SERVER_URL: ${SKYFEED_AGENT_SERVER_URL:?Set the central HTTPS URL}
+      SKYFEED_AGENT_STATE_DIR: /var/lib/skyfeed-agent
+      SKYFEED_AGENT_ALLOW_PRIVATE_HTTP: ${SKYFEED_AGENT_ALLOW_PRIVATE_HTTP:-false}
+      SKYFEED_AGENT_ENROLLMENT_FILE: /run/secrets/enrollment_code
+      SKYFEED_ADSB_BASE_URL: ${SKYFEED_ADSB_BASE_URL:?Set the local receiver URL ending in /data}
+      SKYFEED_AIRCRAFT_POLL: ${SKYFEED_AIRCRAFT_POLL:-1s}
+      SKYFEED_METADATA_POLL: ${SKYFEED_METADATA_POLL:-30s}
+      GOMEMLIMIT: 115MiB
+    volumes:
+      - skyfeed-agent-data:/var/lib/skyfeed-agent
+      - ../secrets/agent_enrollment:/run/secrets/enrollment_code:ro
+    tmpfs:
+      - /tmp:size=8m,mode=1777,nosuid,nodev,noexec
+    stop_grace_period: 20s
+    ulimits:
+      nofile:
+        soft: 512
+        hard: 1024
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  skyfeed-agent-data:

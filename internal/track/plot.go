@@ -77,20 +77,11 @@ func renderPlot(points []Point) ([]byte, error) {
 	}
 	drawLine(canvas, center, 16, center, plotSize-16, radar)
 	drawLine(canvas, 16, center, plotSize-16, center, radar)
-	maxDistance := 1.0
-	for _, point := range points {
-		if point.DistanceNM > maxDistance {
-			maxDistance = point.DistanceNM
-		}
-	}
-	maxDistance *= 1.1
 	trackColor := color.RGBA{R: 55, G: 181, B: 255, A: 255}
 	previousX, previousY := 0, 0
-	for index, point := range points {
-		radius := point.DistanceNM / maxDistance * 292
-		angle := point.BearingDegrees * math.Pi / 180
-		x := center + int(math.Sin(angle)*radius)
-		y := center - int(math.Cos(angle)*radius)
+	coordinates := plotCoordinates(points, center)
+	for index, coordinate := range coordinates {
+		x, y := coordinate.X, coordinate.Y
 		if index > 0 {
 			drawLine(canvas, previousX, previousY, x, y, trackColor)
 		}
@@ -100,6 +91,60 @@ func renderPlot(points []Point) ([]byte, error) {
 	var buffer bytes.Buffer
 	err := png.Encode(&buffer, canvas)
 	return buffer.Bytes(), err
+}
+
+func plotCoordinates(points []Point, center int) []image.Point {
+	allPositioned := len(points) >= 2
+	for _, point := range points {
+		allPositioned = allPositioned && point.HasPosition
+	}
+	if allPositioned {
+		return geographicCoordinates(points, center)
+	}
+	maxDistance := 1.0
+	for _, point := range points {
+		maxDistance = max(maxDistance, point.DistanceNM)
+	}
+	maxDistance *= 1.1
+	result := make([]image.Point, 0, len(points))
+	for _, point := range points {
+		radius := point.DistanceNM / maxDistance * 292
+		angle := point.BearingDegrees * math.Pi / 180
+		result = append(result, image.Pt(center+int(math.Sin(angle)*radius), center-int(math.Cos(angle)*radius)))
+	}
+	return result
+}
+
+func geographicCoordinates(points []Point, center int) []image.Point {
+	meanLatitude := 0.0
+	for _, point := range points {
+		meanLatitude += point.Latitude
+	}
+	meanLatitude /= float64(len(points))
+	longitudeScale := math.Cos(meanLatitude * math.Pi / 180)
+	if math.Abs(longitudeScale) < 0.01 {
+		longitudeScale = 0.01
+	}
+	minX, maxX := points[0].Longitude*longitudeScale, points[0].Longitude*longitudeScale
+	minY, maxY := points[0].Latitude, points[0].Latitude
+	for _, point := range points[1:] {
+		x := point.Longitude * longitudeScale
+		minX, maxX = min(minX, x), max(maxX, x)
+		minY, maxY = min(minY, point.Latitude), max(maxY, point.Latitude)
+	}
+	span := max(maxX-minX, maxY-minY)
+	if span < 0.0001 {
+		span = 0.0001
+	}
+	midX, midY := (minX+maxX)/2, (minY+maxY)/2
+	scale := 560.0 / span
+	result := make([]image.Point, 0, len(points))
+	for _, point := range points {
+		x := center + int((point.Longitude*longitudeScale-midX)*scale)
+		y := center - int((point.Latitude-midY)*scale)
+		result = append(result, image.Pt(x, y))
+	}
+	return result
 }
 
 func drawCircle(target *image.RGBA, centerX, centerY, radius int, value color.RGBA) {

@@ -23,6 +23,19 @@ type SnapshotProvider interface {
 	Current() *domain.Snapshot
 }
 
+type FeederSnapshotProvider interface {
+	SnapshotProvider
+	Aggregate() *domain.Snapshot
+	Feeder(domain.FeederID) (*domain.Snapshot, bool)
+	ListFeeders() []domain.FeederSummary
+}
+
+type FeederRegistry interface {
+	FeederSnapshotProvider
+	Register(domain.FeederDescriptor) error
+	Remove(domain.FeederID)
+}
+
 type EnrichmentProvider interface {
 	Cached(icao, callsign string) (domain.Enrichment, bool, error)
 	Enqueue(icao, callsign string) enrichment.AdmissionResult
@@ -36,6 +49,11 @@ type TrackProvider interface {
 
 type AirportActivityProvider interface {
 	Activity() domain.AirportActivity
+}
+
+type FeederAirportActivityProvider interface {
+	AirportActivityProvider
+	ActivityFor(domain.FeederID) domain.AirportActivity
 }
 
 type InteractionResponder interface {
@@ -125,6 +143,8 @@ type Router struct {
 	routeAudit         RouteAuditor
 	tracks             TrackProvider
 	activity           AirportActivityProvider
+	feederAdmin        FeederAdminConfig
+	feederChanged      func(domain.FeederDescriptor)
 }
 
 func (router *Router) SetRepository(repository storage.Repository) { router.repository = repository }
@@ -146,6 +166,22 @@ func (router *Router) SetAirportActivity(provider AirportActivityProvider) {
 }
 func (router *Router) SetGuildMemberProvider(provider GuildMemberProvider) {
 	router.members = provider
+}
+func (router *Router) SetFeederChanged(callback func(domain.FeederDescriptor)) {
+	router.feederChanged = callback
+}
+
+func (router *Router) feederDescriptor(id domain.FeederID) (domain.FeederDescriptor, bool) {
+	provider, ok := router.snapshots.(FeederSnapshotProvider)
+	if !ok || id == "" || id == domain.FeederAll {
+		return domain.FeederDescriptor{}, false
+	}
+	for _, feeder := range provider.ListFeeders() {
+		if feeder.ID == id {
+			return feeder.FeederDescriptor, true
+		}
+	}
+	return domain.FeederDescriptor{}, false
 }
 
 func (router *Router) requestRuleReload() {
@@ -169,7 +205,14 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 			return responder.CreateMessage(errorMessage(directMessageAdminOnly))
 		}
 	}
-	snapshot := router.snapshots.Current()
+	if request.Strings == nil {
+		request.Strings = make(map[string]string)
+	}
+	snapshot, selectedFeeder, selectionErr := router.snapshotFor(request.GuildID, request.Strings["feeder"])
+	if selectionErr != nil && commandUsesSnapshot(request.Name) {
+		return responder.CreateMessage(errorMessage(selectionErr.Error()))
+	}
+	request.Strings["feeder"] = string(selectedFeeder)
 	units := router.effectiveUnits(request.GuildID, request.UserID)
 	switch request.Name {
 	case "status":
@@ -210,11 +253,56 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleAudit(request, responder)
 	case "feeder":
 		return responder.CreateMessage(render.SafeMessage(render.FeederWithUnits(snapshot, router.now(), units), false))
+	case "feeders":
+		return router.handleFeeders(request, responder)
 	case "airline":
 		return router.handleAirline(request, responder, snapshot)
 	default:
 		return responder.CreateMessage(errorMessage("Unknown SkyFeed command."))
 	}
+}
+
+func commandUsesSnapshot(name string) bool {
+	switch name {
+	case "status", "nearby", "aircraft", "route", "squawk", "emergency", "traffic", "top", "feeder", "airline":
+		return true
+	default:
+		return false
+	}
+}
+
+func (router *Router) snapshotFor(guildID uint64, raw string) (*domain.Snapshot, domain.FeederID, error) {
+	provider, multi := router.snapshots.(FeederSnapshotProvider)
+	if !multi {
+		return router.snapshots.Current(), domain.FeederLocal, nil
+	}
+	selected := domain.FeederID(strings.ToLower(strings.TrimSpace(raw)))
+	if selected == "" && router.repository != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+		settings, err := router.repository.GuildSettings(ctx, guildID)
+		cancel()
+		if err == nil {
+			selected = settings.DefaultFeederID
+		}
+	}
+	if selected == "" {
+		selected = domain.FeederAll
+	}
+	if selected == domain.FeederAll {
+		return provider.Aggregate(), selected, nil
+	}
+	if !selected.Valid() {
+		return nil, selected, errors.New("choose a valid approved feeder")
+	}
+	if snapshot, ok := provider.Feeder(selected); ok {
+		return snapshot, selected, nil
+	}
+	for _, feeder := range provider.ListFeeders() {
+		if feeder.ID == selected {
+			return nil, selected, fmt.Errorf("%s has not delivered a live snapshot yet", feeder.DisplayName)
+		}
+	}
+	return nil, selected, errors.New("that feeder is not approved in this server")
 }
 
 func (router *Router) effectiveUnits(guildID, userID uint64) domain.UnitSystem {
@@ -314,7 +402,7 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		if len(request.Values) != 1 {
 			return responder.CreateMessage(errorMessage("That airport selection is not valid."))
 		}
-		return router.handleAirport(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"code": request.Values[0]}}, responder)
+		return router.handleAirport(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"code": request.Values[0], "feeder": string(session.FeederID)}}, responder)
 	case "watch":
 		modalID, buildErr := CustomID(session.ID, "save-watch")
 		if buildErr != nil {
@@ -380,7 +468,7 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 	if err := router.repository.EnsureGuild(ctx, request.GuildID); err != nil {
 		return responder.CreateMessage(errorMessage("Watch storage is temporarily unavailable."))
 	}
-	rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, Type: domain.RuleICAO, Value: session.Query, Enabled: true, Cooldown: time.Duration(minutes) * time.Minute, MinimumObservations: 2})
+	rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, FeederScope: session.FeederID, Type: domain.RuleICAO, Value: session.Query, Enabled: true, Cooldown: time.Duration(minutes) * time.Minute, MinimumObservations: 2})
 	if err != nil {
 		return responder.CreateMessage(errorMessage("The watch rule could not be saved."))
 	}
@@ -402,6 +490,9 @@ func (router *Router) HandleAutocomplete(request AutocompleteRequest, responder 
 	}
 	if request.Name == "watch" {
 		return router.autocompleteRules(request, responder)
+	}
+	if request.Option == "feeder" {
+		return router.autocompleteFeeders(responder, request.Query)
 	}
 	snapshot := router.snapshots.Current()
 	query := strings.ToUpper(strings.TrimSpace(request.Query))
@@ -430,6 +521,33 @@ func (router *Router) autocompleteAircraft(request AutocompleteRequest, responde
 			if len(choices) == 25 {
 				break
 			}
+		}
+	}
+	return responder.Autocomplete(choices)
+}
+
+func (router *Router) autocompleteFeeders(responder InteractionResponder, query string) error {
+	provider, ok := router.snapshots.(FeederSnapshotProvider)
+	if !ok {
+		return responder.Autocomplete([]disgocord.AutocompleteChoice{disgocord.AutocompleteChoiceString{Name: "Local feeder", Value: string(domain.FeederLocal)}})
+	}
+	query = strings.ToUpper(strings.TrimSpace(query))
+	choices := make([]disgocord.AutocompleteChoice, 0, 25)
+	if query == "" || strings.Contains("ALL FEEDERS", query) {
+		choices = append(choices, disgocord.AutocompleteChoiceString{Name: "All feeders • community view", Value: string(domain.FeederAll)})
+	}
+	for _, feeder := range provider.ListFeeders() {
+		haystack := strings.ToUpper(feeder.DisplayName + " " + feeder.PublicArea + " " + feeder.AirportICAO + " " + string(feeder.ID))
+		if query != "" && !strings.Contains(haystack, query) {
+			continue
+		}
+		label := feeder.DisplayName
+		if feeder.PublicArea != "" {
+			label += " • " + feeder.PublicArea
+		}
+		choices = append(choices, disgocord.AutocompleteChoiceString{Name: render.Truncate(label, 100), Value: string(feeder.ID)})
+		if len(choices) == 25 {
+			break
 		}
 	}
 	return responder.Autocomplete(choices)
@@ -523,6 +641,7 @@ func (router *Router) handleNearby(request CommandRequest, responder Interaction
 	}
 	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	session.RadiusNM = request.Floats["radius-nm"]
 	if minFeet, ok := request.Ints["altitude-min"]; ok {
 		session.MinFeet, session.HasMin = minFeet, true
@@ -561,6 +680,7 @@ func (router *Router) handleAircraft(request CommandRequest, responder Interacti
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
 		return err
 	}
@@ -633,12 +753,12 @@ func (router *Router) followUpAircraft(session Session, aircraft domain.Aircraft
 }
 
 func (router *Router) handleAircraftRouteAction(request ComponentRequest, responder InteractionResponder, session Session) error {
-	snapshot := router.snapshots.Current()
+	snapshot := router.snapshotForSession(session)
 	aircraft, ok := findAircraft(snapshot, session.Query)
 	if !ok {
 		return responder.CreateMessage(errorMessage("This aircraft is no longer visible."))
 	}
-	return router.handleRoute(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"flight": aircraft.ICAO}}, responder, snapshot)
+	return router.handleRoute(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"flight": aircraft.ICAO, "feeder": string(session.FeederID)}}, responder, snapshot)
 }
 
 func (router *Router) handleAircraftTrackAction(responder InteractionResponder, session Session) error {
@@ -691,7 +811,7 @@ func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft,
 }
 
 func (router *Router) updateSession(session Session, responder InteractionResponder) error {
-	snapshot := router.snapshots.Current()
+	snapshot := router.snapshotForSession(session)
 	switch session.View {
 	case "nearby":
 		message, err := router.nearbyMessage(session, snapshot)
@@ -725,16 +845,33 @@ func (router *Router) updateSession(session Session, responder InteractionRespon
 		return responder.UpdateMessage(messageUpdate(router.aircraftMessage(session, aircraft, snapshot)))
 	case "airport":
 		if router.routes == nil {
-			return responder.CreateMessage(errorMessage("Airport enrichment is not configured."))
+			return responder.UpdateMessage(messageUpdate(router.airportMessage(session, domain.Airport{ICAO: session.Query})))
 		}
 		airport, found, err := router.routes.CachedAirport(session.Query)
 		if err != nil || !found {
-			return responder.CreateMessage(errorMessage("Airport data is temporarily unavailable. Run `/airport` again."))
+			return responder.UpdateMessage(messageUpdate(router.airportMessage(session, domain.Airport{ICAO: session.Query})))
 		}
 		return responder.UpdateMessage(messageUpdate(router.airportMessage(session, airport)))
 	default:
 		return responder.CreateMessage(errorMessage("This view is no longer supported."))
 	}
+}
+
+func requestFeederID(request CommandRequest) domain.FeederID {
+	id := domain.FeederID(strings.ToLower(strings.TrimSpace(request.Strings["feeder"])))
+	if id == "" {
+		return domain.FeederAll
+	}
+	return id
+}
+
+func (router *Router) snapshotForSession(session Session) *domain.Snapshot {
+	provider, ok := router.snapshots.(FeederSnapshotProvider)
+	if !ok || session.FeederID == "" || session.FeederID == domain.FeederAll {
+		return router.snapshots.Current()
+	}
+	snapshot, _ := provider.Feeder(session.FeederID)
+	return snapshot
 }
 
 func (router *Router) aircraftEmbedWithUnits(aircraft domain.Aircraft, snapshot *domain.Snapshot, units domain.UnitSystem) disgocord.Embed {

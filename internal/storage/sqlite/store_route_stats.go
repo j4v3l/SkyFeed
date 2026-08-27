@@ -30,6 +30,10 @@ func (store *Store) RecordRouteSightings(ctx context.Context, batch storage.Rout
 }
 
 func (store *Store) recordRouteSightingsTx(ctx context.Context, transaction *sql.Tx, batch storage.RouteSightingsBatch) error {
+	feederID := batch.FeederID
+	if feederID == "" {
+		feederID = domain.FeederAll
+	}
 	bucket := batch.BucketStart.UTC().Truncate(time.Hour)
 	if bucket.IsZero() {
 		bucket = time.Now().UTC().Truncate(time.Hour)
@@ -56,8 +60,8 @@ func (store *Store) recordRouteSightingsTx(ctx context.Context, transaction *sql
 		plausible=excluded.plausible,
 		plausibility_known=excluded.plausibility_known,
 		updated_at=excluded.updated_at`
-	sightingStatement := `INSERT INTO route_sightings(guild_id, icao, callsign, bucket_start, sightings) VALUES (?, ?, ?, ?, 1)
-ON CONFLICT(guild_id, icao, bucket_start) DO UPDATE SET
+	sightingStatement := `INSERT INTO route_sightings(guild_id, feeder_id, icao, callsign, bucket_start, sightings) VALUES (?, ?, ?, ?, ?, 1)
+ON CONFLICT(guild_id, feeder_id, icao, bucket_start) DO UPDATE SET
 	callsign=excluded.callsign,
 	sightings=sightings+1`
 	for _, observation := range batch.Observations {
@@ -74,7 +78,7 @@ ON CONFLICT(guild_id, icao, bucket_start) DO UPDATE SET
 		if err != nil {
 			return fmt.Errorf("upsert route catalog: %w", err)
 		}
-		_, err = transaction.ExecContext(ctx, sightingStatement, batch.GuildID, observation.ICAO, observation.Callsign, formatTime(bucket))
+		_, err = transaction.ExecContext(ctx, sightingStatement, batch.GuildID, feederID, observation.ICAO, observation.Callsign, formatTime(bucket))
 		if err != nil {
 			return fmt.Errorf("upsert route sighting: %w", err)
 		}
@@ -83,6 +87,10 @@ ON CONFLICT(guild_id, icao, bucket_start) DO UPDATE SET
 }
 
 func (store *Store) TopRouteRankings(ctx context.Context, guildID uint64, metric, period string, limit int, domesticCountryISO string) ([]storage.RouteRankingRow, error) {
+	return store.TopRouteRankingsForScope(ctx, guildID, domain.FeederAll, metric, period, limit, domesticCountryISO)
+}
+
+func (store *Store) TopRouteRankingsForScope(ctx context.Context, guildID uint64, feederScope domain.FeederID, metric, period string, limit int, domesticCountryISO string) ([]storage.RouteRankingRow, error) {
 	if guildID == 0 {
 		return nil, fmt.Errorf("guild id is required")
 	}
@@ -97,10 +105,14 @@ func (store *Store) TopRouteRankings(ctx context.Context, guildID uint64, metric
 		return nil, fmt.Errorf("unsupported route ranking period %q", period)
 	}
 	domesticCountryISO = strings.ToUpper(strings.TrimSpace(domesticCountryISO))
-	baseWhere := `rs.guild_id = ? AND rs.bucket_start >= ? AND rc.origin_iata != '' AND rc.destination_iata != ''
+	if feederScope == "" {
+		feederScope = domain.FeederAll
+	}
+	baseWhere := `rs.guild_id = ? AND rs.feeder_id = ? AND rs.bucket_start >= ? AND rc.origin_iata != '' AND rc.destination_iata != ''
 		AND rc.origin_iata != rc.destination_iata
 		AND (rc.plausibility_known = 0 OR rc.plausible = 1)`
-	args := []any{guildID, formatTime(since)}
+	baseArgs := []any{guildID, feederScope, formatTime(since)}
+	args := append([]any(nil), baseArgs...)
 	var query string
 	switch metric {
 	case "routes":
@@ -162,7 +174,9 @@ func (store *Store) TopRouteRankings(ctx context.Context, guildID uint64, metric
 			GROUP BY airport_code, airport_name
 			ORDER BY count DESC, label ASC
 			LIMIT ?`, baseWhere, baseWhere)
-		args = append(args, domesticCountryISO, domesticCountryISO)
+		args = append(args, domesticCountryISO)
+		args = append(args, baseArgs...)
+		args = append(args, domesticCountryISO)
 	case "international-airports":
 		if domesticCountryISO == "" {
 			return nil, fmt.Errorf("domestic country is not configured")
@@ -182,7 +196,9 @@ func (store *Store) TopRouteRankings(ctx context.Context, guildID uint64, metric
 			GROUP BY airport_code, airport_name
 			ORDER BY count DESC, label ASC
 			LIMIT ?`, baseWhere, baseWhere)
-		args = append(args, domesticCountryISO, domesticCountryISO)
+		args = append(args, domesticCountryISO)
+		args = append(args, baseArgs...)
+		args = append(args, domesticCountryISO)
 	default:
 		return nil, fmt.Errorf("unsupported route ranking metric %q", metric)
 	}
@@ -212,7 +228,7 @@ func (store *Store) RouteTrafficCounts(ctx context.Context, guildID uint64, sinc
 	if since.IsZero() {
 		since = time.Unix(0, 0).UTC()
 	}
-	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(sightings), 0) FROM route_sightings WHERE guild_id=? AND bucket_start>=?`, guildID, formatTime(since)).Scan(&counts.Sightings); err != nil {
+	if err := store.db.QueryRowContext(ctx, `SELECT COALESCE(SUM(sightings), 0) FROM route_sightings WHERE guild_id=? AND feeder_id='all' AND bucket_start>=?`, guildID, formatTime(since)).Scan(&counts.Sightings); err != nil {
 		return storage.RouteTrafficCounts{}, fmt.Errorf("count route sightings: %w", err)
 	}
 	return counts, nil

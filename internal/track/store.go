@@ -2,6 +2,7 @@ package track
 
 import (
 	"errors"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -14,7 +15,7 @@ const (
 	DefaultRetention      = 15 * time.Minute
 	DefaultSampleInterval = 5 * time.Second
 	DefaultMaxPoints      = 180
-	DefaultMaxAircraft    = 2_000
+	DefaultMaxAircraft    = 5_000
 	defaultMaxPlots       = 64
 )
 
@@ -24,6 +25,9 @@ type Point struct {
 	At             time.Time
 	DistanceNM     float64
 	BearingDegrees float64
+	Latitude       float64
+	Longitude      float64
+	HasPosition    bool
 	AltitudeFeet   int
 	HasAltitude    bool
 }
@@ -118,6 +122,9 @@ func (store *Store) Observe(snapshot *domain.Snapshot) {
 			At:             now,
 			DistanceNM:     aircraft.DistanceNM,
 			BearingDegrees: normalizeBearing(aircraft.BearingDegrees),
+			Latitude:       aircraft.Latitude,
+			Longitude:      aircraft.Longitude,
+			HasPosition:    aircraft.HasPosition,
 			AltitudeFeet:   aircraft.AltitudeFeet,
 			HasAltitude:    aircraft.HasAltitude,
 		})
@@ -224,6 +231,13 @@ func directionSummary(points []Point) string {
 	if len(points) < 2 {
 		return "insufficient samples"
 	}
+	first, latest := points[0], points[len(points)-1]
+	if first.HasPosition && latest.HasPosition {
+		movedNM := geographicDistanceNM(first.Latitude, first.Longitude, latest.Latitude, latest.Longitude)
+		if movedNM >= 0.25 {
+			return "tracking " + compass(geographicBearing(first.Latitude, first.Longitude, latest.Latitude, latest.Longitude))
+		}
+	}
 	delta := points[len(points)-1].DistanceNM - points[0].DistanceNM
 	switch {
 	case delta < -0.5:
@@ -233,6 +247,23 @@ func directionSummary(points []Point) string {
 	default:
 		return "crossing near " + compass(points[len(points)-1].BearingDegrees)
 	}
+}
+
+func geographicDistanceNM(lat1, lon1, lat2, lon2 float64) float64 {
+	const earthRadiusNM = 3440.065
+	lat1Radians, lat2Radians := lat1*math.Pi/180, lat2*math.Pi/180
+	deltaLat := (lat2 - lat1) * math.Pi / 180
+	deltaLon := (lon2 - lon1) * math.Pi / 180
+	a := math.Sin(deltaLat/2)*math.Sin(deltaLat/2) + math.Cos(lat1Radians)*math.Cos(lat2Radians)*math.Sin(deltaLon/2)*math.Sin(deltaLon/2)
+	return earthRadiusNM * 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+}
+
+func geographicBearing(lat1, lon1, lat2, lon2 float64) float64 {
+	lat1Radians, lat2Radians := lat1*math.Pi/180, lat2*math.Pi/180
+	deltaLon := (lon2 - lon1) * math.Pi / 180
+	y := math.Sin(deltaLon) * math.Cos(lat2Radians)
+	x := math.Cos(lat1Radians)*math.Sin(lat2Radians) - math.Sin(lat1Radians)*math.Cos(lat2Radians)*math.Cos(deltaLon)
+	return normalizeBearing(math.Atan2(y, x) * 180 / math.Pi)
 }
 
 func compass(degrees float64) string {

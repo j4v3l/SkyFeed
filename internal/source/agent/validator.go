@@ -1,5 +1,5 @@
-// Package agent defines the replay and identity checks shared by a future LAN
-// agent transport. No general-purpose LAN proxy or inbound listener is enabled.
+// Package agent contains the signed snapshot transport and its validation
+// primitives. It intentionally exposes no general-purpose LAN proxy.
 package agent
 
 import (
@@ -35,9 +35,8 @@ func NewValidator(maxSkew time.Duration, maxPayload int) *Validator {
 	return &Validator{last: make(map[string]uint64), maxSkew: maxSkew, maxPayload: maxPayload, now: time.Now}
 }
 
-// Validate binds the mTLS certificate identity supplied by the transport to
-// the source ID, rejects oversized snapshots, and advances a monotonic replay
-// window. Authentication of the peer certificate remains the TLS server's job.
+// Validate is retained for deployments that additionally bind transport-level
+// identities. Protocol v1 uses Ed25519 envelopes and durable SQLite sequences.
 func (validator *Validator) Validate(certificateIdentity string, envelope Envelope) error {
 	if certificateIdentity == "" || certificateIdentity != envelope.SourceID {
 		return ErrIdentity

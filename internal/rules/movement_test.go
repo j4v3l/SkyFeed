@@ -1,6 +1,7 @@
 package rules
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -16,6 +17,22 @@ func TestMovementMonitorIgnoresAirplanesLive(t *testing.T) {
 	alerts := monitor.Evaluate(1, &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: []domain.Aircraft{air}})
 	if len(alerts) != 0 {
 		t.Fatalf("alerts=%d", len(alerts))
+	}
+}
+
+func TestMovementMonitorBoundsUniqueAircraftState(t *testing.T) {
+	monitor := NewMovementMonitor(MovementConfig{AirportCode: "KXYZ", Latitude: 0, Longitude: 0, HasCenter: true})
+	now := time.Unix(1_700_000_000, 0)
+	aircraft := make([]domain.Aircraft, 0, maxMovementTracks+100)
+	for index := 0; index < maxMovementTracks+100; index++ {
+		aircraft = append(aircraft, domain.Aircraft{
+			ICAO: fmt.Sprintf("%06X", index), Provider: domain.ProviderReadsb, HasPosition: true,
+			Latitude: 0.1, Longitude: 0.1,
+		})
+	}
+	_ = monitor.Evaluate(1, &domain.Snapshot{PublishedAt: now, Aircraft: aircraft})
+	if len(monitor.tracks) != maxMovementTracks {
+		t.Fatalf("movement state entries = %d, want %d", len(monitor.tracks), maxMovementTracks)
 	}
 }
 

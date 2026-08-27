@@ -19,6 +19,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/privacy"
 	"github.com/j4v3l/SkyFeed/internal/report"
 	"github.com/j4v3l/SkyFeed/internal/rules"
+	agentsource "github.com/j4v3l/SkyFeed/internal/source/agent"
 	"github.com/j4v3l/SkyFeed/internal/source/airplaneslive"
 	"github.com/j4v3l/SkyFeed/internal/source/readsb"
 	"github.com/j4v3l/SkyFeed/internal/state"
@@ -28,6 +29,15 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/track"
 	"github.com/j4v3l/SkyFeed/internal/weather/aviationweather"
 )
+
+func movementConfigForFeeder(descriptor domain.FeederDescriptor) rules.MovementConfig {
+	return rules.MovementConfig{
+		AirportCode: descriptor.AirportICAO,
+		Latitude:    descriptor.Latitude,
+		Longitude:   descriptor.Longitude,
+		HasCenter:   descriptor.Enabled && descriptor.HasCenter && descriptor.AirportICAO != "",
+	}
+}
 
 func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	startedAt := time.Now()
@@ -96,6 +106,8 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	alertQueue := rules.NewQueue(64, 512)
 	feederMonitor := rules.NewFeederMonitor()
+	feederMonitors := map[domain.FeederID]*rules.FeederMonitor{domain.FeederLocal: feederMonitor}
+	var feederMonitorsMu sync.Mutex
 	if repository != nil {
 		recent, err := repository.RecentFeederEvents(ctx, cfg.Discord.GuildID, 20)
 		if err != nil {
@@ -131,13 +143,62 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		healthState.SetComponent("planealert", "disabled", "database required for interesting aircraft matching")
 	}
-	movementConfig := rules.MovementConfig{}
-	if cfg.AirplanesLive.Latitude != nil && cfg.AirplanesLive.Longitude != nil {
-		movementConfig = rules.MovementConfig{AirportCode: cfg.AirplanesLive.PublicAirportCode, Latitude: *cfg.AirplanesLive.Latitude, Longitude: *cfg.AirplanesLive.Longitude, HasCenter: true}
-	}
-	movementMonitor := rules.NewMovementMonitor(movementConfig)
+	movementRegistry := rules.NewMovementRegistry()
 	trackStore := track.NewStore()
-	var lastAircraftFetch atomic.Int64
+	feederManager := state.NewFeederManager(state.DefaultAggregateInterval)
+	localDescriptor := domain.FeederDescriptor{
+		ID: domain.FeederLocal, DisplayName: "Local feeder", PublicArea: cfg.AirplanesLive.PublicAirportCode,
+		AirportICAO: cfg.AirplanesLive.PublicAirportCode, SourceKind: domain.FeederSourceLocal, Enabled: true,
+	}
+	if cfg.AirplanesLive.Latitude != nil && cfg.AirplanesLive.Longitude != nil {
+		localDescriptor.Latitude, localDescriptor.Longitude, localDescriptor.HasCenter = *cfg.AirplanesLive.Latitude, *cfg.AirplanesLive.Longitude, true
+	}
+	if repository != nil {
+		localRegistered := false
+		storedFeeders, err := repository.Feeders(ctx, cfg.Discord.GuildID, min(cfg.AgentIngress.MaxFeeders+2, 250))
+		if err != nil {
+			return err
+		}
+		remoteFeeders := 0
+		for _, feeder := range storedFeeders {
+			if feeder.Descriptor.SourceKind == domain.FeederSourceAgent {
+				remoteFeeders++
+			}
+		}
+		if remoteFeeders > cfg.AgentIngress.MaxFeeders {
+			return errors.New("stored community feeder count exceeds SKYFEED_AGENT_MAX_FEEDERS")
+		}
+		for _, feeder := range storedFeeders {
+			descriptor := feeder.Descriptor
+			if descriptor.ID == domain.FeederLocal {
+				localRegistered = true
+				descriptor.PublicArea = localDescriptor.PublicArea
+				descriptor.AirportICAO = localDescriptor.AirportICAO
+				descriptor.Latitude, descriptor.Longitude, descriptor.HasCenter = localDescriptor.Latitude, localDescriptor.Longitude, localDescriptor.HasCenter
+				localDescriptor = descriptor
+				feeder.Descriptor = descriptor
+				feeder.UpdatedAt = time.Now().UTC()
+				if err := repository.UpsertFeeder(ctx, feeder); err != nil {
+					return err
+				}
+			}
+			if err := feederManager.Register(descriptor); err != nil {
+				return err
+			}
+		}
+		if !localRegistered {
+			if err := feederManager.Register(localDescriptor); err != nil {
+				return err
+			}
+		}
+	} else if err := feederManager.Register(localDescriptor); err != nil {
+		return err
+	}
+	for _, feeder := range feederManager.ListFeeders() {
+		movementRegistry.Register(feeder.ID, movementConfigForFeeder(feeder.FeederDescriptor))
+	}
+	var lastAircraftFetchMu sync.Mutex
+	lastAircraftFetch := make(map[domain.FeederID]int64)
 	var enrichmentService *enrichment.Service
 	var routeService *enrichment.RouteService
 	var adsbClient *adsbdb.Client
@@ -168,7 +229,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}
 	lastCallsigns := make(map[string]string)
 	var lastCallsignsMu sync.Mutex
-	engine := state.NewEngine(func(snapshot *domain.Snapshot) {
+	feederManager.SetPublishObserver(func(feederID domain.FeederID, snapshot *domain.Snapshot) {
 		age := time.Duration(0)
 		if !snapshot.FetchedAt.IsZero() {
 			age = time.Since(snapshot.FetchedAt)
@@ -181,21 +242,32 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		healthState.SetComponent("stats_source", string(snapshot.Health.Stats.Status), sourceHealthMessage(snapshot.Health.Stats))
 		sourceKnown.Store(sourcesInitialized(snapshot.Health))
 		setReadiness()
-		for _, alert := range feederMonitor.Evaluate(cfg.Discord.GuildID, snapshot) {
+		feederMonitorsMu.Lock()
+		monitor := feederMonitors[feederID]
+		if monitor == nil {
+			monitor = rules.NewFeederMonitor()
+			feederMonitors[feederID] = monitor
+		}
+		feederMonitorsMu.Unlock()
+		for _, alert := range monitor.Evaluate(cfg.Discord.GuildID, snapshot) {
+			alert.FeederID = feederID
 			enqueueContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 			if err := alertQueue.Enqueue(enqueueContext, alert); err != nil {
 				logger.Error("feeder alert queue admission failed", "component", "rules", "event", "alert_drop", "priority", alert.Priority, "error", err)
 			}
 			cancel()
 			if persistence != nil {
-				_ = persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteFeederEvent, Feeder: storage.FeederEvent{GuildID: cfg.Discord.GuildID, Kind: alert.ConditionFingerprint, Status: alert.Title, Detail: alert.Description, Occurred: alert.ObservedAt}})
+				_ = persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteFeederEvent, Feeder: storage.FeederEvent{GuildID: cfg.Discord.GuildID, FeederID: feederID, Kind: alert.ConditionFingerprint, Status: alert.Title, Detail: alert.Description, Occurred: alert.ObservedAt}})
 			}
 		}
 		fetched := snapshot.FetchedAt.UnixNano()
-		if fetched == 0 || lastAircraftFetch.Swap(fetched) == fetched {
+		lastAircraftFetchMu.Lock()
+		previousFetch := lastAircraftFetch[feederID]
+		lastAircraftFetch[feederID] = fetched
+		lastAircraftFetchMu.Unlock()
+		if fetched == 0 || previousFetch == fetched {
 			return
 		}
-		trackStore.Observe(snapshot)
 		rulesStarted := time.Now()
 		alerts, stateUpdates := ruleEngine.Evaluate(snapshot)
 		if interestingMonitor != nil && planeAlertIndex != nil {
@@ -214,11 +286,12 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				}
 			}
 		}
-		if movementMonitor != nil {
-			alerts = append(alerts, movementMonitor.Evaluate(cfg.Discord.GuildID, snapshot)...)
-		}
+		alerts = append(alerts, movementRegistry.Evaluate(cfg.Discord.GuildID, snapshot)...)
 		metrics.ObserveRules(time.Since(rulesStarted), len(alerts))
 		for _, alert := range alerts {
+			if alert.FeederID == "" {
+				alert.FeederID = feederID
+			}
 			if alert.Priority == domain.AlertEmergency && alert.GuildID == 0 {
 				alert.GuildID = cfg.Discord.GuildID
 			}
@@ -228,9 +301,10 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			}
 			cancel()
 			if persistence != nil && alert.Priority == domain.AlertEmergency {
-				if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: report.EmergencyEvent(cfg.Discord.GuildID, alert.ObservedAt)}); err != nil {
+				if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: report.EmergencyEventForScope(cfg.Discord.GuildID, domain.FeederAll, alert.ObservedAt)}); err != nil {
 					logger.Error("emergency report event persistence failed", "component", "storage", "event", "write_drop", "error", err)
 				}
+				_ = persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: report.EmergencyEventForScope(cfg.Discord.GuildID, feederID, alert.ObservedAt)})
 			}
 		}
 		if persistence != nil {
@@ -295,6 +369,49 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		metrics.SetQueues(emergencyDepth, normalDepth, alertQueue.Dropped(), persistenceDepth, enrichmentCache)
 	})
+	engine := state.NewEngine(func(snapshot *domain.Snapshot) {
+		feederManager.Publish(domain.FeederLocal, snapshot)
+	})
+	feederManager.SetAggregateObserver(func(snapshot *domain.Snapshot) {
+		trackStore.Observe(snapshot)
+		if snapshot == nil || snapshot.FetchedAt.IsZero() {
+			return
+		}
+		started := time.Now()
+		alerts, updates := ruleEngine.Evaluate(snapshot)
+		metrics.ObserveRules(time.Since(started), len(alerts))
+		for _, alert := range alerts {
+			if alert.GuildID == 0 {
+				alert.GuildID = cfg.Discord.GuildID
+			}
+			enqueueContext, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+			if err := alertQueue.Enqueue(enqueueContext, alert); err != nil {
+				logger.Error("aggregate alert queue admission failed", "component", "rules", "event", "alert_drop", "error", err)
+			}
+			cancel()
+		}
+		if persistence == nil {
+			return
+		}
+		for _, update := range updates {
+			if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteAlertState, AlertState: update}); err != nil {
+				logger.Error("aggregate rule state persistence failed", "component", "storage", "event", "write_drop", "error", err)
+			}
+		}
+		if rollup, accepted := reportAggregator.ObserveSampled(cfg.Discord.GuildID, snapshot, time.Second); accepted {
+			if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteReportRollup, Rollup: rollup}); err != nil {
+				logger.Error("aggregate report persistence failed", "component", "storage", "event", "write_drop", "error", err)
+			}
+		}
+		if routeService != nil {
+			lookup := report.RouteStatsLookup{AdsbLol: routeService}
+			if batch := routeStatsCollector.Observe(cfg.Discord.GuildID, snapshot, lookup, snapshot.PublishedAt); len(batch.Observations) > 0 {
+				if err := persistence.Enqueue(storage.WriteEvent{Kind: storage.WriteRouteSightings, RouteBatch: batch}); err != nil {
+					logger.Error("aggregate route persistence failed", "component", "storage", "event", "write_drop", "error", err)
+				}
+			}
+		}
+	})
 	upstreams, sourceErr := configureSources(cfg)
 	if sourceErr != nil {
 		return sourceErr
@@ -311,9 +428,19 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		})
 	}
 	sessions := skydiscord.NewSessionManager(2_000, 20, 15*time.Minute)
-	router := skydiscord.NewRouter(engine, sessions, cfg.Discord.GuildID, startedAt)
+	router := skydiscord.NewRouter(feederManager, sessions, cfg.Discord.GuildID, startedAt)
+	agentPublicURL := ""
+	if cfg.AgentIngress.PublicURL != nil {
+		agentPublicURL = cfg.AgentIngress.PublicURL.String()
+	}
+	router.SetFeederAdminConfig(skydiscord.FeederAdminConfig{
+		Enabled: cfg.AgentIngress.Enabled, PublicURL: agentPublicURL, MaxFeeders: cfg.AgentIngress.MaxFeeders,
+	})
 	router.SetTracks(trackStore)
-	router.SetAirportActivity(movementMonitor)
+	router.SetAirportActivity(movementRegistry)
+	router.SetFeederChanged(func(descriptor domain.FeederDescriptor) {
+		movementRegistry.Register(descriptor.ID, movementConfigForFeeder(descriptor))
+	})
 	router.SetPrivacyDisclosure(privacyDisclosure(cfg))
 	router.SetDomesticCountryISO(cfg.AirplanesLive.DomesticCountryISO)
 	ruleReload := make(chan struct{}, 1)
@@ -333,7 +460,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			if lookupErr != nil && !errors.Is(lookupErr, enrichment.ErrNotFound) {
 				return
 			}
-			snapshot := engine.Current()
+			snapshot := feederManager.Current()
 			aircraft, visible := snapshot.LookupICAO(value.ICAO)
 			if !visible {
 				return
@@ -372,12 +499,24 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	healthState.SetComponent("weather", "healthy", "aviationweather.gov METAR/TAF")
 
 	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", Version)
-	services := []service{server.Run, func(serviceContext context.Context) error {
+	services := []service{server.Run, feederManager.Run, func(serviceContext context.Context) error {
 		return engine.Run(serviceContext, upstreams.Set, cfg.ADSB.AircraftPoll, cfg.ADSB.MetadataPoll)
 	}, func(serviceContext context.Context) error {
 		sessions.RunCleanup(serviceContext.Done(), time.Minute)
 		return nil
 	}}
+	if cfg.AgentIngress.Enabled {
+		ingress, ingressErr := agentsource.NewIngressServer(agentsource.IngressConfig{
+			Addr: cfg.AgentIngress.Addr, Workers: cfg.AgentIngress.Workers, Queue: cfg.AgentIngress.Queue, MaxBodyBytes: cfg.AgentIngress.MaxBodyBytes,
+		}, repository, feederManager, logger)
+		if ingressErr != nil {
+			return ingressErr
+		}
+		healthState.SetComponent("agent_ingress", "healthy", "community feeder ingress enabled")
+		services = append(services, ingress.Run)
+	} else {
+		healthState.SetComponent("agent_ingress", "disabled", "community feeder ingress disabled")
+	}
 	if cfg.PprofAddr != "" {
 		services = append(services, func(serviceContext context.Context) error {
 			return telemetry.RunPprof(serviceContext, cfg.PprofAddr, logger)
@@ -447,6 +586,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		gateway.SetDashboardInterval(cfg.DashboardInterval)
 		gateway.SetAdminDigestInterval(cfg.AdminDigestInterval)
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
+		gateway.SetInteractionHandlerObserver(metrics.ObserveInteractionHandler)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
 		router.SetGuildMemberProvider(gateway)

@@ -31,6 +31,7 @@ func (lookup RouteStatsLookup) routeFor(icao, callsign string) (domain.Route, bo
 
 type routeSightingKey struct {
 	guildID uint64
+	feeder  domain.FeederID
 	icao    string
 	bucket  int64
 }
@@ -52,7 +53,11 @@ func (collector *RouteStatsCollector) Observe(guildID uint64, snapshot *domain.S
 		now = time.Now().UTC()
 	}
 	bucket := now.UTC().Truncate(time.Hour)
-	batch := storage.RouteSightingsBatch{GuildID: guildID, BucketStart: bucket, Observations: make([]storage.RouteSightingsObservation, 0, len(snapshot.Aircraft))}
+	feederID := snapshot.FeederID
+	if feederID == "" {
+		feederID = domain.FeederLocal
+	}
+	batch := storage.RouteSightingsBatch{GuildID: guildID, FeederID: feederID, BucketStart: bucket, Observations: make([]storage.RouteSightingsObservation, 0, len(snapshot.Aircraft))}
 	collector.mu.Lock()
 	defer collector.mu.Unlock()
 	collector.pruneLocked(bucket)
@@ -61,7 +66,7 @@ func (collector *RouteStatsCollector) Observe(guildID uint64, snapshot *domain.S
 		if callsign == "" {
 			continue
 		}
-		key := routeSightingKey{guildID: guildID, icao: strings.ToUpper(strings.TrimSpace(aircraft.ICAO)), bucket: bucket.Unix()}
+		key := routeSightingKey{guildID: guildID, feeder: feederID, icao: strings.ToUpper(strings.TrimSpace(aircraft.ICAO)), bucket: bucket.Unix()}
 		if _, exists := collector.seen[key]; exists {
 			continue
 		}

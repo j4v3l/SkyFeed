@@ -11,7 +11,7 @@ buildGoModule {
 
   vendorHash = "sha256-DP9ISSsrhnRNE2GZJt5+oiYDKzICyTbXId/x4Si0j9k=";
 
-  doCheck = false;
+  doCheck = true;
 
   tags = [ "timetzdata" ];
 
@@ -23,7 +23,10 @@ buildGoModule {
     "-X github.com/j4v3l/SkyFeed/internal/app.BuildDate=${buildDate}"
   ];
 
-  subPackages = [ "cmd/skyfeed" ];
+  subPackages = [
+    "cmd/skyfeed"
+    "cmd/skyfeed-agent"
+  ];
 
   postInstall = ''
     mkdir -p $out/share/doc/skyfeed

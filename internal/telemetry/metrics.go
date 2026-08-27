@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"runtime"
@@ -23,6 +24,27 @@ type sourceMetrics struct {
 	lastSuccessUnix atomic.Int64
 }
 
+var interactionBuckets = [...]time.Duration{10 * time.Millisecond, 25 * time.Millisecond, 50 * time.Millisecond, 100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2500 * time.Millisecond}
+
+type latencyHistogram struct {
+	buckets [len(interactionBuckets)]atomic.Uint64
+	count   atomic.Uint64
+	sum     atomic.Uint64
+}
+
+func (histogram *latencyHistogram) observe(duration time.Duration) {
+	if duration < 0 {
+		duration = 0
+	}
+	histogram.count.Add(1)
+	histogram.sum.Add(uint64(duration.Nanoseconds()))
+	for index, boundary := range interactionBuckets {
+		if duration <= boundary {
+			histogram.buckets[index].Add(1)
+		}
+	}
+}
+
 type Metrics struct {
 	started              time.Time
 	sources              [len(metricProviders) * len(metricCapabilities)]sourceMetrics
@@ -38,7 +60,8 @@ type Metrics struct {
 	alertDrops           atomic.Uint64
 	persistenceDepth     atomic.Int64
 	enrichmentCache      atomic.Int64
-	interactionAckNanos  atomic.Int64
+	interactionAck       latencyHistogram
+	interactionHandler   latencyHistogram
 	discordSucceeded     atomic.Uint64
 	discordFailed        atomic.Uint64
 	discordRetried       atomic.Uint64
@@ -135,7 +158,11 @@ func (metrics *Metrics) SetQueues(emergency, normal int, drops uint64, persisten
 }
 
 func (metrics *Metrics) ObserveInteraction(duration time.Duration) {
-	metrics.interactionAckNanos.Store(duration.Nanoseconds())
+	metrics.interactionAck.observe(duration)
+}
+
+func (metrics *Metrics) ObserveInteractionHandler(duration time.Duration) {
+	metrics.interactionHandler.observe(duration)
 }
 
 func (metrics *Metrics) SetDiscord(succeeded, failed, retried, dropped, coalesced uint64) {
@@ -208,7 +235,8 @@ func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 	_, _ = fmt.Fprintf(writer, "skyfeed_alert_queue_drops_total %d\n", metrics.alertDrops.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_persistence_queue_depth %d\n", metrics.persistenceDepth.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_enrichment_cache_entries %d\n", metrics.enrichmentCache.Load())
-	_, _ = fmt.Fprintf(writer, "skyfeed_interaction_acknowledge_duration_seconds %.6f\n", float64(metrics.interactionAckNanos.Load())/float64(time.Second))
+	writeLatencyHistogram(writer, "skyfeed_interaction_acknowledge_duration_seconds", &metrics.interactionAck)
+	writeLatencyHistogram(writer, "skyfeed_interaction_handler_duration_seconds", &metrics.interactionHandler)
 	_, _ = fmt.Fprintf(writer, "skyfeed_discord_requests_total{result=\"success\"} %d\n", metrics.discordSucceeded.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_discord_requests_total{result=\"failure\"} %d\n", metrics.discordFailed.Load())
 	_, _ = fmt.Fprintf(writer, "skyfeed_discord_retries_total %d\n", metrics.discordRetried.Load())
@@ -240,6 +268,16 @@ func (metrics *Metrics) ServeHTTP(writer http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(writer, "process_open_fds %d\n", descriptors)
 	}
 	_, _ = fmt.Fprintf(writer, "process_start_time_seconds %d\n", metrics.started.Unix())
+}
+
+func writeLatencyHistogram(writer io.Writer, name string, histogram *latencyHistogram) {
+	for index, boundary := range interactionBuckets {
+		_, _ = fmt.Fprintf(writer, "%s_bucket{le=\"%.3f\"} %d\n", name, boundary.Seconds(), histogram.buckets[index].Load())
+	}
+	count := histogram.count.Load()
+	_, _ = fmt.Fprintf(writer, "%s_bucket{le=\"+Inf\"} %d\n", name, count)
+	_, _ = fmt.Fprintf(writer, "%s_sum %.9f\n", name, float64(histogram.sum.Load())/float64(time.Second))
+	_, _ = fmt.Fprintf(writer, "%s_count %d\n", name, count)
 }
 
 func processCPUSeconds() (float64, bool) {

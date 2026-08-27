@@ -31,6 +31,7 @@ type Session struct {
 	Sort                  string
 	Query                 string
 	Squawk                string
+	FeederID              domain.FeederID
 	Units                 domain.UnitSystem
 	Page                  int
 	PageSize              int

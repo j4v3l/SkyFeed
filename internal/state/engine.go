@@ -17,6 +17,7 @@ type PublishFunc func(*domain.Snapshot)
 
 type Engine struct {
 	current atomic.Pointer[domain.Snapshot]
+	feeder  domain.FeederID
 	mu      sync.Mutex
 	now     func() time.Time
 	publish PublishFunc
@@ -32,12 +33,21 @@ type Engine struct {
 }
 
 func NewEngine(publish PublishFunc) *Engine {
+	return NewEngineForFeeder(domain.FeederLocal, publish)
+}
+
+func NewEngineForFeeder(feederID domain.FeederID, publish PublishFunc) *Engine {
+	if !feederID.Valid() || feederID == domain.FeederAll {
+		feederID = domain.FeederLocal
+	}
 	engine := &Engine{
+		feeder:  feederID,
 		now:     time.Now,
 		publish: publish,
 		batch:   domain.AircraftBatch{Provider: domain.ProviderUnknown},
 	}
 	engine.current.Store(&domain.Snapshot{
+		FeederID:       feederID,
 		ActiveProvider: domain.ProviderUnknown,
 		Aircraft:       []domain.Aircraft{},
 		ByICAO:         map[string]int{},
@@ -285,6 +295,7 @@ func (engine *Engine) buildLocked(rebuildAircraft bool) *domain.Snapshot {
 		})
 	}
 	return &domain.Snapshot{
+		FeederID:            engine.feeder,
 		Sequence:            engine.sequence,
 		ActiveProvider:      engine.batch.Provider,
 		ProviderChangedAt:   engine.providerChangedAt,

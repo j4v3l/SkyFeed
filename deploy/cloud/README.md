@@ -11,12 +11,19 @@ Run one active SkyFeed process. A second process may exist only as an inactive
 standby. Shared PostgreSQL, a leadership lease, and an active-passive Gateway
 are intentionally not included until a multi-replica platform is selected.
 
-`skyfeed-agent` remains a non-running stub because no cloud platform requiring
-Pattern B has been selected. The project already contains the common Source
-boundary and the future agent envelope's mTLS identity, timestamp, payload
-limit, monotonic-sequence, and replay validation. Enabling the agent requires a
-separate transport threat model, certificate lifecycle, and failure test; it
-must never become a general LAN proxy.
+For invited community receivers, `skyfeed-agent` is the supported outbound-only
+pattern. An administrator creates an ephemeral one-time invitation with
+`/feeders invite`; the agent generates an Ed25519 key locally and enrolls over
+HTTPS. Each compressed normalized snapshot is signed and sequence-checked.
+The central ingress accepts only enrollment and snapshots and can never act as
+a general LAN proxy.
+
+Bind ingress to loopback (the default) behind a private mesh or authenticated
+HTTPS reverse proxy. `deploy/compose.ingress.yaml` enables the central listener
+without publishing it beyond `127.0.0.1:9091`; `deploy/compose.agent.yaml` runs
+the contributor-side process with a private persistent key directory. Community
+ingress remains disabled until an administrator explicitly enables it and
+creates the first invitation.
 
 Use the cloud platform's secret manager to mount the Discord token at
 `/run/secrets/discord_token`. Do not bake credentials into an image, Compose

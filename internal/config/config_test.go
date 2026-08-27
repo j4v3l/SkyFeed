@@ -91,6 +91,21 @@ func TestLoadWithGlobalCommandScope(t *testing.T) {
 	}
 }
 
+func TestLoadWithAgentIngressIsExplicitAndBounded(t *testing.T) {
+	environment := validEnvironment()
+	environment["SKYFEED_AGENT_ENABLED"] = "true"
+	environment["SKYFEED_AGENT_PUBLIC_URL"] = "https://mesh.example.test/skyfeed"
+	environment["SKYFEED_AGENT_ADDR"] = "127.0.0.1:19091"
+	environment["SKYFEED_AGENT_MAX_FEEDERS"] = "100"
+	cfg, err := LoadWith(mapLookup(environment), func(string) ([]byte, error) { return []byte("token"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AgentIngress.Enabled || cfg.AgentIngress.PublicURL == nil || cfg.AgentIngress.PublicURL.Scheme != "https" || cfg.AgentIngress.Addr != "127.0.0.1:19091" || cfg.AgentIngress.MaxFeeders != 100 {
+		t.Fatalf("agent ingress = %+v", cfg.AgentIngress)
+	}
+}
+
 func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -116,6 +131,12 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 		{name: "route without provider", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_ROUTE_ENABLED"] = "true" }, wantError: "requires"},
 		{name: "unsafe aircraft ttl", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_AIRCRAFT_TTL"] = "1h" }, wantError: "AIRCRAFT_TTL"},
 		{name: "insecure ADSBDB", mutate: func(values map[string]string) { values["SKYFEED_ADSBDB_BASE_URL"] = "http://api.adsbdb.com/v0" }, wantError: "HTTPS"},
+		{name: "agent without public URL", mutate: func(values map[string]string) { values["SKYFEED_AGENT_ENABLED"] = "true" }, wantError: "AGENT_PUBLIC_URL"},
+		{name: "agent insecure public URL", mutate: func(values map[string]string) {
+			values["SKYFEED_AGENT_ENABLED"] = "true"
+			values["SKYFEED_AGENT_PUBLIC_URL"] = "http://example.test"
+		}, wantError: "absolute HTTPS"},
+		{name: "agent excessive feeder count", mutate: func(values map[string]string) { values["SKYFEED_AGENT_MAX_FEEDERS"] = "251" }, wantError: "MAX_FEEDERS"},
 	}
 
 	for _, test := range tests {

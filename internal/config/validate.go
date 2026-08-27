@@ -85,6 +85,29 @@ func (cfg *Config) validateStatic() error {
 			errs = append(errs, errors.New("SKYFEED_PPROF_ADDR must bind to a loopback host"))
 		}
 	}
+	if cfg.AgentIngress.Enabled {
+		if cfg.DatabasePath == "" {
+			errs = append(errs, errors.New("SKYFEED_AGENT_ENABLED requires SQLite persistence"))
+		}
+		if err := validateAddress("SKYFEED_AGENT_ADDR", cfg.AgentIngress.Addr); err != nil {
+			errs = append(errs, err)
+		}
+		if cfg.AgentIngress.PublicURL == nil || cfg.AgentIngress.PublicURL.Scheme != "https" || cfg.AgentIngress.PublicURL.Host == "" || cfg.AgentIngress.PublicURL.User != nil || cfg.AgentIngress.PublicURL.RawQuery != "" || cfg.AgentIngress.PublicURL.Fragment != "" {
+			errs = append(errs, errors.New("SKYFEED_AGENT_PUBLIC_URL must be an absolute HTTPS URL when agent ingress is enabled"))
+		}
+	}
+	if cfg.AgentIngress.MaxFeeders < 1 || cfg.AgentIngress.MaxFeeders > 250 {
+		errs = append(errs, errors.New("SKYFEED_AGENT_MAX_FEEDERS must be between 1 and 250"))
+	}
+	if cfg.AgentIngress.Workers < 1 || cfg.AgentIngress.Workers > 16 {
+		errs = append(errs, errors.New("SKYFEED_AGENT_WORKERS must be between 1 and 16"))
+	}
+	if cfg.AgentIngress.Queue < 16 || cfg.AgentIngress.Queue > 2048 {
+		errs = append(errs, errors.New("SKYFEED_AGENT_QUEUE must be between 16 and 2048"))
+	}
+	if cfg.AgentIngress.MaxBodyBytes < 3<<20 || cfg.AgentIngress.MaxBodyBytes > 4<<20 {
+		errs = append(errs, errors.New("SKYFEED_AGENT_MAX_BODY_BYTES must be between 3145728 and 4194304"))
+	}
 	if !slices.Contains([]string{"debug", "info", "warn", "error"}, cfg.LogLevel) {
 		errs = append(errs, errors.New("SKYFEED_LOG_LEVEL must be debug, info, warn, or error"))
 	}

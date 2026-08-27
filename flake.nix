@@ -15,14 +15,13 @@
       supportedSystems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
         "aarch64-darwin"
       ];
       forAllSystems = nixpkgs.lib.genAttrs supportedSystems;
     in
     {
       overlays.default = final: prev: {
-        skyfeed = self.packages.${prev.system}.skyfeed;
+        skyfeed = self.packages.${prev.stdenv.hostPlatform.system}.skyfeed;
       };
 
       packages = forAllSystems (
@@ -51,10 +50,17 @@
           default = {
             type = "app";
             program = "${package}/bin/skyfeed";
+            meta.description = "Run the SkyFeed Discord bot";
           };
           skyfeed = {
             type = "app";
             program = "${package}/bin/skyfeed";
+            meta.description = "Run the SkyFeed Discord bot";
+          };
+          skyfeed-agent = {
+            type = "app";
+            program = "${package}/bin/skyfeed-agent";
+            meta.description = "Run the outbound SkyFeed LAN feeder agent";
           };
         }
       );
@@ -81,7 +87,7 @@
         }:
         import ./nix/modules/nixos {
           inherit lib pkgs;
-          defaultPackage = self.packages.${pkgs.system}.skyfeed;
+          defaultPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.skyfeed;
         };
 
       checks = forAllSystems (
@@ -92,7 +98,9 @@
         in
         {
           skyfeed-build = skyfeed;
-          flake-check = skyfeed;
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
+          nixos-service = import ./nix/tests/service.nix { inherit self pkgs; };
         }
       );
     };

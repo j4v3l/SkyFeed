@@ -34,6 +34,7 @@ type RouteSightingsObservation struct {
 
 type RouteSightingsBatch struct {
 	GuildID      uint64
+	FeederID     domain.FeederID
 	BucketStart  time.Time
 	Observations []RouteSightingsObservation
 }

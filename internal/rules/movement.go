@@ -27,6 +27,7 @@ const (
 	approachHeadingDeg    = 45.0
 	minimumRadialSpeedKts = 15.0
 	movementStaleAfter    = 30 * time.Minute
+	maxMovementTracks     = 1_000
 )
 
 type MovementConfig struct {
@@ -66,6 +67,34 @@ type MovementMonitor struct {
 	lastAt time.Time
 }
 
+func (monitor *MovementMonitor) StateLen() int {
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	return len(monitor.tracks)
+}
+
+func (monitor *MovementMonitor) pruneOldest(count int) int {
+	if count <= 0 {
+		return 0
+	}
+	monitor.mu.Lock()
+	defer monitor.mu.Unlock()
+	type candidate struct {
+		icao string
+		at   time.Time
+	}
+	values := make([]candidate, 0, len(monitor.tracks))
+	for icao, state := range monitor.tracks {
+		values = append(values, candidate{icao: icao, at: state.lastSeen})
+	}
+	sort.Slice(values, func(left, right int) bool { return values[left].at.Before(values[right].at) })
+	removed := min(count, len(values))
+	for index := 0; index < removed; index++ {
+		delete(monitor.tracks, values[index].icao)
+	}
+	return removed
+}
+
 func NewMovementMonitor(config MovementConfig) *MovementMonitor {
 	return &MovementMonitor{config: config, tracks: make(map[string]*movementState)}
 }
@@ -91,12 +120,15 @@ func (monitor *MovementMonitor) Evaluate(guildID uint64, snapshot *domain.Snapsh
 		if icao == "" {
 			continue
 		}
-		seen[icao] = struct{}{}
 		state := monitor.tracks[icao]
 		if state == nil {
+			if len(monitor.tracks) >= maxMovementTracks {
+				continue
+			}
 			state = &movementState{}
 			monitor.tracks[icao] = state
 		}
+		seen[icao] = struct{}{}
 		state.lastSeen = now
 		if !aircraft.HasPosition {
 			state.approachMatches = 0
@@ -244,6 +276,7 @@ func (monitor *MovementMonitor) evaluateDeparture(guildID uint64, aircraft domai
 	state.takeoffMatches = 0
 	state.lastTakeoff = now
 	state.groundNear = false
+	state.approaching = false
 	state.phase = domain.MovementDeparture
 	state.phaseAt = now
 	description := movementSentence("appears to be departing", monitor.config.AirportCode, aircraft, distance, verticalRate, hasVerticalRate,

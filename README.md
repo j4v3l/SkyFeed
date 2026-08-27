@@ -5,7 +5,7 @@
 [![Go](https://img.shields.io/badge/Go-1.27-00ADD8?logo=go&logoColor=white)](go.mod)
 [![GHCR](https://img.shields.io/badge/GHCR-skyfeed-blue?logo=github)](https://ghcr.io/j4v3l/skyfeed)
 
-**Local-first ADS-B Discord bot for a single [readsb](https://github.com/wiedehopf/readsb)/tar1090 feeder.**
+**Local-first ADS-B Discord bot with a private path for invited community [readsb](https://github.com/wiedehopf/readsb)/tar1090 feeders.**
 
 SkyFeed polls your receiver once per second, keeps immutable in-memory
 snapshots, evaluates indexed alert rules, and serves native Discord slash
@@ -27,6 +27,7 @@ Public policy pages: [Terms](https://skyfeed-policies.javel-palmer.chatgpt.site/
 - [Quick start (Docker)](#quick-start)
 - [Discord interface](#discord-interface)
 - [Aircraft sources and privacy](#aircraft-sources-and-privacy)
+- [Community feeders](#community-feeders)
 - [Route and airport enrichment](#route-and-airport-enrichment)
 - [Interesting aircraft](#interesting-aircraft-plane-alert-db)
 - [Operations](#operations)
@@ -60,10 +61,10 @@ leave the base URL ending in `/data`; do not assume `.local` mDNS works in the
 CGO-disabled image.
 
 The example profile enables `readsb,airplanes-live` with KPBI as the public
-fallback center and a 50 NM query radius. Discord, structured logs, health JSON,
-and metrics expose only the airport code (`KPBI`), never the configured center
-coordinates. Change `SKYFEED_PUBLIC_CENTER_*` only when you deliberately choose a
-different published airport reference—not a private receiver site.
+airport reference and a 50 NM query radius. Discord, structured logs, health
+JSON, and metrics expose only the airport code (`KPBI`), never the configured
+center coordinates. Change `SKYFEED_PUBLIC_CENTER_*` only when you deliberately
+choose a different published airport reference—not a private receiver site.
 
 ```sh
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml config
@@ -74,6 +75,21 @@ docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.ya
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml ps
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml logs -f skyfeed
 ```
+
+### Local airport weather and activity
+
+`SKYFEED_PUBLIC_CENTER_AIRPORT_CODE`, latitude, and longitude also enable the
+local-airport panel. This works with a readsb-only setup; `airplanes.live` is
+optional. Use the published location of the airport, never your receiver's
+location. The live dashboard includes a concise weather/activity update, and
+`/airport CODE` offers a mobile-friendly overview with **Weather report** and
+**Arrivals & departures** buttons.
+
+SkyFeed labels a movement only after three compatible local ADS-B samples. It
+uses distance from the airport, heading, motion toward/away, altitude,
+climb/descent, speed, and ground state to identify a *likely approach*, *likely
+departure*, or *likely landing*. These are useful local trends—not an official
+runway, arrival, or departure feed.
 
 Guild-scoped development commands synchronize idempotently at startup. A
 release operator may set `SKYFEED_DISCORD_GLOBAL_COMMANDS=true` after first
@@ -94,7 +110,7 @@ metrics bind only to `127.0.0.1:9090` on the host.
 SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
 `/airline`, `/squawk`, `/emergency`, `/traffic`, `/top live`, `/top traffic`,
 `/privacy`, `/preferences units`, `/watch`, `/alerts`, `/reports`, `/audit`,
-`/feeder`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
+`/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
 message context menu. Aircraft results begin with a concise card; invoker-bound
 **Details**, **Track**, **Route / Weather**, **Watch**, **Refresh**, and **Close**
 actions reveal more only when requested. Track plots are generated locally from
@@ -164,6 +180,45 @@ only asynchronously cached ADSBDB metadata; they can never become emergencies.
 Movement alerts require three consecutive compatible observations and are
 labeled **likely takeoff**, **likely landing**, or **approach trend** because
 they are inferred from ADS-B movement rather than authoritative airport events.
+
+## Community feeders
+
+SkyFeed keeps one Discord Gateway and one SQLite database, but can combine the
+local receiver with up to 100 administrator-invited community receivers. The
+default dashboard is a deduplicated **All feeders** view; supported commands
+offer a feeder selector, and component sessions retain that scope. Landing,
+departure, weather, rules, reports, and health remain isolated per feeder.
+
+Community receivers are never exposed to SkyFeed or the internet. A
+`skyfeed-agent` process polls readsb on the contributor's LAN, removes receiver
+coordinates, compresses a normalized snapshot, signs it with an agent-generated
+Ed25519 key, and sends it outbound. The central service stores only the public
+key and durable replay sequence. It accepts no proxy or arbitrary URL command.
+
+An Admin with Manage Server creates an ephemeral 15-minute invitation using
+`/feeders invite`. Other `/feeders` actions rename approved public metadata,
+set the public airport/weather station, pause, rotate, revoke, test, or choose a
+default view. Ordinary members see only approved public summaries.
+
+Central ingress remains disabled by default. To put a private HTTPS reverse
+proxy or mesh endpoint in front of loopback port 9091:
+
+```sh
+docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml -f deploy/compose.ingress.yaml up -d
+```
+
+On the contributor's LAN, place the one-time code in
+`secrets/agent_enrollment` with mode `0600`, set
+`SKYFEED_AGENT_SERVER_URL` and the local `SKYFEED_ADSB_BASE_URL`, then run:
+
+```sh
+docker compose -f deploy/compose.agent.yaml up -d
+```
+
+The agent keeps at most five latest-value snapshots during an outage. Redis is
+intentionally absent: SQLite is authoritative for configuration and enrollment,
+while bounded live state stays in memory. Redis is reconsidered only if SkyFeed
+later runs multiple active application replicas with shared leadership.
 
 ## Aircraft sources and privacy
 

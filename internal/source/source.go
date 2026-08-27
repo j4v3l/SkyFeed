@@ -11,6 +11,7 @@ import (
 )
 
 type Frame[T any] struct {
+	FeederID  domain.FeederID
 	FetchedAt time.Time
 	Provider  domain.ProviderID
 	Value     T

@@ -6,11 +6,39 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
 type batchSinkStub struct {
 	mu     sync.Mutex
 	events []WriteEvent
+}
+
+func TestWriterNeverCoalescesDifferentFeederScopes(t *testing.T) {
+	sink := &retryBatchSink{}
+	writer := NewWriter(sink, 8, 8, time.Hour)
+	writer.rollupFlush = time.Millisecond
+	now := time.Unix(1_700_000_000, 0).UTC()
+	for _, scope := range []domain.FeederID{"east", "west"} {
+		if err := writer.Enqueue(WriteEvent{Kind: WriteReportRollup, Rollup: ReportRollup{GuildID: 1, FeederScope: scope, BucketStart: now, AircraftObservations: 1}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- writer.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for writer.Stats().Written < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if writer.Stats().Written != 2 || writer.Stats().Coalesced != 0 {
+		t.Fatalf("writer stats = %+v", writer.Stats())
+	}
 }
 
 type retryBatchSink struct {

@@ -17,6 +17,7 @@ func TestStoreSamplesBoundsAndSummarizes(t *testing.T) {
 		observedAt := now.Add(time.Duration(index) * 5 * time.Second)
 		store.Observe(&domain.Snapshot{PublishedAt: observedAt, Aircraft: []domain.Aircraft{{
 			ICAO: "ABC123", HasDistance: true, DistanceNM: 50 - float64(index)/10, BearingDegrees: 45,
+			HasPosition: true, Latitude: 26 + float64(index)/10_000, Longitude: -80 + float64(index)/10_000,
 			HasAltitude: true, AltitudeFeet: 10_000 + index*10,
 		}}})
 	}
@@ -38,6 +39,31 @@ func TestStoreSamplesBoundsAndSummarizes(t *testing.T) {
 	imageValue, err := png.Decode(bytes.NewReader(data))
 	if err != nil || imageValue.Bounds().Dx() != plotSize || imageValue.Bounds().Dy() != plotSize {
 		t.Fatalf("invalid PNG: %v bounds=%v", err, imageValue.Bounds())
+	}
+}
+
+func TestTrackUsesAbsolutePositionAcrossFeederSwitches(t *testing.T) {
+	store := NewStore()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	store.clock = func() time.Time { return now.Add(15 * time.Second) }
+	for index, sample := range []domain.Aircraft{
+		{ICAO: "ABC123", HasDistance: true, DistanceNM: 2, BearingDegrees: 20, HasPosition: true, Latitude: 26.00, Longitude: -80.00},
+		{ICAO: "ABC123", HasDistance: true, DistanceNM: 80, BearingDegrees: 250, HasPosition: true, Latitude: 26.01, Longitude: -79.99},
+		{ICAO: "ABC123", HasDistance: true, DistanceNM: 3, BearingDegrees: 40, HasPosition: true, Latitude: 26.02, Longitude: -79.98},
+	} {
+		store.Observe(&domain.Snapshot{PublishedAt: now.Add(time.Duration(index) * 5 * time.Second), Aircraft: []domain.Aircraft{sample}})
+	}
+	points, err := store.points("ABC123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinates := plotCoordinates(points, plotSize/2)
+	if len(coordinates) != 3 || coordinates[0].X >= coordinates[1].X || coordinates[1].X >= coordinates[2].X {
+		t.Fatalf("absolute track should progress smoothly east: %#v", coordinates)
+	}
+	summary, err := store.Summary("ABC123")
+	if err != nil || summary.Direction != "tracking NE" {
+		t.Fatalf("summary=%+v err=%v", summary, err)
 	}
 }
 

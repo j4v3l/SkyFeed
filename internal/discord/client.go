@@ -27,19 +27,20 @@ import (
 type ReadyFunc func(bool)
 
 type GatewayService struct {
-	config              config.Discord
-	router              *Router
-	logger              *slog.Logger
-	onReady             ReadyFunc
-	repository          storage.Repository
-	outbound            *OutboundScheduler
-	client              atomic.Pointer[bot.Client]
-	dashboardInterval   time.Duration
-	reportInterval      time.Duration
-	adminDigestInterval time.Duration
-	interactionMetric   func(time.Duration)
-	cooldownMu          sync.Mutex
-	lastDelivered       map[string]time.Time
+	config                   config.Discord
+	router                   *Router
+	logger                   *slog.Logger
+	onReady                  ReadyFunc
+	repository               storage.Repository
+	outbound                 *OutboundScheduler
+	client                   atomic.Pointer[bot.Client]
+	dashboardInterval        time.Duration
+	reportInterval           time.Duration
+	adminDigestInterval      time.Duration
+	interactionMetric        func(time.Duration)
+	interactionHandlerMetric func(time.Duration)
+	cooldownMu               sync.Mutex
+	lastDelivered            map[string]time.Time
 }
 
 func NewGatewayService(cfg config.Discord, router *Router, logger *slog.Logger, onReady ReadyFunc) *GatewayService {
@@ -94,6 +95,10 @@ func (service *GatewayService) SetAdminDigestInterval(interval time.Duration) {
 
 func (service *GatewayService) SetInteractionObserver(observer func(time.Duration)) {
 	service.interactionMetric = observer
+}
+
+func (service *GatewayService) SetInteractionHandlerObserver(observer func(time.Duration)) {
+	service.interactionHandlerMetric = observer
 }
 
 func (service *GatewayService) GuildMember(ctx context.Context, guildID, userID uint64) (GuildMemberInfo, error) {
@@ -608,14 +613,34 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
 	now := time.Now()
-	embed := render.StatusWithUnits(service.router.snapshots.Current(), time.Since(service.router.startedAt), now, service.router.enrichment != nil, units)
+	snapshot := service.router.snapshots.Current()
+	embed := render.StatusWithUnits(snapshot, time.Since(service.router.startedAt), now, service.router.enrichment != nil, units)
 	if airportCode := strings.ToUpper(strings.TrimSpace(service.router.privacy.PublicAirportCode)); airportCode != "" {
 		weather := service.router.lookupWeatherView(airportCode)
-		activity := domain.AirportActivity{}
-		if service.router.activity != nil {
-			activity = service.router.activity.Activity()
+		if snapshot != nil && snapshot.FeederID == domain.FeederAll && len(snapshot.Feeders) > 1 {
+			embed = render.WithAirportWeather(embed, airportCode, weather, units, now)
+		} else {
+			activity := domain.AirportActivity{}
+			if service.router.activity != nil {
+				activity = service.router.activity.Activity()
+				if scoped, ok := service.router.activity.(FeederAirportActivityProvider); ok {
+					activity = scoped.ActivityFor(domain.FeederLocal)
+				}
+			}
+			embed = render.WithAirportUpdate(embed, airportCode, weather, activity, units, now)
 		}
-		embed = render.WithAirportUpdate(embed, airportCode, weather, activity, units, now)
+	}
+	if snapshot != nil && snapshot.FeederID == domain.FeederAll && len(snapshot.Feeders) > 1 {
+		if scoped, ok := service.router.activity.(FeederAirportActivityProvider); ok {
+			views := make([]render.CommunityActivityView, 0, len(snapshot.Feeders))
+			for _, feeder := range snapshot.Feeders {
+				if !feeder.Enabled {
+					continue
+				}
+				views = append(views, render.CommunityActivityView{Area: feeder.PublicArea, Airport: feeder.AirportICAO, Activity: scoped.ActivityFor(feeder.ID)})
+			}
+			embed = render.WithCommunityActivity(embed, views, now)
+		}
 	}
 	message := render.SafeMessage(embed, false)
 	binding, found, err := service.repository.MessageBinding(ctx, guildID, "dashboard")
@@ -800,7 +825,9 @@ func (service *GatewayService) markDelivered(key string, now time.Time) {
 func (service *GatewayService) commandEvent(event *events.ApplicationCommandInteractionCreate) {
 	started := time.Now()
 	request, commandName := service.applicationCommandRequest(event)
-	responder := eventResponder{create: event.CreateMessage}
+	responseOnce := &sync.Once{}
+	beforeResponse := func() { responseOnce.Do(func() { service.observeInteractionHandler(started) }) }
+	responder := eventResponder{create: event.CreateMessage, beforeResponse: beforeResponse}
 	observed := false
 	defer func() {
 		if !observed {
@@ -808,6 +835,7 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 		}
 	}()
 	if shouldDeferCommand(request) {
+		beforeResponse()
 		if err := event.DeferCreateMessage(deferredEphemeral(request)); err != nil {
 			service.logInteractionError("command_defer", commandName, err)
 			return
@@ -844,6 +872,8 @@ func (service *GatewayService) applicationCommandRequest(event *events.Applicati
 
 func (service *GatewayService) componentEvent(event *events.ComponentInteractionCreate) {
 	started := time.Now()
+	responseOnce := &sync.Once{}
+	beforeResponse := func() { responseOnce.Do(func() { service.observeInteractionHandler(started) }) }
 	request := ComponentRequest{CustomID: event.Data.CustomID(), UserID: uint64(event.User().ID), GuildID: guildID(event.GuildID()), ChannelID: channelID(event.Channel())}
 	if member := event.Member(); member != nil {
 		request.Permissions = member.Permissions
@@ -856,9 +886,10 @@ func (service *GatewayService) componentEvent(event *events.ComponentInteraction
 	if data, ok := event.Data.(disgocord.StringSelectMenuInteractionData); ok {
 		request.Values = append([]string(nil), data.Values...)
 	}
-	responder := eventResponder{create: event.CreateMessage, update: event.UpdateMessage, modal: event.Modal}
+	responder := eventResponder{create: event.CreateMessage, update: event.UpdateMessage, modal: event.Modal, beforeResponse: beforeResponse}
 	_, action, parseErr := ParseCustomID(request.CustomID)
 	if parseErr == nil && action == "moderate-confirm" {
+		beforeResponse()
 		if err := event.DeferUpdateMessage(); err != nil {
 			service.logInteractionError("component_defer", request.CustomID, err)
 			service.observeInteraction(started)
@@ -874,6 +905,7 @@ func (service *GatewayService) componentEvent(event *events.ComponentInteraction
 			return updateResponse(messageUpdate(message), opts...)
 		}
 	} else if request.GuildID == 0 {
+		beforeResponse()
 		if err := event.DeferCreateMessage(true); err != nil {
 			service.logInteractionError("component_defer", request.CustomID, err)
 			service.observeInteraction(started)
@@ -905,7 +937,7 @@ func (service *GatewayService) autocompleteEvent(event *events.AutocompleteInter
 		query = focused.String()
 		option = focused.Name
 	}
-	responder := eventResponder{autocomplete: event.AutocompleteResult}
+	responder := eventResponder{autocomplete: event.AutocompleteResult, beforeResponse: func() { service.observeInteractionHandler(started) }}
 	request := AutocompleteRequest{Name: event.Data.CommandName, Option: option, Query: query, UserID: uint64(event.User().ID), GuildID: guildID(event.GuildID())}
 	if event.Data.SubCommandName != nil {
 		request.Subcommand = *event.Data.SubCommandName
@@ -917,6 +949,7 @@ func (service *GatewayService) autocompleteEvent(event *events.AutocompleteInter
 
 func (service *GatewayService) modalEvent(event *events.ModalSubmitInteractionCreate) {
 	started := time.Now()
+	service.observeInteractionHandler(started)
 	if err := event.DeferCreateMessage(true); err != nil {
 		service.logInteractionError("modal_defer", event.Data.CustomID, err)
 		return
@@ -965,6 +998,12 @@ func (service *GatewayService) observeInteraction(started time.Time) {
 	}
 }
 
+func (service *GatewayService) observeInteractionHandler(started time.Time) {
+	if service.interactionHandlerMetric != nil {
+		service.interactionHandlerMetric(time.Since(started))
+	}
+}
+
 func (service *GatewayService) logInteractionError(kind, name string, err error) {
 	service.logger.Error("Discord interaction failed", "component", "discord", "event", "interaction_error", "kind", kind, "name", name, "error", err)
 }
@@ -994,7 +1033,7 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 	if data.SubCommandGroupName != nil {
 		request.Group = *data.SubCommandGroupName
 	}
-	for _, key := range []string{"query", "sort", "kind", "value", "rule", "category", "period", "cadence", "purpose", "tier", "reason", "duration", "user-id", "flight", "code", "metric", "squawk"} {
+	for _, key := range []string{"query", "sort", "kind", "value", "rule", "category", "period", "cadence", "purpose", "tier", "reason", "duration", "user-id", "flight", "code", "metric", "squawk", "feeder", "name", "area", "airport", "station"} {
 		if value, ok := data.OptString(key); ok {
 			request.Strings[key] = value
 		}
@@ -1004,8 +1043,10 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 			request.Ints[key] = value
 		}
 	}
-	if value, ok := data.OptFloat("radius-nm"); ok {
-		request.Floats["radius-nm"] = value
+	for _, key := range []string{"radius-nm", "latitude", "longitude"} {
+		if value, ok := data.OptFloat(key); ok {
+			request.Floats[key] = value
+		}
 	}
 	for _, key := range []string{"server", "enabled"} {
 		if value, ok := data.OptBool(key); ok {
@@ -1020,6 +1061,9 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 	if value, ok := data.OptUser("user"); ok {
 		request.IDs["user"] = uint64(value.ID)
 	}
+	if value, ok := data.OptUser("owner"); ok {
+		request.IDs["owner"] = uint64(value.ID)
+	}
 	if value, ok := data.OptRole("role"); ok {
 		request.IDs["role"] = uint64(value.ID)
 	}
@@ -1027,15 +1071,19 @@ func commandRequest(interaction disgocord.ApplicationCommandInteraction, data di
 }
 
 type eventResponder struct {
-	create       func(disgocord.MessageCreate, ...rest.RequestOpt) error
-	update       func(disgocord.MessageUpdate, ...rest.RequestOpt) error
-	modal        func(disgocord.ModalCreate, ...rest.RequestOpt) error
-	autocomplete func([]disgocord.AutocompleteChoice, ...rest.RequestOpt) error
+	create         func(disgocord.MessageCreate, ...rest.RequestOpt) error
+	update         func(disgocord.MessageUpdate, ...rest.RequestOpt) error
+	modal          func(disgocord.ModalCreate, ...rest.RequestOpt) error
+	autocomplete   func([]disgocord.AutocompleteChoice, ...rest.RequestOpt) error
+	beforeResponse func()
 }
 
 func (responder eventResponder) CreateMessage(message disgocord.MessageCreate) error {
 	if responder.create == nil {
 		return errors.New("message response is unavailable for this interaction")
+	}
+	if responder.beforeResponse != nil {
+		responder.beforeResponse()
 	}
 	return responder.create(message)
 }
@@ -1044,6 +1092,9 @@ func (responder eventResponder) UpdateMessage(message disgocord.MessageUpdate) e
 	if responder.update == nil {
 		return errors.New("message update is unavailable for this interaction")
 	}
+	if responder.beforeResponse != nil {
+		responder.beforeResponse()
+	}
 	return responder.update(message)
 }
 
@@ -1051,12 +1102,18 @@ func (responder eventResponder) ShowModal(modal disgocord.ModalCreate) error {
 	if responder.modal == nil {
 		return errors.New("modal response is unavailable for this interaction")
 	}
+	if responder.beforeResponse != nil {
+		responder.beforeResponse()
+	}
 	return responder.modal(modal)
 }
 
 func (responder eventResponder) Autocomplete(choices []disgocord.AutocompleteChoice) error {
 	if responder.autocomplete == nil {
 		return errors.New("autocomplete response is unavailable for this interaction")
+	}
+	if responder.beforeResponse != nil {
+		responder.beforeResponse()
 	}
 	return responder.autocomplete(choices)
 }

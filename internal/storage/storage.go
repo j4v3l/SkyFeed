@@ -2,19 +2,53 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
+var (
+	ErrEnrollmentInvalid = errors.New("feeder enrollment is invalid, expired, consumed, or revoked")
+	ErrSequenceRejected  = errors.New("feeder sequence was rejected")
+)
+
+type Feeder struct {
+	Descriptor      domain.FeederDescriptor
+	GuildID         uint64
+	OwnerUserID     uint64
+	PublicKey       []byte
+	LastSequence    uint64
+	LastPayloadHash []byte
+	LastSeenAt      time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+}
+
+type FeederEnrollment struct {
+	TokenHash []byte
+	FeederID  domain.FeederID
+	ExpiresAt time.Time
+	CreatedAt time.Time
+}
+
+type SequenceAcceptance uint8
+
+const (
+	SequenceAccepted SequenceAcceptance = iota
+	SequenceDuplicate
+	SequenceRejected
+)
+
 type GuildSettings struct {
-	GuildID      uint64
-	Units        string
-	Timezone     string
-	AlertsPaused bool
-	MutedSquawks string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	GuildID         uint64
+	Units           string
+	Timezone        string
+	AlertsPaused    bool
+	MutedSquawks    string
+	DefaultFeederID domain.FeederID
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type UserPreference struct {
@@ -64,6 +98,7 @@ type ModerationLog struct {
 
 type FeederEvent struct {
 	GuildID  uint64
+	FeederID domain.FeederID
 	Kind     string
 	Status   string
 	Detail   string
@@ -72,6 +107,7 @@ type FeederEvent struct {
 
 type ReportRollup struct {
 	GuildID               uint64
+	FeederScope           domain.FeederID
 	BucketStart           time.Time
 	AircraftObservations  int64
 	Messages              int64
@@ -154,6 +190,13 @@ type Repository interface {
 	EnsureGuild(context.Context, uint64) error
 	UpsertGuildSettings(context.Context, GuildSettings) error
 	GuildSettings(context.Context, uint64) (GuildSettings, error)
+	UpsertFeeder(context.Context, Feeder) error
+	Feeder(context.Context, domain.FeederID) (Feeder, error)
+	Feeders(context.Context, uint64, int) ([]Feeder, error)
+	CreateFeederEnrollment(context.Context, FeederEnrollment) error
+	ConsumeFeederEnrollment(context.Context, []byte, []byte, time.Time) (Feeder, error)
+	RevokeFeeder(context.Context, domain.FeederID, time.Time) error
+	AcceptFeederSequence(context.Context, domain.FeederID, uint64, []byte, time.Time) (SequenceAcceptance, error)
 	UpsertUserPreference(context.Context, UserPreference) error
 	UserPreference(context.Context, uint64, uint64) (UserPreference, error)
 	UpsertChannelBinding(context.Context, ChannelBinding) error
@@ -178,6 +221,7 @@ type Repository interface {
 	ReportSchedules(context.Context, uint64) ([]ReportSchedule, error)
 	MarkReportScheduleRun(context.Context, int64, uint64, time.Time) error
 	ReportSummary(context.Context, uint64, time.Time, time.Time) (ReportSummary, error)
+	ReportSummaryForScope(context.Context, uint64, domain.FeederID, time.Time, time.Time) (ReportSummary, error)
 	UpsertMessageBinding(context.Context, MessageBinding) error
 	MessageBinding(context.Context, uint64, string) (MessageBinding, bool, error)
 	DeleteMessageBinding(context.Context, uint64, string) error
@@ -197,6 +241,7 @@ type Repository interface {
 	PurgeModerationCases(context.Context, time.Time, int) (int64, error)
 	RecordRouteSightings(context.Context, RouteSightingsBatch) error
 	TopRouteRankings(context.Context, uint64, string, string, int, string) ([]RouteRankingRow, error)
+	TopRouteRankingsForScope(context.Context, uint64, domain.FeederID, string, string, int, string) ([]RouteRankingRow, error)
 	RouteTrafficCounts(context.Context, uint64, time.Time) (RouteTrafficCounts, error)
 	AdminDigestLastRun(context.Context, uint64) (time.Time, error)
 	MarkAdminDigestRun(context.Context, uint64, time.Time) error

@@ -31,6 +31,11 @@ type WeatherProvider interface {
 	Lookup(ctx context.Context, icao string) (aviationweather.Observation, error)
 }
 
+type WeatherStationProvider interface {
+	WeatherProvider
+	LookupAt(ctx context.Context, requestedICAO, reportingStationICAO string) (aviationweather.Observation, error)
+}
+
 type DirectoryProvider interface {
 	LookupAirline(ctx context.Context, code string) (domain.Airline, error)
 	LookupCallsign(ctx context.Context, callsign string) (domain.Enrichment, error)
@@ -86,12 +91,16 @@ func (router *Router) handleRoute(request CommandRequest, responder InteractionR
 }
 
 func (router *Router) handleAirport(request CommandRequest, responder InteractionResponder) error {
-	if router.routes == nil {
-		return responder.CreateMessage(errorMessage("Airport enrichment is not configured."))
-	}
 	code := strings.ToUpper(strings.TrimSpace(request.Strings["code"]))
 	if _, ok := enrichment.NormalizeAirportCode(code); !ok {
 		return responder.CreateMessage(errorMessage("Enter a valid four-character ICAO airport code."))
+	}
+	if router.routes == nil {
+		message, err := router.newAirportMessage(request, domain.Airport{ICAO: code})
+		if err != nil {
+			return responder.CreateMessage(errorMessage(err.Error()))
+		}
+		return responder.CreateMessage(message)
 	}
 	airport, found, err := router.routes.CachedAirport(code)
 	if err != nil {
@@ -104,7 +113,11 @@ func (router *Router) handleAirport(request CommandRequest, responder Interactio
 		defer cancel()
 		airport, err = router.routes.LookupAirport(lookupContext, code)
 		if errors.Is(err, enrichment.ErrNotFound) {
-			return responder.UpdateMessage(messageUpdate(errorMessage("No airport data is available for that code right now.")))
+			message, messageErr := router.newAirportMessage(request, domain.Airport{ICAO: code})
+			if messageErr != nil {
+				return responder.UpdateMessage(messageUpdate(errorMessage(messageErr.Error())))
+			}
+			return responder.UpdateMessage(messageUpdate(message))
 		}
 		if err != nil {
 			return responder.UpdateMessage(messageUpdate(errorMessage("Airport lookup is temporarily unavailable. Try again shortly.")))
@@ -129,6 +142,7 @@ func (router *Router) newAirportMessage(request CommandRequest, airport domain.A
 		return disgocord.MessageCreate{}, errors.New("too many active views; close an older SkyFeed view and try again")
 	}
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
 		return disgocord.MessageCreate{}, err
 	}
@@ -141,10 +155,17 @@ func (router *Router) airportMessage(session Session, airport domain.Airport) di
 	overviewID, _ := CustomID(session.ID, "overview")
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
-	weather := router.lookupWeatherView(session.Query)
+	weatherStation := ""
+	if feeder, ok := router.feederDescriptor(session.FeederID); ok {
+		weatherStation = feeder.WeatherStationICAO
+	}
+	weather := router.lookupWeatherViewAt(session.Query, weatherStation)
 	activity := domain.AirportActivity{}
 	if router.activity != nil {
 		candidate := router.activity.Activity()
+		if scoped, ok := router.activity.(FeederAirportActivityProvider); ok {
+			candidate = scoped.ActivityFor(session.FeederID)
+		}
 		if strings.EqualFold(candidate.AirportCode, session.Query) {
 			activity = candidate
 		}
@@ -160,12 +181,22 @@ func (router *Router) airportMessage(session Session, airport domain.Airport) di
 }
 
 func (router *Router) lookupWeatherView(code string) render.WeatherView {
+	return router.lookupWeatherViewAt(code, "")
+}
+
+func (router *Router) lookupWeatherViewAt(code, reportingStation string) render.WeatherView {
 	if router.weather == nil {
 		return render.WeatherView{METARStatus: "unavailable", TAFStatus: "unavailable", UpstreamFailed: true}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	observation, err := router.weather.Lookup(ctx, code)
+	var observation aviationweather.Observation
+	var err error
+	if provider, ok := router.weather.(WeatherStationProvider); ok && strings.TrimSpace(reportingStation) != "" {
+		observation, err = provider.LookupAt(ctx, code, reportingStation)
+	} else {
+		observation, err = router.weather.Lookup(ctx, code)
+	}
 	if err != nil {
 		return render.WeatherView{METARStatus: "unavailable", TAFStatus: "unavailable", UpstreamFailed: true}
 	}
@@ -174,12 +205,14 @@ func (router *Router) lookupWeatherView(code string) render.WeatherView {
 		clouds = append(clouds, render.WeatherCloudView{Cover: cloud.Cover, BaseFeet: cloud.BaseFeet, HasBase: cloud.HasBase})
 	}
 	return render.WeatherView{
+		RequestedICAO: observation.RequestedICAO, ReportingICAO: observation.ReportingICAO,
+		StationStatus: observation.StationStatus, StationDistanceNM: observation.StationDistanceNM, HasStationDistance: observation.HasStationDistance,
 		METAR: observation.METAR, TAF: observation.TAF, FlightCategory: observation.FlightCategory,
-		METARStatus: observation.METARStatus, TAFStatus: observation.TAFStatus, FetchedAt: observation.FetchedAt,
+		METARStatus: observation.METARStatus, TAFStatus: observation.TAFStatus, ObservedAt: observation.ObservedAt, FetchedAt: observation.FetchedAt,
 		Stale: observation.Stale, Attribution: observation.Attribution,
 		WindDirectionDegrees: observation.WindDirectionDegrees, WindVariable: observation.WindVariable,
 		WindSpeedKts: observation.WindSpeedKts, WindGustKts: observation.WindGustKts, HasWind: observation.HasWind,
-		VisibilitySM: observation.VisibilitySM, VisibilityAtLeast: observation.VisibilityAtLeast, HasVisibility: observation.HasVisibility,
+		VisibilitySM: observation.VisibilitySM, VisibilityAtLeast: observation.VisibilityAtLeast, VisibilityLessThan: observation.VisibilityLessThan, HasVisibility: observation.HasVisibility,
 		TemperatureC: observation.TemperatureC, DewpointC: observation.DewpointC,
 		HasTemperature: observation.HasTemperature, HasDewpoint: observation.HasDewpoint,
 		AltimeterInHg: observation.AltimeterInHg, HasAltimeter: observation.HasAltimeter,
@@ -279,6 +312,7 @@ func (router *Router) handleSquawk(request CommandRequest, responder Interaction
 	}
 	session.PageSize = 10
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
 		return err
 	}
@@ -296,6 +330,7 @@ func (router *Router) handleEmergency(request CommandRequest, responder Interact
 	}
 	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
 		return err
 	}
@@ -326,6 +361,7 @@ func (router *Router) handleTraffic(request CommandRequest, responder Interactio
 	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
 	session.RadiusNM = radius
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
+	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
 		return err
 	}
@@ -362,7 +398,7 @@ func (router *Router) handleRouteTop(request CommandRequest, responder Interacti
 	period := normalizedRouteRankingPeriod(request.Strings["period"])
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	rows, err := router.repository.TopRouteRankings(ctx, request.GuildID, metric, period, limit, router.domesticCountryISO)
+	rows, err := router.repository.TopRouteRankingsForScope(ctx, request.GuildID, requestFeederID(request), metric, period, limit, router.domesticCountryISO)
 	if err != nil {
 		return router.respondError(responder, err.Error())
 	}

@@ -41,7 +41,7 @@ func (router *Router) handleWatch(request CommandRequest, responder InteractionR
 		if bestEffort {
 			minimum = 1
 		}
-		rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, ServerScope: serverScope, Type: kind, Value: value, Enabled: true, Cooldown: 15 * time.Minute, MinimumObservations: minimum, BestEffortEnrichment: bestEffort})
+		rule, err := router.repository.CreateWatchRule(ctx, domain.WatchRule{GuildID: request.GuildID, UserID: request.UserID, ServerScope: serverScope, FeederScope: requestFeederID(request), Type: kind, Value: value, Enabled: true, Cooldown: 15 * time.Minute, MinimumObservations: minimum, BestEffortEnrichment: bestEffort})
 		if err != nil {
 			return responder.CreateMessage(errorMessage("The watch rule could not be saved."))
 		}
@@ -56,7 +56,11 @@ func (router *Router) handleWatch(request CommandRequest, responder InteractionR
 		if len(rules) == 0 {
 			embed.Description = "No personal or server watch rules are configured."
 		}
+		selected := requestFeederID(request)
 		for _, rule := range rules {
+			if selected != domain.FeederAll && rule.FeederScope != selected {
+				continue
+			}
 			state := "disabled"
 			if rule.Enabled {
 				state = "enabled"
@@ -65,7 +69,7 @@ func (router *Router) handleWatch(request CommandRequest, responder InteractionR
 			if rule.ServerScope {
 				scope = "server"
 			}
-			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: fmt.Sprintf("#%d • %s", rule.ID, rule.Type), Value: fmt.Sprintf("%s • %s • %s", rule.Value, scope, state)})
+			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: fmt.Sprintf("#%d • %s", rule.ID, rule.Type), Value: fmt.Sprintf("%s • %s • %s • feeder: %s", rule.Value, scope, state, rule.FeederScope)})
 		}
 		return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
 	case "remove", "enable", "disable":
@@ -163,7 +167,11 @@ func (router *Router) handleReports(request CommandRequest, responder Interactio
 			return responder.CreateMessage(errorMessage("Choose a valid bounded report period."))
 		}
 		to := router.now().UTC()
-		summary, err := router.repository.ReportSummary(ctx, request.GuildID, to.Add(-period), to)
+		feederScope := requestFeederID(request)
+		if feederScope != domain.FeederAll && !feederScope.Valid() {
+			return responder.CreateMessage(errorMessage("Choose a valid approved feeder."))
+		}
+		summary, err := router.repository.ReportSummaryForScope(ctx, request.GuildID, feederScope, to.Add(-period), to)
 		if err != nil {
 			return responder.CreateMessage(errorMessage("The report could not be generated."))
 		}
