@@ -18,9 +18,9 @@ buildGoModule {
   ldflags = [
     "-s"
     "-w"
-    "-X github.com/j4v3l/SkyFeed/internal/app.Version=${versionInfo}"
-    "-X github.com/j4v3l/SkyFeed/internal/app.Commit=${self.rev or "unknown"}"
-    "-X github.com/j4v3l/SkyFeed/internal/app.BuildDate=${buildDate}"
+    "-X github.com/j4v3l/SkyFeed/internal/buildinfo.Version=${versionInfo}"
+    "-X github.com/j4v3l/SkyFeed/internal/buildinfo.Commit=${self.rev or "unknown"}"
+    "-X github.com/j4v3l/SkyFeed/internal/buildinfo.BuildDate=${buildDate}"
   ];
 
   subPackages = [

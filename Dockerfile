@@ -18,11 +18,11 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -tags timetzdata -trimpath \
-    -ldflags="-s -w -X github.com/j4v3l/SkyFeed/internal/app.Version=${VERSION} -X github.com/j4v3l/SkyFeed/internal/app.Commit=${COMMIT} -X github.com/j4v3l/SkyFeed/internal/app.BuildDate=${BUILD_DATE}" \
+    -ldflags="-s -w -X github.com/j4v3l/SkyFeed/internal/buildinfo.Version=${VERSION} -X github.com/j4v3l/SkyFeed/internal/buildinfo.Commit=${COMMIT} -X github.com/j4v3l/SkyFeed/internal/buildinfo.BuildDate=${BUILD_DATE}" \
     -o /out/skyfeed ./cmd/skyfeed && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -tags timetzdata -trimpath \
-    -ldflags="-s -w -X github.com/j4v3l/SkyFeed/internal/app.Version=${VERSION} -X github.com/j4v3l/SkyFeed/internal/app.Commit=${COMMIT} -X github.com/j4v3l/SkyFeed/internal/app.BuildDate=${BUILD_DATE}" \
+    -ldflags="-s -w -X github.com/j4v3l/SkyFeed/internal/buildinfo.Version=${VERSION} -X github.com/j4v3l/SkyFeed/internal/buildinfo.Commit=${COMMIT} -X github.com/j4v3l/SkyFeed/internal/buildinfo.BuildDate=${BUILD_DATE}" \
     -o /out/skyfeed-agent ./cmd/skyfeed-agent
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab

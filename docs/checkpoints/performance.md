@@ -1,7 +1,7 @@
 # Performance evidence
 
 - Host: Apple M3 Pro, darwin/arm64, Go 1.27.0
-- Date: 2026-08-25
+- Date: 2026-08-27
 - Samples: five Go benchmark runs unless noted; longer one-second samples were
   used for the state pipeline and seven samples for the mixed-rule/render paths
 
@@ -19,6 +19,9 @@
 | Render layered aircraft card | 1.547–1.813 µs/op | 1,088 B, 51 allocs |
 | ADSBDB cache hit | 67.33–69.31 ns/op | 0 B, 0 allocs |
 | SQLite rollup upsert | 22.60–24.41 µs/op | 448–449 B, 8 allocs |
+| Publish one 1,000-aircraft feeder snapshot | 90.10–103.3 ns/op | 768 B, 1 alloc |
+| Aggregate 100 feeders × 250 observations | 8.566–8.962 ms/op | 13,765,430–13,767,982 B, 75,818–75,829 allocs |
+| Stress aggregate 100 feeders × 1,000 observations | 43.39–44.67 ms/op | 56,241,004–56,247,012 B, 309,412 allocs |
 
 The measured means have substantial margin against the 25 ms snapshot and
 10 ms rule targets, including the representative mixed rule set after compiled
@@ -31,6 +34,13 @@ The 10× HTTP fixture replay published 100 snapshots in 9.942 seconds and the
 30-second, 10×, 1,000-aircraft soak completed 300 iterations with goroutines
 1→1, file descriptors 5→5, and live heap 2,130,952→248,688 bytes after GC.
 This is a smoke soak, not a substitute for the required 24-hour ARM64 run.
+
+The 2026-08-27 replay rerun published 100 snapshots in 9.925 seconds at 10×
+and 2.089 seconds at 50×. A separate 15-second, 100×-cadence rule-engine smoke
+completed 1,500 iterations with goroutines 1→1, file descriptors 5→5, and live
+heap 2,457,336→260,256 bytes after GC. Aggregate rebuilding is coalesced to at
+most four times per second; emergency rules still run on each feeder
+publication rather than waiting for the aggregate.
 
 The wider, semantically correct report row makes one isolated SQLite upsert
 slower than the earlier narrow row. This is accepted in [ADR 0009](../adr/0009-provenance-and-rollup-batching.md):

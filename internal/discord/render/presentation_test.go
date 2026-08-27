@@ -74,7 +74,7 @@ func TestStatusHasAccessibleHealthTextAndNoMentions(t *testing.T) {
 
 func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()
-	snapshot := &domain.Snapshot{PublishedAt: now, FetchedAt: now, Feeders: []domain.FeederSummary{
+	snapshot := &domain.Snapshot{FeederID: domain.FeederAll, PublishedAt: now, FetchedAt: now, Feeders: []domain.FeederSummary{
 		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-one", DisplayName: "Coast", PublicArea: "Palm Beach", Enabled: true}, Health: domain.HealthHealthy},
 		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-two", DisplayName: "North", PublicArea: "Palm Beach", Enabled: true}, Health: domain.HealthStale},
 		{FeederDescriptor: domain.FeederDescriptor{ID: "private-owner-three", DisplayName: "Paused", Enabled: false}, Health: domain.HealthUnknown},
@@ -88,6 +88,9 @@ func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
 	}
 	if strings.Contains(values, "private-owner") {
 		t.Fatalf("private feeder ID leaked: %q", values)
+	}
+	if provider := fieldMap(embed)["Provider"]; !strings.Contains(provider, "Community aggregate") || strings.Contains(provider, "Unknown") {
+		t.Fatalf("aggregate provider = %q", provider)
 	}
 }
 

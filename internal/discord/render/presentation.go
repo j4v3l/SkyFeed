@@ -67,11 +67,15 @@ func StatusWithUnits(snapshot *domain.Snapshot, uptime time.Duration, now time.T
 		maximumRange = distance(snapshot.Statistics.MaxRangeNM, units)
 	}
 	activeProvider := "Unknown"
-	if snapshot.ActiveProvider.Known() {
+	if snapshot.FeederID == domain.FeederAll && len(snapshot.Feeders) > 0 {
+		activeProvider = fmt.Sprintf("Community aggregate · %d feeders", len(snapshot.Feeders))
+	} else if snapshot.ActiveProvider.Known() {
 		activeProvider = string(snapshot.ActiveProvider)
 	}
 	providerAge := "Never"
-	if !snapshot.ProviderChangedAt.IsZero() {
+	if snapshot.FeederID == domain.FeederAll && len(snapshot.Feeders) > 0 {
+		providerAge = "latest observations"
+	} else if !snapshot.ProviderChangedAt.IsZero() {
 		age := now.Sub(snapshot.ProviderChangedAt)
 		if age < 0 {
 			age = 0
@@ -82,7 +86,7 @@ func StatusWithUnits(snapshot *domain.Snapshot, uptime time.Duration, now time.T
 	embed := base("Status", color, snapshot.PublishedAt).WithDescription(description)
 	embed.Fields = []discord.EmbedField{
 		section("Live", fmt.Sprintf("%s · %s · max %s", tracked, messageRate, maximumRange)),
-		section("Provider", fmt.Sprintf("`%s` · active %s", PlainText(activeProvider), providerAge)),
+		section("Provider", fmt.Sprintf("`%s` · %s", PlainText(activeProvider), providerAge)),
 		section("Sources", fmt.Sprintf("Aircraft %s\nReceiver %s\nStats %s", sourceLabel(snapshot.Health.Aircraft), sourceLabel(snapshot.Health.Receiver), sourceLabel(snapshot.Health.Stats))),
 		section("Bot", fmt.Sprintf("Up %s · enrichment %s", conciseDuration(uptime), enrichmentStatus)),
 	}

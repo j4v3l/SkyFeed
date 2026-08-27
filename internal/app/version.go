@@ -1,12 +1,6 @@
 package app
 
-import "fmt"
-
-var (
-	Version   = "dev"
-	Commit    = "unknown"
-	BuildDate = "unknown"
-)
+import "github.com/j4v3l/SkyFeed/internal/buildinfo"
 
 type BuildInfo struct {
 	Version   string
@@ -15,9 +9,10 @@ type BuildInfo struct {
 }
 
 func CurrentBuild() BuildInfo {
-	return BuildInfo{Version: Version, Commit: Commit, BuildDate: BuildDate}
+	current := buildinfo.Current()
+	return BuildInfo{Version: current.Version, Commit: current.Commit, BuildDate: current.BuildDate}
 }
 
 func (info BuildInfo) String() string {
-	return fmt.Sprintf("skyfeed version=%s commit=%s build_date=%s", info.Version, info.Commit, info.BuildDate)
+	return buildinfo.Info(info).String("skyfeed")
 }

@@ -10,6 +10,8 @@ services:
     read_only: true
     cap_drop: ["ALL"]
     security_opt: ["no-new-privileges:true"]
+    extra_hosts:
+      - "adsb.local:${SKYFEED_ADSB_HOST_IP:-host-gateway}"
     environment:
       SKYFEED_AGENT_SERVER_URL: ${SKYFEED_AGENT_SERVER_URL:?Set the central HTTPS URL}
       SKYFEED_AGENT_STATE_DIR: /var/lib/skyfeed-agent
@@ -21,7 +23,7 @@ services:
       GOMEMLIMIT: 115MiB
     volumes:
       - skyfeed-agent-data:/var/lib/skyfeed-agent
-      - ../secrets/agent_enrollment:/run/secrets/enrollment_code:ro
+      - ../secrets/skyfeed-agent:/run/secrets:ro
     tmpfs:
       - /tmp:size=8m,mode=1777,nosuid,nodev,noexec
     stop_grace_period: 20s

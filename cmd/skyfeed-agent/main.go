@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/j4v3l/SkyFeed/internal/buildinfo"
 	"github.com/j4v3l/SkyFeed/internal/source/agent"
 )
 
@@ -26,8 +27,12 @@ func main() {
 }
 
 func execute(ctx context.Context, args []string) error {
-	if len(args) != 1 || (args[0] != "run" && args[0] != "enroll" && args[0] != "config-check") {
-		return fmt.Errorf("usage: skyfeed-agent run|enroll|config-check")
+	if len(args) != 1 || (args[0] != "run" && args[0] != "enroll" && args[0] != "config-check" && args[0] != "version") {
+		return fmt.Errorf("usage: skyfeed-agent run|enroll|config-check|version")
+	}
+	if args[0] == "version" {
+		_, _ = fmt.Fprintln(os.Stdout, buildinfo.Current().String("skyfeed-agent"))
+		return nil
 	}
 	serverURL := strings.TrimSpace(os.Getenv("SKYFEED_AGENT_SERVER_URL"))
 	stateDir := strings.TrimSpace(os.Getenv("SKYFEED_AGENT_STATE_DIR"))

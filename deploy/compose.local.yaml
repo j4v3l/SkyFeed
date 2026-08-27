@@ -1,5 +1,9 @@
 services:
   skyfeed:
+    extra_hosts:
+      # Harmless when ADSB_BASE_URL uses an IP. Override the address when a
+      # receiver requires a LAN virtual-host name such as adsb.local.
+      - "adsb.local:${SKYFEED_ADSB_HOST_IP:-host-gateway}"
     build:
       context: ..
       dockerfile: Dockerfile

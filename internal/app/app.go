@@ -498,7 +498,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	router.SetWeather(weatherClient)
 	healthState.SetComponent("weather", "healthy", "aviationweather.gov METAR/TAF")
 
-	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", Version)
+	logger.Info("SkyFeed starting", "component", "app", "event", "start", "version", CurrentBuild().Version)
 	services := []service{server.Run, feederManager.Run, func(serviceContext context.Context) error {
 		return engine.Run(serviceContext, upstreams.Set, cfg.ADSB.AircraftPoll, cfg.ADSB.MetadataPoll)
 	}, func(serviceContext context.Context) error {

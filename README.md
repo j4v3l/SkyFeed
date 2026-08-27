@@ -60,8 +60,9 @@ Edit `.env` locally. Use a stable receiver IP or ordinary LAN DNS hostname and
 leave the base URL ending in `/data`; do not assume `.local` mDNS works in the
 CGO-disabled image.
 
-The example profile enables `readsb,airplanes-live` with KPBI as the public
-airport reference and a 50 NM query radius. Discord, structured logs, health
+The example profile enables only the local `readsb` source. Append
+`airplanes-live` only after confirming its current availability and terms. KPBI
+is the initial public weather/activity center. Discord, structured logs, health
 JSON, and metrics expose only the airport code (`KPBI`), never the configured
 center coordinates. Change `SKYFEED_PUBLIC_CENTER_*` only when you deliberately
 choose a different published airport reference—not a private receiver site.
@@ -75,6 +76,11 @@ docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.ya
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml ps
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml logs -f skyfeed
 ```
+
+Prefer a receiver IP in `SKYFEED_ADSB_BASE_URL`. If the receiver only serves a
+named virtual host such as `adsb.local`, keep that URL and set
+`SKYFEED_ADSB_HOST_IP` to its stable LAN address. The local/agent Compose files
+then add an explicit container host mapping without relying on mDNS.
 
 ### Local airport weather and activity
 
@@ -207,13 +213,18 @@ proxy or mesh endpoint in front of loopback port 9091:
 docker compose --env-file .env -f deploy/compose.yaml -f deploy/compose.local.yaml -f deploy/compose.ingress.yaml up -d
 ```
 
-On the contributor's LAN, place the one-time code in
-`secrets/agent_enrollment` with mode `0600`, set
+On the contributor's LAN, create `secrets/skyfeed-agent`, place the one-time
+code in `secrets/skyfeed-agent/enrollment_code` with mode `0600`, set
 `SKYFEED_AGENT_SERVER_URL` and the local `SKYFEED_ADSB_BASE_URL`, then run:
 
 ```sh
 docker compose -f deploy/compose.agent.yaml up -d
 ```
+
+After the agent reports a successful enrollment, delete only
+`secrets/skyfeed-agent/enrollment_code`; keep the empty directory so Compose can
+mount it on later restarts. The private key stays in the named agent data volume
+with mode `0600` and never leaves that contributor's machine.
 
 The agent keeps at most five latest-value snapshots during an outage. Redis is
 intentionally absent: SQLite is authoritative for configuration and enrollment,
