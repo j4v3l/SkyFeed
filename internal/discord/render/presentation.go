@@ -1113,23 +1113,30 @@ func Alert(alert domain.Alert) discord.Embed {
 }
 
 func InterestingAlert(alert domain.Alert) discord.Embed {
+	color := Scope
+	view := "Interesting aircraft"
 	description := PlainText(alert.Description)
+	if alert.InterestingPriority {
+		color = EmergencyColor
+		view = "High-interest aircraft"
+		description = "🔴 **HIGH-INTEREST MATCH**\nCommunity metadata match—verify independently.\n" + description
+	}
 	if alert.RouteSummary != "" {
 		description = description + "\n**Route** " + PlainText(alert.RouteSummary)
 	}
-	embed := base("Interesting aircraft", Scope, alert.ObservedAt).WithDescription(description)
+	embed := base(view, color, alert.ObservedAt).WithDescription(description)
 	if alert.Title != "" {
-		embed = embed.WithTitle("SkyFeed • " + PlainText(alert.Title))
+		embed.Description = "**" + PlainText(alert.Title) + "**\n" + embed.Description
 	}
 	embed.Fields = []discord.EmbedField{
-		section("Aircraft", fmt.Sprintf("`%s` · %s", PlainText(valueOr(alert.AircraftICAO, "Unknown")), PlainText(valueOr(alert.Callsign, "Unknown")))),
-		section("Group", PlainText(valueOr(alert.InterestingGroup, "Unknown"))),
+		section("✈️ Aircraft", Facts("`"+PlainText(valueOr(alert.AircraftICAO, "Unknown"))+"`", PlainText(valueOr(alert.Callsign, "Unknown")))),
+		section("🏷️ Classification", PlainText(valueOr(alert.InterestingGroup, "Unknown"))),
 	}
 	if alert.InterestingOperator != "" {
-		embed.Fields = append(embed.Fields, section("Operator", PlainText(alert.InterestingOperator)))
+		embed.Fields = append(embed.Fields, section("🏢 Operator", PlainText(alert.InterestingOperator)))
 	}
 	if alert.InterestingTags != "" {
-		embed.Fields = append(embed.Fields, section("Tags", PlainText(alert.InterestingTags)))
+		embed.Fields = append(embed.Fields, section("🔖 Tags", PlainText(alert.InterestingTags)))
 	}
 	if alert.InterestingLink != "" {
 		if _, ok := SafeHTTPSURL(alert.InterestingLink); !ok {

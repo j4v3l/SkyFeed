@@ -142,7 +142,7 @@ func (service *GatewayService) SubmitAlert(ctx context.Context, alert domain.Ale
 
 func (service *GatewayService) SubmitDestinationTest(ctx context.Context, guildID uint64, purpose string) error {
 	switch purpose {
-	case "alerts", "emergencies", "reports", "admin":
+	case "alerts", "emergencies", "interesting", "high-interest", "reports", "admin":
 	default:
 		return errors.New("unsupported destination purpose")
 	}
@@ -710,26 +710,8 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if err != nil {
 		return err
 	}
-	purpose := "alerts"
-	category := "watch"
-	if alert.Priority == domain.AlertEmergency {
-		purpose = "emergencies"
-		category = "emergency"
-	} else if alert.Type == domain.RuleInteresting {
-		purpose = "interesting"
-		category = "interesting"
-	} else if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
-		category = "movements"
-	} else if alert.Type == domain.RuleFeeder {
-		category = "feeder"
-	}
-	var destination uint64
-	for _, binding := range bindings {
-		if binding.Purpose == purpose {
-			destination = binding.ChannelID
-			break
-		}
-	}
+	purpose, category := alertDestination(alert)
+	destination, purpose := boundAlertDestination(bindings, purpose)
 	configs, err := service.repository.AlertConfigs(ctx, alert.GuildID)
 	if err != nil {
 		return err
@@ -765,6 +747,42 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 		service.markDelivered(cooldownKey, alert.ObservedAt)
 	}
 	return err
+}
+
+func boundAlertDestination(bindings []storage.ChannelBinding, purpose string) (uint64, string) {
+	for _, binding := range bindings {
+		if binding.Purpose == purpose {
+			return binding.ChannelID, purpose
+		}
+	}
+	if purpose == "high-interest" {
+		for _, binding := range bindings {
+			if binding.Purpose == "interesting" {
+				return binding.ChannelID, "interesting"
+			}
+		}
+	}
+	return 0, purpose
+}
+
+func alertDestination(alert domain.Alert) (purpose, category string) {
+	purpose, category = "alerts", "watch"
+	if alert.Priority == domain.AlertEmergency {
+		return "emergencies", "emergency"
+	}
+	if alert.Type == domain.RuleInteresting {
+		if alert.InterestingPriority {
+			return "high-interest", "high-interest"
+		}
+		return "interesting", "interesting"
+	}
+	if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
+		return purpose, "movements"
+	}
+	if alert.Type == domain.RuleFeeder {
+		return purpose, "feeder"
+	}
+	return purpose, category
 }
 
 func extractAlertSquawk(alert domain.Alert) string {

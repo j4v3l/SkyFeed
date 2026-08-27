@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	"github.com/disgoorg/disgo/rest"
+	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
 func TestBoundedNonce(t *testing.T) {
@@ -22,6 +24,31 @@ func TestBoundedNonce(t *testing.T) {
 	}
 	if first == different {
 		t.Fatal("distinct inputs produced the same nonce")
+	}
+}
+
+func TestBoundAlertDestinationFallsBackToInterestingChannel(t *testing.T) {
+	bindings := []storage.ChannelBinding{{Purpose: "interesting", ChannelID: 42}}
+	destination, purpose := boundAlertDestination(bindings, "high-interest")
+	if destination != 42 || purpose != "interesting" {
+		t.Fatalf("destination = %d/%q", destination, purpose)
+	}
+
+	bindings = append(bindings, storage.ChannelBinding{Purpose: "high-interest", ChannelID: 84})
+	destination, purpose = boundAlertDestination(bindings, "high-interest")
+	if destination != 84 || purpose != "high-interest" {
+		t.Fatalf("dedicated destination = %d/%q", destination, purpose)
+	}
+}
+
+func TestAlertDestinationRoutesPriorityInterestingAircraft(t *testing.T) {
+	purpose, category := alertDestination(domain.Alert{Type: domain.RuleInteresting, InterestingPriority: true})
+	if purpose != "high-interest" || category != "high-interest" {
+		t.Fatalf("destination = %q/%q", purpose, category)
+	}
+	purpose, category = alertDestination(domain.Alert{Type: domain.RuleInteresting})
+	if purpose != "interesting" || category != "interesting" {
+		t.Fatalf("ordinary destination = %q/%q", purpose, category)
 	}
 }
 

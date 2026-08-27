@@ -28,6 +28,9 @@ func TestStorePersistenceAndMigrations(t *testing.T) {
 	if err := store.UpsertChannelBinding(ctx, storage.ChannelBinding{GuildID: 42, Purpose: "moderation", ChannelID: 101, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.UpsertChannelBinding(ctx, storage.ChannelBinding{GuildID: 42, Purpose: "high-interest", ChannelID: 102, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.UpsertRoleBinding(ctx, storage.RoleBinding{GuildID: 42, Tier: "moderator", RoleID: 77, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +89,7 @@ func TestStorePersistenceAndMigrations(t *testing.T) {
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 	bindings, err := reopened.ChannelBindings(ctx, 42)
-	if err != nil || len(bindings) != 2 {
+	if err != nil || len(bindings) != 3 {
 		t.Fatalf("bindings=%+v err=%v", bindings, err)
 	}
 	roles, err := reopened.RoleBindings(ctx, 42)

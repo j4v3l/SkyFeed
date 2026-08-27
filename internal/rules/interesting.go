@@ -71,6 +71,7 @@ func (monitor *InterestingMonitor) Evaluate(guildID uint64, snapshot *domain.Sna
 			InterestingGroup:     record.Group,
 			InterestingOperator:  record.Operator,
 			InterestingTags:      record.Tags(),
+			InterestingPriority:  record.HighInterest(),
 			InterestingLink:      record.Link,
 			InterestingImage:     record.PrimaryImage(),
 		})

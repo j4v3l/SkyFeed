@@ -215,7 +215,7 @@ func alertsOptions() []disgocord.ApplicationCommandOption {
 		disgocord.ApplicationCommandOptionSubCommand{Name: "view", Description: "View alert categories and cooldowns"},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "configure", Description: "Configure an alert category", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "category", Description: "Alert category", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Movements", Value: "movements"},
+				{Name: "Watch rules", Value: "watch"}, {Name: "Emergencies", Value: "emergency"}, {Name: "Feeder health", Value: "feeder"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "High-interest aircraft", Value: "high-interest"}, {Name: "Movements", Value: "movements"},
 			}},
 			disgocord.ApplicationCommandOptionBool{Name: "enabled", Description: "Whether this category is enabled", Required: true},
 			disgocord.ApplicationCommandOptionInt{Name: "cooldown-minutes", Description: "Minimum time between duplicate alerts", MinValue: intPtr(0), MaxValue: intPtr(1440)},
@@ -293,7 +293,7 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "channels", Description: "Configure a durable channel binding", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "purpose", Description: "Channel purpose", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Live dashboard", Value: "live"}, {Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"}, {Name: "Moderation log", Value: "moderation"},
+				{Name: "Live dashboard", Value: "live"}, {Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "High-interest aircraft", Value: "high-interest"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"}, {Name: "Moderation log", Value: "moderation"},
 			}},
 			disgocord.ApplicationCommandOptionChannel{Name: "channel", Description: "Discord channel", Required: true},
 		}},
@@ -309,7 +309,7 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "test", Description: "Test a configured destination", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionString{Name: "purpose", Description: "Destination purpose", Required: true, Choices: []disgocord.ApplicationCommandOptionChoiceString{
-				{Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"},
+				{Name: "Alerts", Value: "alerts"}, {Name: "Emergencies", Value: "emergencies"}, {Name: "Interesting aircraft", Value: "interesting"}, {Name: "High-interest aircraft", Value: "high-interest"}, {Name: "Reports", Value: "reports"}, {Name: "Administration", Value: "admin"},
 			}},
 		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "pause-alerts", Description: "Temporarily pause all non-emergency alert delivery"},

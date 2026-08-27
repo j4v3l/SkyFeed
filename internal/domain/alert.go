@@ -66,6 +66,7 @@ type Alert struct {
 	InterestingGroup     string
 	InterestingOperator  string
 	InterestingTags      string
+	InterestingPriority  bool
 	InterestingLink      string
 	InterestingImage     string
 	ObservedAt           time.Time

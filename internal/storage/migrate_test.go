@@ -27,7 +27,7 @@ func TestMigrationFromEveryPriorSchemaVersion(t *testing.T) {
 				t.Fatalf("upgrade from schema %d: %v", version, err)
 			}
 			var latest int
-			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 11 {
+			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 13 {
 				t.Fatalf("latest schema=%d err=%v", latest, err)
 			}
 		})

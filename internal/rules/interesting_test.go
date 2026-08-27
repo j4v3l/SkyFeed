@@ -63,3 +63,15 @@ func TestInterestingMonitorIgnoresNonReadsbProvider(t *testing.T) {
 		t.Fatalf("alerts=%d", len(alerts))
 	}
 }
+
+func TestInterestingMonitorMarksPriorityTags(t *testing.T) {
+	monitor := NewInterestingMonitor(func(string) (planealert.Record, bool) {
+		return planealert.Record{ICAO: "AE9999", Tag1: "Guantanamo", Tag2: "ICE", Tag3: "Deportation Flight"}, true
+	})
+	alerts := monitor.Evaluate(1, &domain.Snapshot{
+		PublishedAt: time.Now(), Aircraft: []domain.Aircraft{{ICAO: "AE9999", Provider: domain.ProviderReadsb}},
+	})
+	if len(alerts) != 1 || !alerts[0].InterestingPriority {
+		t.Fatalf("priority alert = %#v", alerts)
+	}
+}

@@ -303,6 +303,16 @@ func TestInterestingAlertKeepsPlainReferenceForInvalidURL(t *testing.T) {
 	}
 }
 
+func TestPriorityInterestingAlertUsesAccessibleRedCard(t *testing.T) {
+	embed := InterestingAlert(domain.Alert{
+		InterestingPriority: true, Title: "Custody flight", Description: "Guantanamo • ICE • Deportation Flight",
+		AircraftICAO: "AE1234", InterestingTags: "Guantanamo • ICE • Deportation Flight", ObservedAt: time.Unix(1_700_000_000, 0),
+	})
+	if embed.Color != EmergencyColor || !strings.Contains(embed.Title, "High-interest aircraft") || !strings.Contains(embed.Description, "HIGH-INTEREST MATCH") || !strings.Contains(embed.Description, "verify independently") {
+		t.Fatalf("priority embed = %#v", embed)
+	}
+}
+
 func TestAircraftUsesSectionFieldsNotInlineColumns(t *testing.T) {
 	embed := Aircraft(domain.Aircraft{
 		ICAO: "ABC123", Callsign: "SKY123", Registration: "N123SF",

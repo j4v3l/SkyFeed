@@ -45,3 +45,37 @@ func (record Record) PrimaryImage() string {
 	}
 	return ""
 }
+
+// HighInterest reports custody, detention, deportation, or rendition-related
+// reference metadata that merits a dedicated high-visibility destination.
+func (record Record) HighInterest() bool {
+	values := []string{record.Operator, record.Type, record.Group, record.Tag1, record.Tag2, record.Tag3, record.Category}
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		for _, phrase := range []string{
+			"guantanamo", "gtmo", "offshore detention", "detention flight",
+			"deportation", "removal flight", "immigration removal",
+			"rendition", "detainee transport", "prisoner transport",
+			"immigration and customs enforcement",
+		} {
+			if strings.Contains(normalized, phrase) {
+				return true
+			}
+		}
+		if containsTagWord(normalized, "ice") {
+			return true
+		}
+	}
+	return false
+}
+
+func containsTagWord(value, wanted string) bool {
+	for _, field := range strings.FieldsFunc(value, func(r rune) bool {
+		return (r < 'a' || r > 'z') && (r < '0' || r > '9')
+	}) {
+		if field == wanted {
+			return true
+		}
+	}
+	return false
+}
