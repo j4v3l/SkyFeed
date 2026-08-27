@@ -150,8 +150,6 @@ func (router *Router) newAirportMessage(request CommandRequest, airport domain.A
 }
 
 func (router *Router) airportMessage(session Session, airport domain.Airport) disgocord.MessageCreate {
-	detailsID, _ := CustomID(session.ID, "weather-details")
-	activityID, _ := CustomID(session.ID, "airport-activity")
 	overviewID, _ := CustomID(session.ID, "overview")
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
@@ -170,14 +168,20 @@ func (router *Router) airportMessage(session Session, airport domain.Airport) di
 			activity = candidate
 		}
 	}
-	return render.SafeMessage(render.AirportDashboard(airport, weather, activity, session.Action, router.now(), session.Units), false).
+	message := render.SafeMessage(render.AirportDashboard(airport, weather, activity, session.Action, router.now(), session.Units), false).
 		AddActionRow(
-			disgocord.NewPrimaryButton("Arrivals & departures", activityID).WithDisabled(session.Action == "activity" || !activity.Configured),
-			disgocord.NewSecondaryButton("Weather report", detailsID).WithDisabled(session.Action == "weather-details"),
-			disgocord.NewSecondaryButton("Overview", overviewID).WithDisabled(session.Action == ""),
+			disgocord.NewPrimaryButton("Overview", overviewID).WithDisabled(session.Action == ""),
 			disgocord.NewSecondaryButton("Refresh", refreshID),
 			disgocord.NewDangerButton("Close", closeID),
 		)
+	options := []disgocord.StringSelectMenuOption{
+		disgocord.NewStringSelectMenuOption("Weather report", "weather-details").WithDescription("Plain-language conditions and raw METAR/TAF"),
+	}
+	if activity.Configured {
+		options = append(options, disgocord.NewStringSelectMenuOption("Arrivals & departures", "activity").WithDescription("Likely movements inferred from local ADS-B"))
+	}
+	actionsID, _ := CustomID(session.ID, "airport-actions")
+	return message.AddActionRow(disgocord.NewStringSelectMenu(actionsID, "Explore airport…", options...))
 }
 
 func (router *Router) lookupWeatherView(code string) render.WeatherView {
@@ -310,7 +314,7 @@ func (router *Router) handleSquawk(request CommandRequest, responder Interaction
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
-	session.PageSize = 10
+	session.PageSize = render.DefaultPageSize
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
@@ -328,7 +332,7 @@ func (router *Router) handleEmergency(request CommandRequest, responder Interact
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
-	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
+	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, render.DefaultPageSize)
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	session.FeederID = requestFeederID(request)
 	if err := router.sessions.Update(session); err != nil {
@@ -358,7 +362,7 @@ func (router *Router) handleTraffic(request CommandRequest, responder Interactio
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
-	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
+	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, render.DefaultPageSize)
 	session.RadiusNM = radius
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	session.FeederID = requestFeederID(request)
@@ -374,7 +378,7 @@ func (router *Router) handleTraffic(request CommandRequest, responder Interactio
 
 func (router *Router) handleTop(request CommandRequest, responder InteractionResponder, snapshot *domain.Snapshot) error {
 	metric := normalizedTopMetric(request.Strings["metric"])
-	limit := boundedInt(request.Ints["limit"], 1, 25, 10)
+	limit := boundedInt(request.Ints["limit"], 1, 25, render.DefaultPageSize)
 	if request.Subcommand == "traffic" {
 		if !isRouteRankingMetric(metric) {
 			return router.respondError(responder, "Choose a historical traffic metric for `/top traffic`.")
@@ -406,7 +410,7 @@ func (router *Router) handleRouteTop(request CommandRequest, responder Interacti
 }
 
 func (router *Router) respondError(responder InteractionResponder, description string) error {
-	return responder.CreateMessage(render.SafeMessage(disgocord.NewEmbed().WithTitle("SkyFeed • Error").WithDescription(render.PlainText(description)).WithColor(render.Caution), false))
+	return responder.CreateMessage(render.SafeMessage(render.Error(description, router.now()), false))
 }
 
 func (router *Router) handlePrivacy(responder InteractionResponder) error {
@@ -447,8 +451,8 @@ func (router *Router) pagedAircraftMessage(session Session, embed disgocord.Embe
 	message := render.SafeMessage(embed, false)
 	message = message.AddActionRow(
 		disgocord.NewSecondaryButton("Previous", previousID).WithDisabled(session.Page == 0),
-		disgocord.NewSecondaryButton("Next", nextID).WithDisabled(session.Page >= maxPage),
 		disgocord.NewPrimaryButton("Refresh", refreshID),
+		disgocord.NewSecondaryButton("Next", nextID).WithDisabled(session.Page >= maxPage),
 		disgocord.NewDangerButton("Close", closeID),
 	)
 	return message, nil

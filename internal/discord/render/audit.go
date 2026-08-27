@@ -63,16 +63,16 @@ func SystemAudit(data SystemAuditData) discord.Embed {
 	status := strings.ToUpper(strings.TrimSpace(valueOr(data.OverallStatus, "unknown")))
 	color := auditColor(data.OverallStatus)
 	embed := base("System audit", color, now).WithDescription(
-		fmt.Sprintf("%s **%s** — live `%t` · ready `%t` · up %s", auditBadge(data.OverallStatus), status, data.Live, data.Ready, conciseDuration(data.Uptime)),
+		fmt.Sprintf("%s **%s**\nLive `%t` • Ready `%t` • Up %s", auditBadge(data.OverallStatus), status, data.Live, data.Ready, conciseDuration(data.Uptime)),
 	)
 	embed.Fields = []discord.EmbedField{
-		section("Live traffic", fmt.Sprintf("%d aircraft · provider `%s` · age %s\n%.1f msg/s · max %.1f NM",
+		section("📡 Live traffic", fmt.Sprintf("%d aircraft • Provider `%s` • Age %s\n%.1f msg/s • Maximum range %.1f NM",
 			data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), conciseDuration(data.SnapshotAge), data.MessageRate, data.MaxRangeNM)),
-		section("Components", formatAuditComponents(data.Components)),
-		section("Guild ops", formatGuildOps(data)),
-		section("Bindings", formatBindings(data)),
-		section("Last 24h", formatReportWindow(data)),
-		section("Enrichment", formatEnrichment(data)),
+		section("🩺 Components", formatAuditComponents(data.Components)),
+		section("🔔 Server operations", formatGuildOps(data)),
+		section("🔗 Discord bindings", formatBindings(data)),
+		section("📈 Last 24 hours", formatReportWindow(data)),
+		section("✨ Enrichment", formatEnrichment(data)),
 	}
 	embed.Footer = &discord.EmbedFooter{Text: "Admin-only · no coordinates or secrets included"}
 	return BoundEmbed(embed)
@@ -85,14 +85,14 @@ func AdminDigest(data SystemAuditData, interval time.Duration) discord.Embed {
 	}
 	status := strings.ToUpper(strings.TrimSpace(valueOr(data.OverallStatus, "unknown")))
 	embed := base("Admin digest", auditColor(data.OverallStatus), now).WithDescription(
-		fmt.Sprintf("%s **%s** — scheduled every %s", auditBadge(data.OverallStatus), status, conciseDuration(interval)),
+		fmt.Sprintf("%s **%s**\nScheduled every %s", auditBadge(data.OverallStatus), status, conciseDuration(interval)),
 	)
 	embed.Fields = []discord.EmbedField{
-		section("Health", fmt.Sprintf("live `%t` · ready `%t` · up %s\n%s", data.Live, data.Ready, conciseDuration(data.Uptime), formatAuditComponents(data.Components))),
-		section("Traffic", fmt.Sprintf("%d aircraft · `%s` · %.1f msg/s · max %.1f NM", data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), data.MessageRate, data.MaxRangeNM)),
-		section("Ops", formatGuildOps(data)),
-		section("24h rollup", formatReportWindow(data)),
-		section("Enrichment", formatEnrichment(data)),
+		section("🩺 Health", fmt.Sprintf("Live `%t` • Ready `%t` • Up %s\n%s", data.Live, data.Ready, conciseDuration(data.Uptime), formatAuditComponents(data.Components))),
+		section("📡 Traffic", fmt.Sprintf("%d aircraft • `%s` • %.1f msg/s\nMaximum range %.1f NM", data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), data.MessageRate, data.MaxRangeNM)),
+		section("🔔 Operations", formatGuildOps(data)),
+		section("📈 24-hour rollup", formatReportWindow(data)),
+		section("✨ Enrichment", formatEnrichment(data)),
 	}
 	embed.Footer = &discord.EmbedFooter{Text: "Posted to Administration channel · run /audit for a full on-demand snapshot"}
 	return BoundEmbed(embed)

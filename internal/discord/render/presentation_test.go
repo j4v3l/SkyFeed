@@ -89,7 +89,7 @@ func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
 	if strings.Contains(values, "private-owner") {
 		t.Fatalf("private feeder ID leaked: %q", values)
 	}
-	if provider := fieldMap(embed)["Provider"]; !strings.Contains(provider, "Community aggregate") || strings.Contains(provider, "Unknown") {
+	if provider := fieldValueContaining(embed, "Data source"); !strings.Contains(provider, "Community aggregate") || strings.Contains(provider, "Unknown") {
 		t.Fatalf("aggregate provider = %q", provider)
 	}
 }
@@ -122,7 +122,7 @@ func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 			embed := Help(now, test.manage)
 			found := false
 			for _, field := range embed.Fields {
-				found = found || field.Name == "Administration"
+				found = found || strings.Contains(field.Name, "Administration")
 			}
 			if found != test.wantConfig {
 				t.Fatalf("settings visibility = %t, want %t", found, test.wantConfig)
@@ -133,9 +133,8 @@ func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 
 func TestFeederShowsUnknownRefresh(t *testing.T) {
 	embed := Feeder(&domain.Snapshot{}, time.Unix(1_700_000_000, 0))
-	fields := fieldMap(embed)
-	if !strings.Contains(fields["Receiver"], "refresh Unavailable") {
-		t.Fatalf("receiver field = %q", fields["Receiver"])
+	if receiver := fieldValueContaining(embed, "Receiver"); !strings.Contains(receiver, "Refresh Unavailable") {
+		t.Fatalf("receiver field = %q", receiver)
 	}
 }
 
@@ -150,18 +149,18 @@ func TestInitialSnapshotShowsUnavailableMeasurements(t *testing.T) {
 		},
 	}
 	status := Status(snapshot, time.Minute, now, false)
-	if !strings.Contains(fieldMap(status)["Live"], "Unavailable") {
-		t.Fatalf("status live = %q", fieldMap(status)["Live"])
+	if live := fieldValueContaining(status, "Live traffic"); !strings.Contains(live, "Unavailable") {
+		t.Fatalf("status live = %q", live)
 	}
-	if strings.Contains(status.Description, "2562047") || !strings.Contains(status.Description, "waiting for the first aircraft payload") {
+	if strings.Contains(status.Description, "2562047") || !strings.Contains(strings.ToLower(status.Description), "waiting for the first aircraft update") {
 		t.Fatalf("status description = %q", status.Description)
 	}
-	feeder := fieldMap(Feeder(snapshot, now))
-	if !strings.Contains(feeder["Receiver"], "refresh Unavailable") {
-		t.Fatalf("feeder receiver = %q", feeder["Receiver"])
+	feederEmbed := Feeder(snapshot, now)
+	if receiver := fieldValueContaining(Feeder(snapshot, now), "Receiver"); !strings.Contains(receiver, "Refresh Unavailable") {
+		t.Fatalf("feeder receiver = %q", receiver)
 	}
-	if !strings.Contains(feeder["Window"], "Unavailable msgs") || !strings.Contains(feeder["Window"], "Unavailable tracks") || !strings.Contains(feeder["Window"], "max Unavailable") {
-		t.Fatalf("feeder window = %q", feeder["Window"])
+	if statistics := fieldValueContaining(feederEmbed, "Statistics"); !strings.Contains(statistics, "Unavailable messages") || !strings.Contains(statistics, "Unavailable tracks") || !strings.Contains(statistics, "Max range Unavailable") {
+		t.Fatalf("feeder statistics = %q", statistics)
 	}
 }
 
@@ -184,14 +183,15 @@ func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
 			TrackedAircraft: 6,
 		},
 	}
-	status := fieldMap(Status(snapshot, time.Minute, now, false))
-	if !strings.Contains(status["Live"], "30.0 msg/s") || !strings.Contains(status["Live"], "110.0 NM") {
-		t.Fatalf("status live = %q", status["Live"])
+	statusEmbed := Status(snapshot, time.Minute, now, false)
+	status := fieldValueContaining(statusEmbed, "Live traffic")
+	if !strings.Contains(status, "30.0 msg/s") || !strings.Contains(status, "110.0 NM") {
+		t.Fatalf("status live = %q", status)
 	}
 
-	feeder := fieldMap(Feeder(snapshot, now))
-	if !strings.Contains(feeder["Window"], "1800 msgs") || !strings.Contains(feeder["Window"], "6 tracks") || !strings.Contains(feeder["Window"], "max 110.0 NM") {
-		t.Fatalf("feeder window = %q", feeder["Window"])
+	feeder := fieldValueContaining(Feeder(snapshot, now), "Statistics")
+	if !strings.Contains(feeder, "1800 messages") || !strings.Contains(feeder, "6 tracks") || !strings.Contains(feeder, "Max range 110.0 NM") {
+		t.Fatalf("feeder statistics = %q", feeder)
 	}
 }
 
@@ -201,6 +201,15 @@ func fieldMap(embed discord.Embed) map[string]string {
 		fields[field.Name] = field.Value
 	}
 	return fields
+}
+
+func fieldValueContaining(embed discord.Embed, name string) string {
+	for _, field := range embed.Fields {
+		if strings.Contains(field.Name, name) {
+			return field.Value
+		}
+	}
+	return ""
 }
 
 func TestPrivacyRendererOmitsCoordinates(t *testing.T) {
@@ -304,7 +313,7 @@ func TestAircraftUsesSectionFieldsNotInlineColumns(t *testing.T) {
 	if !strings.Contains(embed.Description, "`ABC123`") {
 		t.Fatalf("description = %q", embed.Description)
 	}
-	if len(embed.Fields) == 0 || embed.Fields[0].Name != "Live" {
+	if len(embed.Fields) == 0 || !strings.Contains(embed.Fields[0].Name, "Live position") {
 		t.Fatalf("fields = %#v", embed.Fields)
 	}
 	for _, field := range embed.Fields {
@@ -317,7 +326,7 @@ func TestAircraftUsesSectionFieldsNotInlineColumns(t *testing.T) {
 func TestAircraftClassifiesEmergencySquawksWithoutEmergencyField(t *testing.T) {
 	for _, code := range []string{"7500", "7600", "7700"} {
 		embed := Aircraft(domain.Aircraft{ICAO: "ABC123", Squawk: code}, nil, time.Unix(1_700_000_000, 0))
-		if embed.Color != EmergencyColor || !strings.Contains(fieldMap(embed)["Live"], "🔴") {
+		if embed.Color != EmergencyColor || !strings.Contains(fieldValueContaining(embed, "Transponder"), "🔴") {
 			t.Fatalf("squawk %s embed = %#v", code, embed)
 		}
 	}
@@ -367,8 +376,8 @@ func TestAircraftAndRouteUseCompositeProviderFootersWithoutSnapshot(t *testing.T
 func TestAircraftRendersBothUnitSystemsAndTrends(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	aircraft := domain.Aircraft{ICAO: "ABC123", HasDistance: true, DistanceNM: 10, BearingDegrees: 45, HasAltitude: true, AltitudeFeet: 10_000, HasGroundSpeed: true, GroundSpeedKts: 100, HasVerticalRate: true, VerticalRateFPM: -500}
-	aviation := fieldMap(AircraftSummary(aircraft, nil, domain.UnitsAviation, now))["Live"]
-	metric := fieldMap(AircraftSummary(aircraft, nil, domain.UnitsMetric, now))["Live"]
+	aviation := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsAviation, now))
+	metric := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsMetric, now))
 	for _, expected := range []string{"NE", "10.0 NM", "10000 ft", "100 kt", "↓ -500 ft/min"} {
 		if !strings.Contains(aviation, expected) {
 			t.Fatalf("aviation %q missing %q", aviation, expected)
@@ -409,7 +418,7 @@ func TestAirportAirlineAndReportRespectMetricUnits(t *testing.T) {
 	}
 
 	report := ReportWithUnits(storage.ReportSummary{From: now.Add(-time.Hour), To: now, MaximumRangeNM: 10}, domain.UnitsMetric)
-	if got := fieldMap(report)["Range & alerts"]; !strings.Contains(got, "18.5 km") {
+	if got := fieldValueContaining(report, "Range & alerts"); !strings.Contains(got, "18.5 km") {
 		t.Fatalf("metric report = %q", got)
 	}
 }

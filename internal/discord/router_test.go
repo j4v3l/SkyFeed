@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -148,32 +149,31 @@ func (stub memberProviderStub) GuildMember(context.Context, uint64, uint64) (Gui
 
 func TestRouterComponentBindingAndModalFlow(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
 	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.SetRepository(repository)
 	router.now = func() time.Time { return now }
 	recorder := &responseRecorder{}
 	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
 		t.Fatal(err)
 	}
-	var button disgocord.ButtonComponent
-	for _, component := range recorder.created[0].Components[0].(disgocord.ActionRowComponent).Components {
-		candidate := component.(disgocord.ButtonComponent)
-		if candidate.Label == "Watch" {
-			button = candidate
-			break
-		}
-	}
-	if button.CustomID == "" {
-		t.Fatal("watch button missing")
+	menu, ok := selectMenuWithOption(recorder.created[0], "watch")
+	if !ok {
+		t.Fatal("watch action missing")
 	}
 	wrongUser := &responseRecorder{}
-	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 9, GuildID: 2, ChannelID: 3}, wrongUser); err != nil {
+	if err := router.HandleComponent(ComponentRequest{CustomID: menu.CustomID, UserID: 9, GuildID: 2, ChannelID: 3, Values: []string{"watch"}}, wrongUser); err != nil {
 		t.Fatal(err)
 	}
 	if len(wrongUser.created) != 1 || wrongUser.created[0].Flags&disgocord.MessageFlagEphemeral == 0 {
 		t.Fatal("unauthorized component did not get one private response")
 	}
 	modalResponse := &responseRecorder{}
-	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, modalResponse); err != nil {
+	if err := router.HandleComponent(ComponentRequest{CustomID: menu.CustomID, UserID: 1, GuildID: 2, ChannelID: 3, Values: []string{"watch"}}, modalResponse); err != nil {
 		t.Fatal(err)
 	}
 	if len(modalResponse.modals) != 1 {
@@ -185,6 +185,115 @@ func TestRouterComponentBindingAndModalFlow(t *testing.T) {
 	}
 	if len(submit.created) != 1 {
 		t.Fatalf("modal created %d responses", len(submit.created))
+	}
+}
+
+func TestAircraftPrimaryControlsStayMobileSized(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.now = func() time.Time { return now }
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	row := recorder.created[0].Components[0].(disgocord.ActionRowComponent)
+	if len(row.Components) != 3 {
+		t.Fatalf("primary controls = %d, want 3", len(row.Components))
+	}
+	want := []string{"Details", "Refresh", "Close"}
+	for index, component := range row.Components {
+		button, ok := component.(disgocord.ButtonComponent)
+		if !ok || button.Label != want[index] {
+			t.Fatalf("control %d = %#v, want %q", index, component, want[index])
+		}
+	}
+	if _, ok := selectMenuWithOption(recorder.created[0], "watch"); ok {
+		t.Fatal("watch action appeared without durable watch storage")
+	}
+}
+
+func TestNearbyDefaultsToFiveRecords(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snapshot := testSnapshot(now)
+	snapshot.Aircraft = make([]domain.Aircraft, 7)
+	for index := range snapshot.Aircraft {
+		snapshot.Aircraft[index] = domain.Aircraft{ICAO: fmt.Sprintf("A%05d", index), HasDistance: true, DistanceNM: float64(index + 1)}
+	}
+	router := NewRouter(snapshotStub{snapshot}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	recorder := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "nearby", UserID: 1, GuildID: 2, ChannelID: 3}, recorder); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(recorder.created[0].Embeds[0].Fields); got != 5 {
+		t.Fatalf("default nearby rows = %d, want 5", got)
+	}
+}
+
+func TestStoredListPaginationRefreshesAndClampsAfterDeletion(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	repository, err := sqlite.Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = repository.Close() })
+	if err := repository.EnsureGuild(context.Background(), 2); err != nil {
+		t.Fatal(err)
+	}
+	rules := make([]domain.WatchRule, 0, 7)
+	for index := 0; index < 7; index++ {
+		rule, createErr := repository.CreateWatchRule(context.Background(), domain.WatchRule{
+			GuildID: 2, UserID: 1, Type: domain.RuleICAO, Value: fmt.Sprintf("A%05d", index), Enabled: true,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		rules = append(rules, rule)
+	}
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, 15*time.Minute), 2, now)
+	router.SetRepository(repository)
+	router.now = func() time.Time { return now }
+	initial := &responseRecorder{}
+	if err := router.HandleCommand(CommandRequest{Name: "watch", Subcommand: "list", UserID: 1, GuildID: 2, ChannelID: 3}, initial); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(initial.created[0].Embeds[0].Fields); got != 5 {
+		t.Fatalf("first page records = %d, want 5", got)
+	}
+	labels := componentButtonLabels(initial.created[0])
+	if got, want := strings.Join(labels, ","), "Previous,Refresh,Next,Close"; got != want {
+		t.Fatalf("navigation = %q, want %q", got, want)
+	}
+	next, ok := buttonByLabel(initial.created[0], "Next")
+	if !ok {
+		t.Fatal("next control missing")
+	}
+	second := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: next.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, second); err != nil {
+		t.Fatal(err)
+	}
+	if len(second.updated) != 1 || second.updated[0].Embeds == nil || len(*second.updated[0].Embeds) != 1 || len((*second.updated[0].Embeds)[0].Fields) != 2 {
+		t.Fatalf("second page = %#v", second.updated)
+	}
+	for _, rule := range rules[5:] {
+		if err := repository.DeleteWatchRule(context.Background(), rule.ID, 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updatedMessage := disgocord.MessageCreate{Components: *second.updated[0].Components}
+	refresh, ok := buttonByLabel(updatedMessage, "Refresh")
+	if !ok {
+		t.Fatal("refresh control missing")
+	}
+	refreshed := &responseRecorder{}
+	if err := router.HandleComponent(ComponentRequest{CustomID: refresh.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, refreshed); err != nil {
+		t.Fatal(err)
+	}
+	if len(refreshed.updated) != 1 || refreshed.updated[0].Embeds == nil {
+		t.Fatalf("refresh response = %#v", refreshed.updated)
+	}
+	embed := (*refreshed.updated[0].Embeds)[0]
+	if len(embed.Fields) != 5 || !strings.Contains(embed.Description, "Page 1 of 1") {
+		t.Fatalf("clamped page = %#v", embed)
 	}
 }
 
@@ -448,15 +557,14 @@ func TestAircraftMessageOmitsAirportSelectWhenCodesEmpty(t *testing.T) {
 	if len(recorder.created) != 1 {
 		t.Fatalf("created=%d", len(recorder.created))
 	}
-	for _, row := range recorder.created[0].Components {
-		action, ok := row.(disgocord.ActionRowComponent)
-		if !ok {
+	for _, component := range recorder.created[0].Components {
+		row, ok := component.(disgocord.ActionRowComponent)
+		if !ok || len(row.Components) == 0 {
 			continue
 		}
-		for _, component := range action.Components {
-			if _, ok := component.(disgocord.StringSelectMenuComponent); ok {
-				t.Fatal("airport select should be omitted when route ICAO/IATA codes are empty")
-			}
+		menu, ok := row.Components[0].(disgocord.StringSelectMenuComponent)
+		if ok && strings.Contains(strings.ToLower(menu.Placeholder), "airport") {
+			t.Fatal("legacy airport selector should be omitted when route codes are empty")
 		}
 	}
 }
@@ -478,20 +586,12 @@ func TestAirportWeatherUsesSummaryBeforeRawDetailsAction(t *testing.T) {
 	if !strings.Contains(fields, "generally good visual flying conditions") || strings.Contains(fields, "231453Z") {
 		t.Fatalf("initial airport fields = %q", fields)
 	}
-	row := initial.created[0].Components[0].(disgocord.ActionRowComponent)
-	var button disgocord.ButtonComponent
-	for _, component := range row.Components {
-		candidate, ok := component.(disgocord.ButtonComponent)
-		if ok && candidate.Label == "Weather report" {
-			button = candidate
-			break
-		}
-	}
-	if button.CustomID == "" {
-		t.Fatal("weather report button missing")
+	menu, ok := selectMenuWithOption(initial.created[0], "weather-details")
+	if !ok {
+		t.Fatal("weather report action missing")
 	}
 	details := &responseRecorder{}
-	if err := router.HandleComponent(ComponentRequest{CustomID: button.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, details); err != nil {
+	if err := router.HandleComponent(ComponentRequest{CustomID: menu.CustomID, UserID: 1, GuildID: 2, ChannelID: 3, Values: []string{"weather-details"}}, details); err != nil {
 		t.Fatal(err)
 	}
 	if len(details.updated) != 1 || !strings.Contains(fieldValues((*details.updated[0].Embeds)[0]), "231453Z") {
@@ -527,20 +627,12 @@ func TestAirportActivityButtonShowsLocalMovementExplanation(t *testing.T) {
 	if err := router.HandleCommand(CommandRequest{Name: "airport", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"code": "KJFK"}}, initial); err != nil {
 		t.Fatal(err)
 	}
-	row := initial.created[0].Components[0].(disgocord.ActionRowComponent)
-	var activityButton disgocord.ButtonComponent
-	for _, component := range row.Components {
-		candidate, ok := component.(disgocord.ButtonComponent)
-		if ok && candidate.Label == "Arrivals & departures" {
-			activityButton = candidate
-			break
-		}
-	}
-	if activityButton.CustomID == "" || activityButton.Disabled {
-		t.Fatalf("activity button = %#v", activityButton)
+	menu, ok := selectMenuWithOption(initial.created[0], "activity")
+	if !ok || menu.Disabled {
+		t.Fatalf("activity action = %#v", menu)
 	}
 	updated := &responseRecorder{}
-	if err := router.HandleComponent(ComponentRequest{CustomID: activityButton.CustomID, UserID: 1, GuildID: 2, ChannelID: 3}, updated); err != nil {
+	if err := router.HandleComponent(ComponentRequest{CustomID: menu.CustomID, UserID: 1, GuildID: 2, ChannelID: 3, Values: []string{"activity"}}, updated); err != nil {
 		t.Fatal(err)
 	}
 	updatedFields := ""
@@ -569,6 +661,59 @@ func fieldValues(embed disgocord.Embed) string {
 		builder.WriteByte('\n')
 	}
 	return builder.String()
+}
+
+func selectMenuWithOption(message disgocord.MessageCreate, value string) (disgocord.StringSelectMenuComponent, bool) {
+	for _, component := range message.Components {
+		row, ok := component.(disgocord.ActionRowComponent)
+		if !ok {
+			continue
+		}
+		for _, child := range row.Components {
+			menu, ok := child.(disgocord.StringSelectMenuComponent)
+			if !ok {
+				continue
+			}
+			for _, option := range menu.Options {
+				if option.Value == value {
+					return menu, true
+				}
+			}
+		}
+	}
+	return disgocord.StringSelectMenuComponent{}, false
+}
+
+func buttonByLabel(message disgocord.MessageCreate, label string) (disgocord.ButtonComponent, bool) {
+	for _, component := range message.Components {
+		row, ok := component.(disgocord.ActionRowComponent)
+		if !ok {
+			continue
+		}
+		for _, child := range row.Components {
+			button, ok := child.(disgocord.ButtonComponent)
+			if ok && button.Label == label {
+				return button, true
+			}
+		}
+	}
+	return disgocord.ButtonComponent{}, false
+}
+
+func componentButtonLabels(message disgocord.MessageCreate) []string {
+	labels := make([]string, 0, 5)
+	for _, component := range message.Components {
+		row, ok := component.(disgocord.ActionRowComponent)
+		if !ok {
+			continue
+		}
+		for _, child := range row.Components {
+			if button, ok := child.(disgocord.ButtonComponent); ok {
+				labels = append(labels, button.Label)
+			}
+		}
+	}
+	return labels
 }
 
 type emptyAirportRouteStub struct{}

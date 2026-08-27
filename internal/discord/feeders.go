@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	disgocord "github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/discord/render"
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/enrichment"
@@ -49,7 +48,7 @@ func (router *Router) handleFeeders(request CommandRequest, responder Interactio
 	if request.Subcommand == "show" {
 		return router.showFeeder(ctx, request, responder, false)
 	}
-	if !request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "admin") {
+	if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "admin") {
 		return responder.CreateMessage(errorMessage("A configured Admin role plus Manage Server permission is required to change feeders."))
 	}
 	switch request.Subcommand {
@@ -63,31 +62,19 @@ func (router *Router) handleFeeders(request CommandRequest, responder Interactio
 }
 
 func (router *Router) listFeeders(ctx context.Context, request CommandRequest, responder InteractionResponder) error {
-	feeders, err := router.repository.Feeders(ctx, request.GuildID, min(router.feederAdmin.MaxFeeders+1, 250))
-	if err != nil {
+	if _, err := router.repository.Feeders(ctx, request.GuildID, 1); err != nil {
 		return responder.CreateMessage(errorMessage("Approved feeders could not be loaded."))
 	}
-	health := router.feederSummaries()
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Community feeders").WithColor(render.Scope)
-	embed.Description = "Friendly community coverage using approved public airport and area details. Private installation and account details are never shown here."
-	for _, feeder := range feeders {
-		summary := health[feeder.Descriptor.ID]
-		state := "offline"
-		if !feeder.Descriptor.Enabled {
-			state = "disabled"
-		} else if !summary.LastPublished.IsZero() {
-			state = string(summary.Health)
-		}
-		area := firstNonEmpty(feeder.Descriptor.PublicArea, feeder.Descriptor.AirportICAO, "Area not set")
-		embed.Fields = append(embed.Fields, disgocord.EmbedField{
-			Name:  render.Truncate(feeder.Descriptor.DisplayName+" • "+state, 256),
-			Value: render.Truncate(fmt.Sprintf("%s • %d aircraft", area, summary.Aircraft), 1024),
-		})
+	session, err := router.newStoredListSession(request, viewFeedersList)
+	if err != nil {
+		return responder.CreateMessage(errorMessage(err.Error()))
 	}
-	if len(feeders) == 0 {
-		embed.Description += "\n\nNo feeders are registered yet."
+	message, err := router.storedListMessage(session)
+	if err != nil {
+		router.sessions.Delete(session.ID)
+		return responder.CreateMessage(errorMessage("Approved feeders could not be loaded."))
 	}
-	return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), false))
+	return responder.CreateMessage(message)
 }
 
 func (router *Router) showFeeder(ctx context.Context, request CommandRequest, responder InteractionResponder, private bool) error {
@@ -107,24 +94,39 @@ func (router *Router) showFeeder(ctx context.Context, request CommandRequest, re
 	if !feeder.Descriptor.Enabled {
 		state = "disabled"
 	}
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • " + feeder.Descriptor.DisplayName).WithColor(render.Scope)
-	embed.Description = firstNonEmpty(feeder.Descriptor.PublicArea, "Public area not configured")
-	embed.Fields = append(embed.Fields,
-		disgocord.EmbedField{Name: "Status", Value: fmt.Sprintf("%s • %d visible aircraft", state, summary.Aircraft), Inline: feederBoolPtr(true)},
-		disgocord.EmbedField{Name: "Airport", Value: firstNonEmpty(feeder.Descriptor.AirportICAO, "Not configured"), Inline: feederBoolPtr(true)},
-		disgocord.EmbedField{Name: "Source", Value: string(feeder.Descriptor.SourceKind), Inline: feederBoolPtr(true)},
-	)
+	sections := []render.FactGroup{{Title: "📡 Live coverage", Lines: []string{
+		render.Facts(render.Labeled("Status", state), fmt.Sprintf("**Aircraft** %d", summary.Aircraft)),
+		render.Facts(render.Labeled("Airport", firstNonEmpty(feeder.Descriptor.AirportICAO, "Not configured")), render.Labeled("Source", string(feeder.Descriptor.SourceKind))),
+	}}}
 	if private {
 		lastSeen := "Never"
 		if !feeder.LastSeenAt.IsZero() {
 			lastSeen = fmt.Sprintf("<t:%d:R>", feeder.LastSeenAt.Unix())
 		}
-		embed.Fields = append(embed.Fields,
-			disgocord.EmbedField{Name: "Agent identity", Value: fmt.Sprintf("key enrolled: %t • last sequence: %d", len(feeder.PublicKey) == 32, feeder.LastSequence)},
-			disgocord.EmbedField{Name: "Last accepted delivery", Value: lastSeen},
-		)
+		sections = append(sections, render.FactGroup{Title: "🔐 Private agent status", Lines: []string{
+			render.Facts(fmt.Sprintf("**Key enrolled** %t", len(feeder.PublicKey) == 32), fmt.Sprintf("**Last sequence** %d", feeder.LastSequence)),
+			"**Last accepted delivery** " + lastSeen,
+		}})
 	}
-	return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), private))
+	embed := render.Card(render.CardModel{
+		View: feeder.Descriptor.DisplayName, Status: feederStatusLine(state),
+		Purpose: render.PlainText(firstNonEmpty(feeder.Descriptor.PublicArea, "Public area not configured")),
+		Color:   render.Scope, Timestamp: router.now(), Sections: sections,
+	})
+	return responder.CreateMessage(render.SafeMessage(embed, private))
+}
+
+func feederStatusLine(state string) string {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "healthy":
+		return "🟢 **HEALTHY**"
+	case "stale", "degraded":
+		return "🟡 **NEEDS ATTENTION**"
+	case "disabled":
+		return "⚪ **DISABLED**"
+	default:
+		return "🔴 **OFFLINE**"
+	}
 }
 
 func (router *Router) feederSummaries() map[domain.FeederID]domain.FeederSummary {
@@ -301,9 +303,9 @@ func (router *Router) createInvitation(ctx context.Context, feeder storage.Feede
 	if err := router.repository.CreateFeederEnrollment(ctx, storage.FeederEnrollment{TokenHash: hash[:], FeederID: feeder.Descriptor.ID, CreatedAt: now, ExpiresAt: now.Add(feederEnrollmentTTL)}); err != nil {
 		return responder.CreateMessage(errorMessage("The private invitation could not be stored."))
 	}
-	description := fmt.Sprintf("Feeder: **%s** (`%s`)\nEnrollment URL: `%s/v1/agent/enroll`\nOne-time code: `%s`\nExpires <t:%d:R>.\n\nSend this privately to the feeder owner. SkyFeed stores only its SHA-256 hash; this plaintext code cannot be recovered.",
-		feeder.Descriptor.DisplayName, feeder.Descriptor.ID, router.feederAdmin.PublicURL, token, now.Add(feederEnrollmentTTL).Unix())
-	return responder.CreateMessage(infoMessage("Private feeder invitation", description))
+	description := fmt.Sprintf("**Feeder** %s (%s)\n**Enrollment URL** %s\n**One-time code** %s\n**Expires** <t:%d:R>\n\nSend this privately to the feeder administrator. SkyFeed stores only its SHA-256 hash; this plaintext code cannot be recovered.",
+		render.PlainText(feeder.Descriptor.DisplayName), render.InlineCode(string(feeder.Descriptor.ID)), render.InlineCode(router.feederAdmin.PublicURL+"/v1/agent/enroll"), render.InlineCode(token), now.Add(feederEnrollmentTTL).Unix())
+	return responder.CreateMessage(render.SafeMessage(render.InfoMarkup("Private feeder invitation", description, now), true))
 }
 
 func newFeederID() (domain.FeederID, error) {
@@ -314,5 +316,3 @@ func newFeederID() (domain.FeederID, error) {
 	encoded := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(random))
 	return domain.FeederID("sf-" + encoded), nil
 }
-
-func feederBoolPtr(value bool) *bool { return &value }

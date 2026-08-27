@@ -29,7 +29,7 @@ func (router *Router) handleWatch(request CommandRequest, responder InteractionR
 			return responder.CreateMessage(errorMessage("That watch rule type is not supported."))
 		}
 		serverScope := request.Bools["server"]
-		if serverScope && (!request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator")) {
+		if serverScope && (!(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator")) {
 			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required for server watch rules."))
 		}
 		value := strings.ToUpper(strings.TrimSpace(request.Strings["value"]))
@@ -48,30 +48,19 @@ func (router *Router) handleWatch(request CommandRequest, responder InteractionR
 		router.requestRuleReload()
 		return responder.CreateMessage(infoMessage("Watch rule saved", fmt.Sprintf("Rule %d watches %s %s.", rule.ID, rule.Type, rule.Value)))
 	case "list":
-		rules, err := router.repository.WatchRules(ctx, request.GuildID, request.UserID, 100)
-		if err != nil {
+		if _, err := router.repository.WatchRules(ctx, request.GuildID, request.UserID, 1); err != nil {
 			return responder.CreateMessage(errorMessage("Watch rules could not be loaded."))
 		}
-		embed := disgocord.NewEmbed().WithTitle("SkyFeed • Watch rules").WithColor(render.Scope)
-		if len(rules) == 0 {
-			embed.Description = "No personal or server watch rules are configured."
+		session, err := router.newStoredListSession(request, viewWatchRulesList)
+		if err != nil {
+			return responder.CreateMessage(errorMessage(err.Error()))
 		}
-		selected := requestFeederID(request)
-		for _, rule := range rules {
-			if selected != domain.FeederAll && rule.FeederScope != selected {
-				continue
-			}
-			state := "disabled"
-			if rule.Enabled {
-				state = "enabled"
-			}
-			scope := "personal"
-			if rule.ServerScope {
-				scope = "server"
-			}
-			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: fmt.Sprintf("#%d • %s", rule.ID, rule.Type), Value: fmt.Sprintf("%s • %s • %s • feeder: %s", rule.Value, scope, state, rule.FeederScope)})
+		message, err := router.storedListMessage(session)
+		if err != nil {
+			router.sessions.Delete(session.ID)
+			return responder.CreateMessage(errorMessage("Watch rules could not be loaded."))
 		}
-		return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
+		return responder.CreateMessage(message)
 	case "remove", "enable", "disable":
 		return router.changeWatch(ctx, request, responder)
 	default:
@@ -92,7 +81,7 @@ func (router *Router) changeWatch(ctx context.Context, request CommandRequest, r
 		if rule.ID != id {
 			continue
 		}
-		if rule.ServerScope && (!request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator")) {
+		if rule.ServerScope && (!(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator")) {
 			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required for that rule."))
 		}
 		switch request.Subcommand {
@@ -124,7 +113,7 @@ func (router *Router) handleAlerts(request CommandRequest, responder Interaction
 		return responder.CreateMessage(errorMessage("Alert configuration is temporarily unavailable."))
 	}
 	if request.Subcommand == "configure" {
-		if !request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
+		if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
 			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required to configure alerts."))
 		}
 		cooldown := time.Duration(request.Ints["cooldown-minutes"]) * time.Minute
@@ -137,18 +126,22 @@ func (router *Router) handleAlerts(request CommandRequest, responder Interaction
 		}
 		return responder.CreateMessage(infoMessage("Alerts configured", fmt.Sprintf("%s alerts enabled: %t.", value.Category, value.Enabled)))
 	}
-	values, err := router.repository.AlertConfigs(ctx, request.GuildID)
-	if err != nil {
+	if _, err := router.repository.AlertConfigs(ctx, request.GuildID); err != nil {
 		return responder.CreateMessage(errorMessage("Alert configuration could not be loaded."))
 	}
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Alerts").WithColor(render.Scope)
-	if len(values) == 0 {
-		embed.Description = "No alert overrides are configured; safe defaults apply."
+	if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
+		return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required to view alert settings."))
 	}
-	for _, value := range values {
-		embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: value.Category, Value: fmt.Sprintf("enabled: %t • cooldown: %s • destination: %d", value.Enabled, value.Cooldown, value.Destination)})
+	session, err := router.newStoredListSession(request, viewAlertConfigsList)
+	if err != nil {
+		return responder.CreateMessage(errorMessage(err.Error()))
 	}
-	return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
+	message, err := router.storedListMessage(session)
+	if err != nil {
+		router.sessions.Delete(session.ID)
+		return responder.CreateMessage(errorMessage("Alert configuration could not be loaded."))
+	}
+	return responder.CreateMessage(message)
 }
 
 func (router *Router) handleReports(request CommandRequest, responder InteractionResponder) error {
@@ -177,7 +170,7 @@ func (router *Router) handleReports(request CommandRequest, responder Interactio
 		}
 		return responder.CreateMessage(render.SafeMessage(render.ReportWithUnits(summary, router.effectiveUnits(request.GuildID, request.UserID)), false))
 	case "schedule":
-		if !request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
+		if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
 			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required to schedule reports."))
 		}
 		value, err := router.repository.UpsertReportSchedule(ctx, storage.ReportSchedule{GuildID: request.GuildID, Cadence: request.Strings["cadence"], Destination: request.IDs["destination"], Enabled: true, LastRun: router.now().UTC()})
@@ -186,18 +179,22 @@ func (router *Router) handleReports(request CommandRequest, responder Interactio
 		}
 		return responder.CreateMessage(infoMessage("Report scheduled", fmt.Sprintf("Schedule %d runs %s.", value.ID, value.Cadence)))
 	case "list":
-		values, err := router.repository.ReportSchedules(ctx, request.GuildID)
-		if err != nil {
+		if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "operator") {
+			return responder.CreateMessage(errorMessage("An Operator or Admin role plus Manage Server permission is required to view report schedules."))
+		}
+		if _, err := router.repository.ReportSchedules(ctx, request.GuildID); err != nil {
 			return responder.CreateMessage(errorMessage("Report schedules could not be loaded."))
 		}
-		embed := disgocord.NewEmbed().WithTitle("SkyFeed • Report schedules").WithColor(render.Scope)
-		if len(values) == 0 {
-			embed.Description = "No scheduled reports are configured."
+		session, err := router.newStoredListSession(request, viewReportSchedulesList)
+		if err != nil {
+			return responder.CreateMessage(errorMessage(err.Error()))
 		}
-		for _, value := range values {
-			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: fmt.Sprintf("#%d • %s", value.ID, value.Cadence), Value: fmt.Sprintf("channel: %d • enabled: %t", value.Destination, value.Enabled)})
+		message, err := router.storedListMessage(session)
+		if err != nil {
+			router.sessions.Delete(session.ID)
+			return responder.CreateMessage(errorMessage("Report schedules could not be loaded."))
 		}
-		return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
+		return responder.CreateMessage(message)
 	default:
 		return responder.CreateMessage(errorMessage("Choose a reports subcommand."))
 	}
@@ -212,7 +209,7 @@ func (router *Router) handleSettings(request CommandRequest, responder Interacti
 	if err := router.ensureGuild(ctx, request.GuildID); err != nil {
 		return responder.CreateMessage(errorMessage("Server settings are temporarily unavailable."))
 	}
-	if !request.ManageGuild || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "admin") {
+	if !(request.Administrator || request.ManageGuild) || !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "admin") {
 		return responder.CreateMessage(errorMessage("A configured Admin role plus Manage Server permission is required. A Discord Administrator can bootstrap the first binding."))
 	}
 	if request.Group == "roles" {
@@ -381,15 +378,15 @@ func (router *Router) handleRoleSettings(ctx context.Context, request CommandReq
 		if err != nil {
 			return responder.CreateMessage(errorMessage("Role bindings could not be loaded."))
 		}
-		embed := disgocord.NewEmbed().WithTitle("SkyFeed • Role access").WithColor(render.Scope).
-			WithDescription("Viewer access is implicit. Privileged actions also require the matching native Discord permission.")
+		sections := make([]render.FactGroup, 0, len(bindings)+1)
 		if len(bindings) == 0 {
-			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: "No bindings", Value: "A Discord Administrator can bind the first Admin role."})
+			sections = append(sections, render.FactGroup{Title: "⚪ No role bindings", Lines: []string{"A Discord Administrator can bind the first Admin role."}})
 		}
 		for _, binding := range bindings {
-			embed.Fields = append(embed.Fields, disgocord.EmbedField{Name: strings.ToUpper(binding.Tier), Value: fmt.Sprintf("Role `%d`", binding.RoleID)})
+			sections = append(sections, render.FactGroup{Title: strings.ToUpper(binding.Tier), Lines: []string{fmt.Sprintf("**Discord role** `%d`", binding.RoleID)}})
 		}
-		return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
+		embed := render.Card(render.CardModel{View: "Role access", Status: "🔐 **SERVER ACCESS**", Purpose: "Viewer access is automatic. Privileged actions also require the matching native Discord permission.", Color: render.Scope, Timestamp: router.now(), Sections: sections})
+		return responder.CreateMessage(render.SafeMessage(embed, true))
 	default:
 		return responder.CreateMessage(errorMessage("Choose a roles subcommand."))
 	}

@@ -367,6 +367,9 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 	if session.View == "moderation" {
 		return router.handleModerationComponent(request, responder, session, action)
 	}
+	if isStoredListView(session.View) {
+		return router.handleStoredListComponent(request, responder, session, action)
+	}
 
 	switch action {
 	case "previous":
@@ -382,6 +385,10 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		session.Page = 0
 	case "route":
 		return router.handleAircraftRouteAction(request, responder, session)
+	case "aircraft-actions":
+		return router.handleAircraftActionMenu(request, responder, session)
+	case "airport-actions":
+		return router.handleAirportActionMenu(request, responder, session)
 	case "details":
 		session.Action = "details"
 	case "weather-details":
@@ -404,14 +411,7 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		}
 		return router.handleAirport(CommandRequest{UserID: request.UserID, GuildID: request.GuildID, ChannelID: request.ChannelID, Strings: map[string]string{"code": request.Values[0], "feeder": string(session.FeederID)}}, responder)
 	case "watch":
-		modalID, buildErr := CustomID(session.ID, "save-watch")
-		if buildErr != nil {
-			return buildErr
-		}
-		modal := disgocord.NewModalCreate(modalID, "Watch this aircraft").
-			AddLabel("Rule label", disgocord.NewShortTextInput("label").WithPlaceholder("Optional name").WithMaxLength(64)).
-			AddLabel("Cooldown in minutes", disgocord.NewShortTextInput("cooldown").WithPlaceholder("15").WithMaxLength(4))
-		return responder.ShowModal(modal)
+		return router.showWatchModal(responder, session)
 	case "close":
 		router.sessions.Delete(session.ID)
 		return responder.UpdateMessage(disgocord.NewMessageUpdate().WithContent("SkyFeed view closed.").ClearEmbeds().ClearComponents())
@@ -419,6 +419,51 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 		return responder.CreateMessage(errorMessage("This SkyFeed control is no longer supported."))
 	}
 
+	if err := router.sessions.Update(session); err != nil {
+		return responder.CreateMessage(errorMessage("This control expired while it was being updated."))
+	}
+	return router.updateSession(session, responder)
+}
+
+func (router *Router) handleAircraftActionMenu(request ComponentRequest, responder InteractionResponder, session Session) error {
+	if session.View != "aircraft" || len(request.Values) != 1 {
+		return responder.CreateMessage(errorMessage("That aircraft action is not available."))
+	}
+	switch request.Values[0] {
+	case "track":
+		return router.handleAircraftTrackAction(responder, session)
+	case "watch":
+		return router.showWatchModal(responder, session)
+	case "route":
+		return router.handleAircraftRouteAction(request, responder, session)
+	default:
+		return responder.CreateMessage(errorMessage("That aircraft action is not available."))
+	}
+}
+
+func (router *Router) showWatchModal(responder InteractionResponder, session Session) error {
+	modalID, err := CustomID(session.ID, "save-watch")
+	if err != nil {
+		return err
+	}
+	modal := disgocord.NewModalCreate(modalID, "Watch this aircraft").
+		AddLabel("Rule label", disgocord.NewShortTextInput("label").WithPlaceholder("Optional name").WithMaxLength(64)).
+		AddLabel("Cooldown in minutes", disgocord.NewShortTextInput("cooldown").WithPlaceholder("15").WithMaxLength(4))
+	return responder.ShowModal(modal)
+}
+
+func (router *Router) handleAirportActionMenu(request ComponentRequest, responder InteractionResponder, session Session) error {
+	if session.View != "airport" || len(request.Values) != 1 {
+		return responder.CreateMessage(errorMessage("That airport view is not available."))
+	}
+	switch request.Values[0] {
+	case "weather-details":
+		session.Action = "weather-details"
+	case "activity":
+		session.Action = "activity"
+	default:
+		return responder.CreateMessage(errorMessage("That airport view is not available."))
+	}
 	if err := router.sessions.Update(session); err != nil {
 		return responder.CreateMessage(errorMessage("This control expired while it was being updated."))
 	}
@@ -639,7 +684,7 @@ func (router *Router) handleNearby(request CommandRequest, responder Interaction
 	if err != nil {
 		return responder.CreateMessage(errorMessage("Too many active views. Close an older SkyFeed view and try again."))
 	}
-	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, 10)
+	session.PageSize = boundedInt(request.Ints["limit"], 1, 25, render.DefaultPageSize)
 	session.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	session.FeederID = requestFeederID(request)
 	session.RadiusNM = request.Floats["radius-nm"]
@@ -777,9 +822,11 @@ func (router *Router) handleAircraftTrackAction(responder InteractionResponder, 
 }
 
 func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft, snapshot *domain.Snapshot) disgocord.MessageCreate {
-	watchID, _ := CustomID(session.ID, "watch")
-	trackID, _ := CustomID(session.ID, "track")
-	detailsID, _ := CustomID(session.ID, "details")
+	detailAction, detailLabel := "details", "Details"
+	if session.Action == "details" {
+		detailAction, detailLabel = "overview", "Overview"
+	}
+	detailsID, _ := CustomID(session.ID, detailAction)
 	refreshID, _ := CustomID(session.ID, "refresh")
 	closeID, _ := CustomID(session.ID, "close")
 	embed := render.AircraftSummary(aircraft, snapshot, session.Units, router.now())
@@ -787,7 +834,21 @@ func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft,
 		embed = router.aircraftEmbedWithUnits(aircraft, snapshot, session.Units)
 	}
 	message := render.SafeMessage(embed, false).
-		AddActionRow(disgocord.NewPrimaryButton("Details", detailsID).WithDisabled(session.Action == "details"), disgocord.NewSecondaryButton("Track", trackID).WithDisabled(router.tracks == nil), disgocord.NewPrimaryButton("Watch", watchID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
+		AddActionRow(disgocord.NewPrimaryButton(detailLabel, detailsID), disgocord.NewSecondaryButton("Refresh", refreshID), disgocord.NewDangerButton("Close", closeID))
+	actions := make([]disgocord.StringSelectMenuOption, 0, 3)
+	if router.tracks != nil {
+		actions = append(actions, disgocord.NewStringSelectMenuOption("Recent track", "track").WithDescription("Open the memory-only 15-minute radar plot"))
+	}
+	if router.repository != nil {
+		actions = append(actions, disgocord.NewStringSelectMenuOption("Watch aircraft", "watch").WithDescription("Create a personal watch rule"))
+	}
+	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
+		actions = append(actions, disgocord.NewStringSelectMenuOption("Route & weather", "route").WithDescription("Show route and airport weather"))
+	}
+	if len(actions) > 0 {
+		actionID, _ := CustomID(session.ID, "aircraft-actions")
+		message = message.AddActionRow(disgocord.NewStringSelectMenu(actionID, "More aircraft actions…", actions...))
+	}
 	photoURL := ""
 	if router.enrichment != nil {
 		if value, ok, _ := router.enrichment.Cached(aircraft.ICAO, aircraft.Callsign); ok && value.Aircraft != nil {
@@ -796,16 +857,6 @@ func (router *Router) aircraftMessage(session Session, aircraft domain.Aircraft,
 	}
 	if links := aircraftLinkButtons(aircraft, photoURL); len(links) > 0 {
 		message = message.AddActionRow(links...)
-	}
-	if router.routes != nil && strings.TrimSpace(aircraft.Callsign) != "" && aircraft.HasPosition {
-		routeID, _ := CustomID(session.ID, "route")
-		message = message.AddActionRow(disgocord.NewSecondaryButton("Route / Weather", routeID))
-		if route, found, _ := router.routes.CachedRoute(strings.ToUpper(strings.TrimSpace(aircraft.Callsign))); found {
-			if options := airportSelectOptions(route); len(options) > 0 {
-				airportID, _ := CustomID(session.ID, "airport")
-				message = message.AddActionRow(disgocord.NewStringSelectMenu(airportID, "Airports", options...))
-			}
-		}
 	}
 	return message
 }
@@ -912,8 +963,8 @@ func (router *Router) nearbyMessage(session Session, snapshot *domain.Snapshot) 
 	message := render.SafeMessage(render.NearbyWithUnits(aircraft, session.Page, session.PageSize, router.now(), session.Units), false)
 	message = message.AddActionRow(
 		disgocord.NewSecondaryButton("Previous", previousID).WithDisabled(session.Page == 0),
-		disgocord.NewSecondaryButton("Next", nextID).WithDisabled(session.Page >= maxPage),
 		disgocord.NewPrimaryButton("Refresh", refreshID),
+		disgocord.NewSecondaryButton("Next", nextID).WithDisabled(session.Page >= maxPage),
 		disgocord.NewDangerButton("Close", closeID),
 	)
 	menu := disgocord.NewStringSelectMenu(sortID, "Sort aircraft",
@@ -1020,12 +1071,12 @@ func messageUpdate(message disgocord.MessageCreate) disgocord.MessageUpdate {
 }
 
 func errorMessage(description string) disgocord.MessageCreate {
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Error").WithDescription(description).WithColor(render.Caution)
+	embed := render.Error(description, time.Now().UTC())
 	return render.SafeMessage(embed, true)
 }
 
 func infoMessage(title, description string) disgocord.MessageCreate {
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • " + title).WithDescription(description).WithColor(render.Scope)
+	embed := render.Info(title, description, time.Now().UTC())
 	return render.SafeMessage(embed, true)
 }
 

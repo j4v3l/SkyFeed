@@ -52,6 +52,18 @@ func PlainText(value string) string {
 	return value
 }
 
+// InlineCode preserves trusted operational values such as enrollment URLs
+// while preventing them from escaping a Discord inline-code span.
+func InlineCode(value string) string {
+	value = strings.Map(func(r rune) rune {
+		if r == '`' || (unicode.IsControl(r) && r != '\t') {
+			return -1
+		}
+		return r
+	}, value)
+	return "`" + value + "`"
+}
+
 // BoundEmbed applies Discord's documented per-field and aggregate text limits.
 // It intentionally drops overflow fields instead of creating an invalid payload.
 func BoundEmbed(embed discord.Embed) discord.Embed {
@@ -71,6 +83,10 @@ func BoundEmbed(embed discord.Embed) discord.Embed {
 	}
 	fields := make([]discord.EmbedField, 0, len(embed.Fields))
 	for _, field := range embed.Fields {
+		// Inline columns reflow unpredictably between Discord desktop panes and
+		// mobile clients. SkyFeed uses one universal, full-width payload.
+		inline := false
+		field.Inline = &inline
 		field.Name = Truncate(strings.TrimSpace(field.Name), maxFieldName)
 		field.Value = Truncate(strings.TrimSpace(field.Value), maxFieldValue)
 		need := runeCount(field.Name) + runeCount(field.Value)

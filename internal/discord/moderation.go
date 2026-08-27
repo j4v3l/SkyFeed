@@ -120,9 +120,16 @@ func (router *Router) confirmModeration(execution ModerationExecution, responder
 	if err != nil {
 		return err
 	}
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Confirm moderation").WithColor(render.EmergencyColor).
-		WithDescription(fmt.Sprintf("Confirm **%s** for user ID `%d`. This private control expires <t:%d:R>.", execution.Action, execution.TargetUserID, session.ExpiresAt.Unix())).
-		AddFields(disgocord.EmbedField{Name: "Reason", Value: render.Truncate(render.PlainText(execution.Reason), 400)})
+	embed := render.Card(render.CardModel{
+		View: "Confirm moderation", Status: "🔴 **CONFIRM REQUIRED**",
+		Purpose: fmt.Sprintf("Review this private %s action before it is sent to Discord.", render.PlainText(execution.Action)),
+		Color:   render.EmergencyColor, Timestamp: router.now(),
+		Sections: []render.FactGroup{
+			{Title: "👤 Member", Lines: []string{fmt.Sprintf("**User ID** `%d`", execution.TargetUserID), fmt.Sprintf("**Action** %s", render.PlainText(execution.Action))}},
+			{Title: "📝 Reason", Lines: []string{render.Truncate(render.PlainText(execution.Reason), 400)}},
+			{Title: "⏳ Confirmation window", Lines: []string{fmt.Sprintf("Expires <t:%d:R>", session.ExpiresAt.Unix())}},
+		},
+	})
 	message := render.SafeMessage(render.BoundEmbed(embed), true).
 		AddActionRow(disgocord.NewDangerButton("Confirm "+execution.Action, confirmID), disgocord.NewSecondaryButton("Cancel", cancelID))
 	return responder.CreateMessage(message)
@@ -181,22 +188,19 @@ func (router *Router) showModerationCase(ctx context.Context, request CommandReq
 }
 
 func (router *Router) showModerationHistory(ctx context.Context, request CommandRequest, responder InteractionResponder) error {
-	limit := boundedInt(request.Ints["limit"], 1, 25, 10)
-	values, err := router.repository.ModerationCases(ctx, request.GuildID, request.IDs["user"], limit)
-	if err != nil {
+	if _, err := router.repository.ModerationCases(ctx, request.GuildID, request.IDs["user"], 1); err != nil {
 		return responder.CreateMessage(errorMessage("Moderation history could not be loaded."))
 	}
-	embed := disgocord.NewEmbed().WithTitle("SkyFeed • Moderation history").WithColor(render.Scope)
-	if len(values) == 0 {
-		embed.Description = "No matching moderation cases were found."
+	session, err := router.newStoredListSession(request, viewModerationHistory)
+	if err != nil {
+		return responder.CreateMessage(errorMessage(err.Error()))
 	}
-	for _, value := range values {
-		embed.Fields = append(embed.Fields, disgocord.EmbedField{
-			Name:  fmt.Sprintf("Case %d • %s • %s", value.ID, value.Action, value.Status),
-			Value: fmt.Sprintf("User `%d` • Moderator `%d` • <t:%d:f>\n%s", value.TargetUserID, value.ModeratorID, value.CreatedAt.Unix(), render.Truncate(render.PlainText(value.Reason), 180)),
-		})
+	message, err := router.storedListMessage(session)
+	if err != nil {
+		router.sessions.Delete(session.ID)
+		return responder.CreateMessage(errorMessage("Moderation history could not be loaded."))
 	}
-	return responder.CreateMessage(render.SafeMessage(render.BoundEmbed(embed), true))
+	return responder.CreateMessage(message)
 }
 
 func moderationExecutionFromCommand(request CommandRequest) (ModerationExecution, error) {
