@@ -16,6 +16,8 @@ versioning after the first public preview.
 - Successful `main` CI now publishes the checked-in version once, including
   AMD64/ARM64 images, SBOM, provenance, vulnerability scanning, signing, and
   an immutable GitHub prerelease.
+- Removed the hosted Nix cache upload that delayed completed checks; Nix still
+  runs the full flake validation on every development and promotion build.
 - Updated `github.com/klauspost/compress` from 1.18.4 to 1.19.2.
 
 ## 0.1.0 - 2026-08-27
