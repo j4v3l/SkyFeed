@@ -384,7 +384,7 @@ Run the public preview with its semantic-version tag, or pin the digest recorded
 in the GitHub Release for the strongest reproducibility:
 
 ```sh
-SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed:0.1.0 docker compose --env-file .env -f deploy/compose.yaml up -d
+SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed:0.1.1 docker compose --env-file .env -f deploy/compose.yaml up -d
 SKYFEED_IMAGE=ghcr.io/j4v3l/skyfeed@sha256:RELEASE_DIGEST docker compose --env-file .env -f deploy/compose.yaml up -d
 ```
 

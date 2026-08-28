@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
@@ -13,6 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  promotion:
+    name: promotion
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Validate dev-to-main promotion
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          test "${BASE_REF}" = main
+          test "${HEAD_REF}" = dev
+          test "${HEAD_REPOSITORY}" = "${GITHUB_REPOSITORY}"
+          version=$(sh scripts/release-version.sh)
+          git fetch --force --tags origin
+          if git rev-parse --verify --quiet "refs/tags/v${version}"; then
+            echo "v${version} already exists; bump VERSION and update the changelog/release notes" >&2
+            exit 1
+          fi
+
   quality:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -24,6 +49,7 @@ jobs:
           cache: true
       - run: test -z "$(gofmt -l .)"
       - run: go mod verify
+      - run: sh scripts/release-version.sh
       - run: go test ./...
       - run: go test -race ./...
       - run: go vet ./...

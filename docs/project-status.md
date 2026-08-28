@@ -5,7 +5,7 @@ title: Project status
 
 # Project status
 
-SkyFeed `v0.1.0` is the first public preview. The application is usable for a
+SkyFeed `v0.1.1` is the current public preview. The application is usable for a
 local receiver today, but the preview label is intentional: long-running ARM64
 validation and the first production community-agent deployment remain before a
 stable release.

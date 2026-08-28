@@ -1,6 +1,6 @@
 GO ?= go
 
-.PHONY: build check fmt fmt-check govulncheck licenses race staticcheck test vet
+.PHONY: build check fmt fmt-check govulncheck licenses race release-check staticcheck test vet
 
 build:
 	mkdir -p bin
@@ -34,4 +34,7 @@ licenses:
 	$(GO) tool go-licenses check ./cmd/skyfeed-agent
 	$(GO) tool go-licenses report ./cmd/skyfeed-agent
 
-check: fmt-check test race vet staticcheck govulncheck licenses
+release-check:
+	@sh scripts/release-version.sh >/dev/null
+
+check: fmt-check release-check test race vet staticcheck govulncheck licenses
