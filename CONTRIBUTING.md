@@ -37,6 +37,10 @@ nix flake check
 
 ## Pull requests
 
+- Base normal feature, fix, documentation, and dependency pull requests on
+  `dev`. The default branch is `dev`.
+- `main` is the release branch. Only the repository's `dev` branch may open a
+  promotion pull request to `main`.
 - Keep PRs focused; prefer small, reviewable diffs.
 - Match existing Go style (`gofmt`), package layout, and test patterns.
 - Add or update tests for behavioral changes.
@@ -46,6 +50,17 @@ nix flake check
 
 CI runs format, tests, race, vet, staticcheck, govulncheck, license checks,
 container smoke tests, and (on push/PR) `nix flake check`.
+
+## Releases
+
+Before promoting `dev` to `main`, update `VERSION`, add a dated changelog
+section, and add `docs/releases/v<version>.md`. The promotion check rejects an
+existing tag or a pull request from any branch other than `dev`.
+
+After the promotion merge, successful `main` CI publishes the version exactly
+once, signs and attests the multi-platform image, creates an immutable release
+tag, and fast-forwards `dev` to the released main commit. Do not create release
+tags manually.
 
 ## Security
 
