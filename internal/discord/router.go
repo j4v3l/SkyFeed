@@ -137,6 +137,7 @@ type Router struct {
 	testSend           func(context.Context, uint64, string) error
 	dashboardReset     func(context.Context) error
 	moderation         ModerationExecutor
+	messageDeletion    MessageDeletionExecutor
 	domesticCountryISO string
 	health             HealthViewer
 	enrichmentAudit    EnrichmentAuditor
@@ -160,7 +161,10 @@ func (router *Router) SetDashboardReset(reset func(context.Context) error) {
 	router.dashboardReset = reset
 }
 func (router *Router) SetModeration(executor ModerationExecutor) { router.moderation = executor }
-func (router *Router) SetTracks(provider TrackProvider)          { router.tracks = provider }
+func (router *Router) SetMessageDeletion(executor MessageDeletionExecutor) {
+	router.messageDeletion = executor
+}
+func (router *Router) SetTracks(provider TrackProvider) { router.tracks = provider }
 func (router *Router) SetAirportActivity(provider AirportActivityProvider) {
 	router.activity = provider
 }
@@ -243,6 +247,8 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 		return router.handleSettings(request, responder)
 	case "moderation":
 		return router.handleModeration(request, responder)
+	case "delete-message-context":
+		return router.handleDeleteMessageContext(request, responder)
 	case "watch":
 		return router.handleWatch(request, responder)
 	case "alerts":
@@ -367,6 +373,9 @@ func (router *Router) HandleComponent(request ComponentRequest, responder Intera
 	if session.View == "moderation" {
 		return router.handleModerationComponent(request, responder, session, action)
 	}
+	if session.View == "message-delete" {
+		return router.handleDeleteMessageComponent(request, responder, session, action)
+	}
 	if isStoredListView(session.View) {
 		return router.handleStoredListComponent(request, responder, session, action)
 	}
@@ -483,7 +492,13 @@ func (router *Router) HandleModal(request ModalRequest, responder InteractionRes
 		}
 	}
 	sessionID, action, err := ParseCustomID(request.CustomID)
-	if err != nil || action != "save-watch" {
+	if err != nil {
+		return responder.CreateMessage(errorMessage("This form is invalid or expired."))
+	}
+	if action == "delete-reason" {
+		return router.handleDeleteReasonModal(request, responder, sessionID)
+	}
+	if action != "save-watch" {
 		return responder.CreateMessage(errorMessage("This form is invalid or expired."))
 	}
 	session, err := router.sessions.Get(sessionID, request.UserID, request.GuildID, request.ChannelID)

@@ -7,6 +7,13 @@ versioning after the first public preview.
 
 ### Changed
 
+- Added secure Admin-only message deletion by message link, ID, or Discord
+  context action, with native Manage Messages enforcement, private confirmation,
+  durable moderation audit records, and no stored message content.
+- Added one persistent live flight-leaders card in the configured reports
+  channel, refreshed in place with fastest, slowest, highest, and lowest fresh
+  airborne aircraft from the deduplicated all-feeder view.
+
 - Reduced community aggregate allocation volume while preserving immutable
   snapshots and deterministic feeder attribution.
 - Partitioned watch-rule indexes and state by feeder, keeping emergency

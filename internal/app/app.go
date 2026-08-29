@@ -580,11 +580,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		})
 		gateway.SetRepository(repository)
 		gateway.SetDashboardInterval(cfg.DashboardInterval)
+		gateway.SetFlightLeadersInterval(cfg.FlightLeadersInterval)
 		gateway.SetAdminDigestInterval(cfg.AdminDigestInterval)
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
 		gateway.SetInteractionHandlerObserver(metrics.ObserveInteractionHandler)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
+		router.SetMessageDeletion(gateway)
 		router.SetGuildMemberProvider(gateway)
 		router.SetHealth(healthState)
 		if repository != nil {

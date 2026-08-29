@@ -79,21 +79,22 @@ type AgentIngress struct {
 }
 
 type Config struct {
-	Discord             Discord
-	ADSB                ADSB
-	AirplanesLive       AirplanesLive
-	AdsbLol             AdsbLol
-	PlaneAlert          PlaneAlert
-	ADSBDB              ADSBDB
-	AgentIngress        AgentIngress
-	DatabasePath        string
-	DashboardInterval   time.Duration
-	AdminDigestInterval time.Duration
-	HealthAddr          string
-	PprofAddr           string
-	LogLevel            string
-	LogFormat           string
-	Timezone            *time.Location
+	Discord               Discord
+	ADSB                  ADSB
+	AirplanesLive         AirplanesLive
+	AdsbLol               AdsbLol
+	PlaneAlert            PlaneAlert
+	ADSBDB                ADSBDB
+	AgentIngress          AgentIngress
+	DatabasePath          string
+	DashboardInterval     time.Duration
+	FlightLeadersInterval time.Duration
+	AdminDigestInterval   time.Duration
+	HealthAddr            string
+	PprofAddr             string
+	LogLevel              string
+	LogFormat             string
+	Timezone              *time.Location
 }
 
 type LookupEnv func(string) (string, bool)
@@ -137,13 +138,14 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 			Timeout: 30 * time.Second,
 			Refresh: 24 * time.Hour,
 		},
-		DatabasePath:        "/var/lib/skyfeed/skyfeed.db",
-		DashboardInterval:   15 * time.Second,
-		AdminDigestInterval: 6 * time.Hour,
-		HealthAddr:          "0.0.0.0:9090",
-		LogLevel:            "info",
-		LogFormat:           "json",
-		Timezone:            time.UTC,
+		DatabasePath:          "/var/lib/skyfeed/skyfeed.db",
+		DashboardInterval:     15 * time.Second,
+		FlightLeadersInterval: 5 * time.Minute,
+		AdminDigestInterval:   6 * time.Hour,
+		HealthAddr:            "0.0.0.0:9090",
+		LogLevel:              "info",
+		LogFormat:             "json",
+		Timezone:              time.UTC,
 	}
 
 	cfg.Discord.TokenFile = env(lookup, "SKYFEED_DISCORD_TOKEN_FILE", "")
@@ -216,6 +218,9 @@ func LoadWith(lookup LookupEnv, readFile ReadFile) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.DashboardInterval, err = parseDuration(lookup, "SKYFEED_DASHBOARD_INTERVAL", cfg.DashboardInterval); err != nil {
+		return Config{}, err
+	}
+	if cfg.FlightLeadersInterval, err = parseDuration(lookup, "SKYFEED_FLIGHT_LEADERS_INTERVAL", cfg.FlightLeadersInterval); err != nil {
 		return Config{}, err
 	}
 	if cfg.AdminDigestInterval, err = parseDuration(lookup, "SKYFEED_ADMIN_DIGEST_INTERVAL", cfg.AdminDigestInterval); err != nil {

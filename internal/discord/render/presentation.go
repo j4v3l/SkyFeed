@@ -250,6 +250,13 @@ func ModerationCase(value storage.ModerationCase) discord.Embed {
 		section("📝 Reason", Truncate(PlainText(value.Reason), 400)),
 		section("📨 Delivery", Labeled("Direct message", value.DMStatus)),
 	}
+	if value.TargetChannelID != 0 && value.TargetMessageID != 0 {
+		embed.Fields = append(embed.Fields, section("🧹 Deleted message", Facts(
+			fmt.Sprintf("**Channel** <#%d>", value.TargetChannelID),
+			fmt.Sprintf("**Message ID** `%d`", value.TargetMessageID),
+			labeledMarkup("Originally sent", RelativeTime(value.TargetMessageCreatedAt, "Unknown")),
+		)))
+	}
 	if value.Duration > 0 {
 		embed.Fields = append(embed.Fields, section("⏱️ Duration", conciseDuration(value.Duration)))
 	}
@@ -1057,7 +1064,7 @@ func Help(now time.Time, manageGuild bool) discord.Embed {
 		section("✈️ Explore aircraft", "`/nearby` `/traffic` `/aircraft` `/route` `/airport`\n`/airline` `/squawk` `/emergency` `/top live` `/top traffic`"),
 		section("🔔 Alerts", "Use `/watch` for personal rules. Operators can configure server delivery with `/alerts`."),
 		section("📊 Reports & health", "`/status` `/feeder` `/reports` `/privacy`"),
-		section("🛡️ Moderation", "Authorized moderators can warn, timeout, kick, ban, and review case history with `/moderation`."),
+		section("🛡️ Moderation", "Authorized moderators can warn, timeout, kick, ban, and review case history with `/moderation`. SkyFeed Admins with Manage Messages can securely delete a message by link, ID, or its context menu."),
 		section("⚙️ Preferences", "Use `/preferences units` to choose aviation or metric values for your own views."),
 	}
 	if manageGuild {

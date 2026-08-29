@@ -262,6 +262,35 @@ func TestDeleteMessageBindingRemovesDashboard(t *testing.T) {
 	}
 }
 
+func TestDeleteMessageBindingByTargetRemovesOnlyMatchingMessage(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range []storage.MessageBinding{
+		{GuildID: 9, Purpose: "dashboard", ChannelID: 1, MessageID: 2},
+		{GuildID: 9, Purpose: "flight-leaders", ChannelID: 3, MessageID: 4},
+	} {
+		if err := store.UpsertMessageBinding(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteMessageBindingByTarget(ctx, 9, 3, 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.MessageBinding(ctx, 9, "flight-leaders"); err != nil || found {
+		t.Fatalf("flight leader binding found=%v err=%v", found, err)
+	}
+	if _, found, err := store.MessageBinding(ctx, 9, "dashboard"); err != nil || !found {
+		t.Fatalf("dashboard binding found=%v err=%v", found, err)
+	}
+}
+
 func TestReportSummaryUsesCompleteHourBuckets(t *testing.T) {
 	ctx := context.Background()
 	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))

@@ -41,6 +41,8 @@ type SystemAuditData struct {
 	RecentFeeders         []string
 	PendingModerationLogs int
 	PlaneAlertRecords     int
+	MessageDeleteChannels int
+	MessageDeleteGaps     int
 	ADSBDBEnabled         bool
 	ADSBDBCache           int
 	ADSBDBHits            uint64
@@ -148,8 +150,12 @@ func formatGuildOps(data SystemAuditData) string {
 	if muted == "" {
 		muted = "none"
 	}
-	return fmt.Sprintf("alerts %s · muted squawks `%s`\nwatch %d · alert configs %d · report schedules %d\ninteresting seen %d · pending mod logs %d · plane-alert %d",
-		paused, PlainText(muted), data.WatchRules, data.AlertConfigs, data.ReportSchedules, data.InterestingSeen, data.PendingModerationLogs, data.PlaneAlertRecords)
+	deleteAccess := fmt.Sprintf("message delete %d/%d channels", data.MessageDeleteChannels-data.MessageDeleteGaps, data.MessageDeleteChannels)
+	if data.MessageDeleteGaps > 0 {
+		deleteAccess += fmt.Sprintf(" · %d permission gaps", data.MessageDeleteGaps)
+	}
+	return fmt.Sprintf("alerts %s · muted squawks `%s`\nwatch %d · alert configs %d · report schedules %d\ninteresting seen %d · pending mod logs %d · plane-alert %d\n%s",
+		paused, PlainText(muted), data.WatchRules, data.AlertConfigs, data.ReportSchedules, data.InterestingSeen, data.PendingModerationLogs, data.PlaneAlertRecords, deleteAccess)
 }
 
 func formatBindings(data SystemAuditData) string {

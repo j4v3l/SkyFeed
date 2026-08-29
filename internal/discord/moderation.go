@@ -38,7 +38,7 @@ type ModerationExecutor interface {
 }
 
 func (router *Router) handleModeration(request CommandRequest, responder InteractionResponder) error {
-	if router.repository == nil || router.moderation == nil {
+	if router.repository == nil || (request.Subcommand == "delete-message" && router.messageDeletion == nil) || (request.Subcommand != "delete-message" && router.moderation == nil) {
 		return responder.CreateMessage(errorMessage("Moderation is not available while durable storage or Discord delivery is offline."))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -46,14 +46,20 @@ func (router *Router) handleModeration(request CommandRequest, responder Interac
 	if err := router.ensureGuild(ctx, request.GuildID); err != nil {
 		return responder.CreateMessage(errorMessage("Moderation storage is temporarily unavailable."))
 	}
-	if !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, "moderator") {
-		return responder.CreateMessage(errorMessage("A configured Moderator or Admin role is required for moderation."))
+	requiredTier := "moderator"
+	if request.Subcommand == "delete-message" {
+		requiredTier = "admin"
+	}
+	if !router.authorizedTier(ctx, request.GuildID, request.RoleIDs, request.Administrator, requiredTier) {
+		return responder.CreateMessage(errorMessage("The required configured SkyFeed moderation role is missing."))
 	}
 	if !hasNativeModerationPermission(request.Permissions, request.Administrator, request.Subcommand) {
 		return responder.CreateMessage(errorMessage(nativeModerationPermissionMessage(request.Subcommand)))
 	}
 
 	switch request.Subcommand {
+	case "delete-message":
+		return router.beginMessageDeletion(request, responder)
 	case "case":
 		return router.showModerationCase(ctx, request, responder)
 	case "history":
@@ -215,12 +221,9 @@ func moderationExecutionFromCommand(request CommandRequest) (ModerationExecution
 	if target == 0 {
 		return ModerationExecution{}, errors.New("select a valid server member")
 	}
-	reason := strings.TrimSpace(request.Strings["reason"])
-	if strings.IndexFunc(reason, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
-		return ModerationExecution{}, errors.New("the reason contains unsupported control characters")
-	}
-	if count := utf8.RuneCountInString(reason); count < 3 || count > 400 {
-		return ModerationExecution{}, errors.New("the reason must contain 3–400 characters")
+	reason, err := validateModerationReason(request.Strings["reason"])
+	if err != nil {
+		return ModerationExecution{}, err
 	}
 	duration := time.Duration(0)
 	if request.Subcommand == "timeout" {
@@ -286,6 +289,8 @@ func hasNativeModerationPermission(permissions disgocord.Permissions, administra
 		return permissions.Has(disgocord.PermissionKickMembers)
 	case "ban", "unban":
 		return permissions.Has(disgocord.PermissionBanMembers)
+	case "delete-message":
+		return permissions.Has(disgocord.PermissionManageMessages)
 	case "case", "history":
 		return permissions.Has(disgocord.PermissionModerateMembers) || permissions.Has(disgocord.PermissionKickMembers) || permissions.Has(disgocord.PermissionBanMembers)
 	default:
@@ -299,11 +304,24 @@ func nativeModerationPermissionMessage(action string) string {
 		return "Discord's Kick Members permission is required for this action."
 	case "ban", "unban":
 		return "Discord's Ban Members permission is required for this action."
+	case "delete-message":
+		return "Discord's Manage Messages permission is required for this action."
 	case "case", "history":
 		return "A native Discord moderation permission is required to view cases."
 	default:
 		return "Discord's Moderate Members permission is required for this action."
 	}
+}
+
+func validateModerationReason(raw string) (string, error) {
+	reason := strings.TrimSpace(raw)
+	if strings.IndexFunc(reason, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) >= 0 {
+		return "", errors.New("the reason contains unsupported control characters")
+	}
+	if count := utf8.RuneCountInString(reason); count < 3 || count > 400 {
+		return "", errors.New("the reason must contain 3–400 characters")
+	}
+	return reason, nil
 }
 
 func moderationErrorCode(err error) string {

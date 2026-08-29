@@ -117,8 +117,9 @@ metrics bind only to `127.0.0.1:9090` on the host.
 SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
 `/airline`, `/squawk`, `/emergency`, `/traffic`, `/top live`, `/top traffic`,
 `/privacy`, `/preferences units`, `/watch`, `/alerts`, `/reports`, `/audit`,
-`/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
-message context menu. Aircraft results begin with a concise card. The primary
+`/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus **Lookup
+aircraft** and **Delete with SkyFeed** message context menus. Aircraft results
+begin with a concise card. The primary
 row contains **Details**, **Refresh**, and **Close**; an invoker-bound **More
 aircraft actions…** menu offers Track, Watch, and Route & weather when those
 actions are available. Track plots are generated locally from a bounded,
@@ -157,8 +158,10 @@ action:
 Set `SKYFEED_DISCORD_ADMIN_ROLE_ID`, `SKYFEED_DISCORD_OPERATOR_ROLE_ID`, and
 `SKYFEED_DISCORD_MODERATOR_ROLE_ID` in `.env` to auto-bind these on startup, or
 run `python3 scripts/setup-discord-governance.py` to apply channel permissions
-and post server rules. Grant `@SkyFeed Admin` the **Manage Roles** permission in
-Discord so admins can assign Operator and Moderator roles to members.
+and post server rules. Grant `@SkyFeed Admin` **Manage Roles** and **Manage
+Messages** so admins can assign Operator and Moderator roles and approve
+message deletion. Grant the SkyFeed bot role **Manage Messages** so it can
+perform approved deletions. Neither role needs Administrator.
 
 ```text
 /settings channels purpose:Moderation log channel:#moderation-log
@@ -178,11 +181,24 @@ DM delivery and Discord failures are recorded. Moderation log delivery retries
 from a bounded SQLite outbox across restarts, and cases expire after 365 days in
 bounded purge batches.
 
+SkyFeed Admins with Manage Messages can use `/moderation delete-message` with a
+Discord message link or ID, or choose **Apps → Delete with SkyFeed** on a
+message. SkyFeed privately previews the target, requires a 3–400 character
+reason and one-minute confirmation, then rechecks both the admin and bot
+access. The moderation case stores IDs, reason, timestamps, and outcome—never
+the deleted message content. Deletion records use the existing
+`#moderation-log` delivery path.
+
 Configure durable channel IDs with `/settings channels`. Names such as
 `#adsb-alerts` and `#interesting-aircraft` are documentation only and are never
 treated as identifiers.
 Daily and weekly report schedules are delivered by the bounded outbound
 scheduler and record their last successful run to prevent restart duplicates.
+The reports destination also holds one persistent **Live flight leaders** card.
+It is edited every five minutes by default and shows the fastest, slowest,
+highest, and lowest fresh airborne aircraft across the deduplicated community
+view. Set `SKYFEED_FLIGHT_LEADERS_INTERVAL=0` to disable it, or choose an
+interval from `1m` through `1h`.
 Operator, owner, and aircraft-type watch rules are visibly best-effort and use
 only asynchronously cached ADSBDB metadata; they can never become emergencies.
 Movement alerts require three consecutive compatible observations and are

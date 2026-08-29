@@ -145,6 +145,12 @@ func (router *Router) buildSystemAudit(ctx context.Context, guildID uint64) (ren
 	if count, err := router.repository.PlaneAlertReferenceCount(ctx); err == nil {
 		audit.PlaneAlertRecords = count
 	}
+	if auditor, ok := router.messageDeletion.(MessageDeletionAuditor); ok {
+		if access, err := auditor.AuditMessageDeletionAccess(ctx, guildID); err == nil {
+			audit.MessageDeleteChannels = access.Channels
+			audit.MessageDeleteGaps = access.Gaps
+		}
+	}
 	if router.enrichmentAudit != nil {
 		stats := router.enrichmentAudit.Stats()
 		audit.ADSBDBEnabled = true

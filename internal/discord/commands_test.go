@@ -8,13 +8,13 @@ import (
 
 func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 	commands := DesiredCommands()
-	if len(commands) != 22 {
+	if len(commands) != 23 {
 		t.Fatalf("got %d commands", len(commands))
 	}
 	if err := validateDesiredCommands(commands); err != nil {
 		t.Fatal(err)
 	}
-	var sawLookup bool
+	var sawLookup, sawDelete bool
 	for _, command := range commands {
 		switch command.Type() {
 		case disgocord.ApplicationCommandTypeSlash:
@@ -26,16 +26,20 @@ func TestDesiredCommandsAreOwnedUniqueAndNative(t *testing.T) {
 				t.Fatalf("%s contexts = %#v", slash.Name, slash.Contexts)
 			}
 		case disgocord.ApplicationCommandTypeMessage:
-			if command.CommandName() != LookupAircraftCommand {
+			switch command.CommandName() {
+			case LookupAircraftCommand:
+				sawLookup = true
+			case DeleteMessageCommand:
+				sawDelete = true
+			default:
 				t.Fatalf("unexpected message command %q", command.CommandName())
 			}
-			sawLookup = true
 		default:
 			t.Fatalf("%s has unsupported type %v", command.CommandName(), command.Type())
 		}
 	}
-	if !sawLookup {
-		t.Fatal("Lookup aircraft message command missing")
+	if !sawLookup || !sawDelete {
+		t.Fatal("required message commands missing")
 	}
 }
 
@@ -74,6 +78,55 @@ func TestModerationCommandUsesTypedTargetsAndBoundedReasons(t *testing.T) {
 		return
 	}
 	t.Fatal("moderation command not found")
+}
+
+func TestEverySubcommandPlacesRequiredOptionsFirst(t *testing.T) {
+	for _, command := range DesiredCommands() {
+		slash, ok := command.(disgocord.SlashCommandCreate)
+		if !ok {
+			continue
+		}
+		for _, option := range slash.Options {
+			subcommand, ok := option.(disgocord.ApplicationCommandOptionSubCommand)
+			if !ok {
+				continue
+			}
+			optionalSeen := false
+			for _, child := range subcommand.Options {
+				required := commandOptionRequired(child)
+				if !required {
+					optionalSeen = true
+				} else if optionalSeen {
+					t.Fatalf("%s %s has required option %s after an optional option", slash.Name, subcommand.Name, child.OptionName())
+				}
+			}
+		}
+	}
+}
+
+func commandOptionRequired(option disgocord.ApplicationCommandOption) bool {
+	switch value := option.(type) {
+	case disgocord.ApplicationCommandOptionString:
+		return value.Required
+	case disgocord.ApplicationCommandOptionInt:
+		return value.Required
+	case disgocord.ApplicationCommandOptionBool:
+		return value.Required
+	case disgocord.ApplicationCommandOptionUser:
+		return value.Required
+	case disgocord.ApplicationCommandOptionChannel:
+		return value.Required
+	case disgocord.ApplicationCommandOptionRole:
+		return value.Required
+	case disgocord.ApplicationCommandOptionMentionable:
+		return value.Required
+	case disgocord.ApplicationCommandOptionFloat:
+		return value.Required
+	case disgocord.ApplicationCommandOptionAttachment:
+		return value.Required
+	default:
+		return false
+	}
 }
 
 func TestAircraftUsesAutocomplete(t *testing.T) {

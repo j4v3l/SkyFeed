@@ -7,9 +7,10 @@ import (
 	"github.com/disgoorg/omit"
 )
 
-const CommandSchemaVersion = 15
+const CommandSchemaVersion = 16
 
 const LookupAircraftCommand = "Lookup aircraft"
+const DeleteMessageCommand = "Delete with SkyFeed"
 
 // ownedCommandNames is permanent command ownership history. When a command is
 // removed from DesiredCommands, leave its name here as a deletion tombstone so
@@ -18,7 +19,7 @@ const LookupAircraftCommand = "Lookup aircraft"
 var ownedCommandNames = map[string]struct{}{
 	"status": {}, "nearby": {}, "aircraft": {}, "route": {}, "airport": {}, "squawk": {}, "emergency": {}, "traffic": {}, "top": {}, "privacy": {},
 	"watch": {}, "alerts": {}, "reports": {}, "audit": {}, "feeder": {}, "settings": {}, "preferences": {}, "help": {},
-	"moderation": {}, "airline": {}, LookupAircraftCommand: {},
+	"moderation": {}, "airline": {}, LookupAircraftCommand: {}, DeleteMessageCommand: {},
 	"feeders": {},
 }
 
@@ -166,6 +167,12 @@ func DesiredCommands() []disgocord.ApplicationCommandCreate {
 		Name:             LookupAircraftCommand,
 		IntegrationTypes: []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall},
 		Contexts:         guildAndBotDMContextList(),
+	})
+	manageMessages := disgocord.Permissions(disgocord.PermissionManageMessages)
+	commands = append(commands, disgocord.MessageCommandCreate{
+		Name: DeleteMessageCommand, DefaultMemberPermissions: omit.NewPtr(manageMessages),
+		IntegrationTypes: []disgocord.ApplicationIntegrationType{disgocord.ApplicationIntegrationTypeGuildInstall},
+		Contexts:         []disgocord.InteractionContextType{disgocord.InteractionContextTypeGuild},
 	})
 	return commands
 }
@@ -348,6 +355,14 @@ func moderationOptions() []disgocord.ApplicationCommandOption {
 			disgocord.ApplicationCommandOptionString{Name: "user-id", Description: "Banned user's Discord ID", Required: true, MinLength: intPtr(1), MaxLength: intPtr(20)},
 			reasonOption(),
 		}},
+		disgocord.ApplicationCommandOptionSubCommand{Name: "delete-message", Description: "Delete one guild message after private confirmation", Options: []disgocord.ApplicationCommandOption{
+			disgocord.ApplicationCommandOptionString{Name: "message", Description: "Discord message link or message ID", Required: true, MinLength: intPtr(1), MaxLength: intPtr(200)},
+			reasonOption(),
+			disgocord.ApplicationCommandOptionChannel{Name: "channel", Description: "Optional channel when using a raw message ID", ChannelTypes: []disgocord.ChannelType{
+				disgocord.ChannelTypeGuildText, disgocord.ChannelTypeGuildNews, disgocord.ChannelTypeGuildVoice,
+				disgocord.ChannelTypeGuildNewsThread, disgocord.ChannelTypeGuildPublicThread, disgocord.ChannelTypeGuildPrivateThread,
+			}},
+		}},
 		disgocord.ApplicationCommandOptionSubCommand{Name: "case", Description: "View one moderation case", Options: []disgocord.ApplicationCommandOption{
 			disgocord.ApplicationCommandOptionInt{Name: "case-id", Description: "Moderation case number", Required: true, MinValue: intPtr(1)},
 		}},
@@ -411,7 +426,11 @@ func validateCommandInstallScope(command disgocord.ApplicationCommandCreate) err
 		if len(typed.IntegrationTypes) != 1 || typed.IntegrationTypes[0] != disgocord.ApplicationIntegrationTypeGuildInstall {
 			return fmt.Errorf("command %q must allow guild installation only", name)
 		}
-		if !guildAndBotDMContexts(typed.Contexts) {
+		if name == DeleteMessageCommand {
+			if len(typed.Contexts) != 1 || typed.Contexts[0] != disgocord.InteractionContextTypeGuild {
+				return fmt.Errorf("command %q must allow guild interaction context only", name)
+			}
+		} else if !guildAndBotDMContexts(typed.Contexts) {
 			return fmt.Errorf("command %q must allow guild and bot DM interaction contexts only", name)
 		}
 	default:

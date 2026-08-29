@@ -14,7 +14,7 @@ import (
 )
 
 func TestMigrationFromEveryPriorSchemaVersion(t *testing.T) {
-	for version := 1; version <= 10; version++ {
+	for version := 1; version <= 13; version++ {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {
 			ctx := context.Background()
 			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
@@ -27,10 +27,46 @@ func TestMigrationFromEveryPriorSchemaVersion(t *testing.T) {
 				t.Fatalf("upgrade from schema %d: %v", version, err)
 			}
 			var latest int
-			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 13 {
+			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 14 {
 				t.Fatalf("latest schema=%d err=%v", latest, err)
 			}
 		})
+	}
+}
+
+func TestMigrationFourteenPreservesModerationCasesAndOutbox(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	applyMigrationsThrough(t, ctx, db, 13)
+	const at = "2026-08-28T12:00:00Z"
+	if _, err := db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (42, 'aviation', 'UTC', ?, ?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO moderation_cases(id, guild_id, moderator_id, target_user_id, action, reason, status, dm_status, created_at, completed_at) VALUES (7, 42, 8, 9, 'warn', 'Migration test', 'succeeded', 'delivered', ?, ?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO moderation_log_outbox(id, case_id, guild_id, attempts, next_attempt_at, created_at) VALUES (11, 7, 42, 2, ?, ?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var cases, logs int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM moderation_cases WHERE id=7 AND action='warn' AND target_channel_id IS NULL AND target_message_id IS NULL`).Scan(&cases); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM moderation_log_outbox WHERE id=11 AND case_id=7 AND attempts=2`).Scan(&logs); err != nil {
+		t.Fatal(err)
+	}
+	if cases != 1 || logs != 1 {
+		t.Fatalf("cases=%d logs=%d", cases, logs)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO moderation_cases(guild_id, moderator_id, target_user_id, target_channel_id, target_message_id, action, reason, created_at) VALUES (42, 8, 9, 10, 11, 'delete-message', 'Remove spam', ?)`, at); err != nil {
+		t.Fatalf("delete-message action rejected: %v", err)
 	}
 }
 

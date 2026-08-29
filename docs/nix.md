@@ -156,6 +156,7 @@ NixOS uses `/etc/skyfeed/skyfeed.env` instead of the repo-root `.env` used by Do
 | `SKYFEED_ADSBLOL_*` | same | same | Route/airport enrichment |
 | `SKYFEED_PLANE_ALERT_*` | same | same | Interesting aircraft matching |
 | `SKYFEED_DASHBOARD_INTERVAL` | same | same | Default `15s` |
+| `SKYFEED_FLIGHT_LEADERS_INTERVAL` | same | same | Default `5m`; `0` disables; range `1m`–`1h` |
 | `SKYFEED_ADMIN_DIGEST_INTERVAL` | same | same | Default `6h`; `0` disables |
 | `SKYFEED_HEALTH_ADDR` | `0.0.0.0:9090` in example | managed by module | Configure with typed NixOS options |
 | `SKYFEED_AGENT_*` | same | module or agent env | Central ingress is disabled by default |
