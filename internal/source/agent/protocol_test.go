@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -283,5 +284,102 @@ func TestIngressEnrollmentPublicationDuplicateAndReplay(t *testing.T) {
 	}
 	if !bytes.Equal(stored.PublicKey, credential.PrivateKey.Public().(ed25519.PublicKey)) {
 		t.Fatal("server public key does not match agent identity")
+	}
+}
+
+func BenchmarkAgentSnapshotCodecOneThousandAircraft(b *testing.B) {
+	now := time.Unix(1_800_000_000, 0).UTC()
+	aircraft := make([]domain.Aircraft, 1_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{
+			ICAO: fmt.Sprintf("%06X", index), Callsign: fmt.Sprintf("SF%04d", index),
+			HasPosition: true, Latitude: 25 + float64(index)/10_000, Longitude: -80 - float64(index)/10_000,
+			HasAltitude: true, AltitudeFeet: 1_000 + index*20, HasDistance: true, DistanceNM: float64(index) / 10,
+		}
+	}
+	snapshot := &domain.Snapshot{SourceGeneratedAt: now, FetchedAt: now, Aircraft: aircraft}
+	encoder, err := NewSnapshotEncoder()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer encoder.Close()
+	payload, err := encoder.Encode(snapshot)
+	if err != nil {
+		b.Fatal(err)
+	}
+	decoder, err := NewSnapshotDecoder()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer decoder.Close()
+	b.Run("encode", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := encoder.Encode(snapshot); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("decode", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := decoder.Decode("community-one", payload, now); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
+func BenchmarkAgentIngressOneThousandAircraft(b *testing.B) {
+	ctx := context.Background()
+	store, err := sqlite.Open(ctx, filepath.Join(b.TempDir(), "ingress-benchmark.db"))
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 1); err != nil {
+		b.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		b.Fatal(err)
+	}
+	now := time.Now().UTC()
+	descriptor := domain.FeederDescriptor{ID: "benchmark", DisplayName: "Benchmark", SourceKind: domain.FeederSourceAgent, Enabled: true}
+	if err := store.UpsertFeeder(ctx, storage.Feeder{GuildID: 1, Descriptor: descriptor, PublicKey: publicKey, CreatedAt: now, UpdatedAt: now}); err != nil {
+		b.Fatal(err)
+	}
+	manager := state.NewFeederManager(time.Second)
+	if err := manager.Register(descriptor); err != nil {
+		b.Fatal(err)
+	}
+	ingress, err := NewIngressServer(IngressConfig{Addr: "127.0.0.1:0"}, store, manager, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	aircraft := make([]domain.Aircraft, 1_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{ICAO: fmt.Sprintf("%06X", index), Callsign: fmt.Sprintf("SF%04d", index), HasPosition: true, Latitude: 25, Longitude: -80}
+	}
+	payload, err := EncodeSnapshot(&domain.Snapshot{FetchedAt: now, Aircraft: aircraft})
+	if err != nil {
+		b.Fatal(err)
+	}
+	decoder, err := NewSnapshotDecoder()
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer decoder.Close()
+	ingress.now = func() time.Time { return now }
+	b.ReportAllocs()
+	b.ResetTimer()
+	for sequence := uint64(1); b.Loop(); sequence++ {
+		envelope, err := SignEnvelope(privateKey, descriptor.ID, sequence, now, payload)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if result := ingress.process(ctx, decoder, envelope); result.err != nil {
+			b.Fatal(result.err)
+		}
 	}
 }

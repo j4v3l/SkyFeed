@@ -129,8 +129,9 @@ func (scheduler *OutboundScheduler) Enqueue(ctx context.Context, job OutboundJob
 
 func (scheduler *OutboundScheduler) Run(ctx context.Context) error {
 	var workers sync.WaitGroup
-	workers.Add(3)
-	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextCritical) }()
+	workers.Add(4)
+	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextEmergency) }()
+	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextInteraction) }()
 	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextAlert) }()
 	go func() { defer workers.Done(); scheduler.runLane(ctx, scheduler.nextBackground) }()
 	workers.Wait()
@@ -210,22 +211,19 @@ func (scheduler *OutboundScheduler) releasePending(job OutboundJob) {
 	scheduler.mu.Unlock()
 }
 
-func (scheduler *OutboundScheduler) nextCritical(ctx context.Context) (OutboundJob, bool) {
-	select {
-	case job := <-scheduler.emergency:
-		return job, true
-	default:
-	}
-	select {
-	case job := <-scheduler.interaction:
-		return job, true
-	default:
-	}
+func (scheduler *OutboundScheduler) nextEmergency(ctx context.Context) (OutboundJob, bool) {
 	select {
 	case <-ctx.Done():
 		return OutboundJob{}, false
 	case job := <-scheduler.emergency:
 		return job, true
+	}
+}
+
+func (scheduler *OutboundScheduler) nextInteraction(ctx context.Context) (OutboundJob, bool) {
+	select {
+	case <-ctx.Done():
+		return OutboundJob{}, false
 	case job := <-scheduler.interaction:
 		return job, true
 	}

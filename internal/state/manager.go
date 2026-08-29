@@ -2,7 +2,7 @@ package state
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -35,6 +35,7 @@ type FeederManager struct {
 	interval          time.Duration
 	now               func() time.Time
 	sequence          atomic.Uint64
+	uniqueHint        atomic.Int64
 	observer          func(domain.FeederID, *domain.Snapshot)
 	aggregateObserver func(*domain.Snapshot)
 }
@@ -104,7 +105,7 @@ func (manager *FeederManager) Remove(id domain.FeederID) {
 }
 
 func (manager *FeederManager) Publish(id domain.FeederID, snapshot *domain.Snapshot) bool {
-	if snapshot == nil {
+	if snapshot == nil || !validSnapshotAircraft(snapshot.Aircraft) {
 		return false
 	}
 	manager.mu.RLock()
@@ -170,11 +171,11 @@ func (manager *FeederManager) ListFeeders() []domain.FeederSummary {
 		}
 		result = append(result, summary)
 	}
-	sort.Slice(result, func(left, right int) bool {
-		if result[left].DisplayName != result[right].DisplayName {
-			return result[left].DisplayName < result[right].DisplayName
+	slices.SortFunc(result, func(left, right domain.FeederSummary) int {
+		if left.DisplayName != right.DisplayName {
+			return strings.Compare(left.DisplayName, right.DisplayName)
 		}
-		return result[left].ID < result[right].ID
+		return strings.Compare(string(left.ID), string(right.ID))
 	})
 	return result
 }
@@ -208,34 +209,73 @@ func (manager *FeederManager) Run(ctx context.Context) error {
 // Rebuild is public for deterministic startup and benchmark tests. Normal
 // ingestion uses Run, which coalesces bursts to at most four builds per second.
 func (manager *FeederManager) Rebuild() *domain.Snapshot {
-	feeders := manager.ListFeeders()
+	type aggregateInput struct {
+		descriptor domain.FeederDescriptor
+		snapshot   *domain.Snapshot
+	}
 	manager.mu.RLock()
-	snapshots := make([]*domain.Snapshot, 0, len(feeders))
-	for _, summary := range feeders {
-		entry := manager.feeders[summary.ID]
-		if entry == nil || !entry.descriptor.Enabled {
-			continue
+	inputs := make([]aggregateInput, 0, len(manager.feeders))
+	feeders := make([]domain.FeederSummary, 0, len(manager.feeders))
+	totalObservations := 0
+	for _, entry := range manager.feeders {
+		snapshot := entry.snapshot.Load()
+		summary := domain.FeederSummary{FeederDescriptor: entry.descriptor, Health: domain.HealthUnknown}
+		if snapshot != nil {
+			summary.Health = snapshot.Health.Aircraft.Status
+			summary.LastPublished = snapshot.PublishedAt
+			summary.Aircraft = len(snapshot.Aircraft)
 		}
-		if snapshot := entry.snapshot.Load(); snapshot != nil {
-			snapshots = append(snapshots, snapshot)
+		feeders = append(feeders, summary)
+		if entry.descriptor.Enabled && snapshot != nil {
+			inputs = append(inputs, aggregateInput{descriptor: entry.descriptor, snapshot: snapshot})
+			totalObservations += len(snapshot.Aircraft)
 		}
 	}
 	manager.mu.RUnlock()
+	slices.SortFunc(feeders, func(left, right domain.FeederSummary) int {
+		if left.DisplayName != right.DisplayName {
+			return strings.Compare(left.DisplayName, right.DisplayName)
+		}
+		return strings.Compare(string(left.ID), string(right.ID))
+	})
+	// Processing inputs by feeder ID makes every SeenBy slice deterministic, so
+	// no per-aircraft sort or temporary feeder slice is required.
+	slices.SortFunc(inputs, func(left, right aggregateInput) int {
+		return strings.Compare(string(left.descriptor.ID), string(right.descriptor.ID))
+	})
+
+	snapshots := make([]*domain.Snapshot, len(inputs))
+	for index := range inputs {
+		snapshots[index] = inputs[index].snapshot
+	}
 
 	type selected struct {
-		aircraft domain.Aircraft
-		seenAt   time.Time
+		snapshot          *domain.Snapshot
+		emergencySnapshot *domain.Snapshot
+		seenAt            int64
+		emergencyAt       int64
+		aircraftIndex     uint32
+		emergencyIndex    uint32
+		seenOffset        uint32
+		seenCount         uint32
+		seenCursor        uint32
 	}
-	chosen := make(map[string]selected)
-	seenBy := make(map[string][]domain.FeederID)
-	emergencyByICAO := make(map[string]domain.Aircraft)
+	capacity := totalObservations
+	if hint := int(manager.uniqueHint.Load()); hint > 0 && hint < capacity {
+		// Leave measured headroom for normal churn without sizing the map for all
+		// overlapping observations.
+		capacity = min(totalObservations, hint+max(hint/4, 64))
+	}
+	chosen := make(map[string]selected, capacity)
+	keys := make([]string, 0, capacity)
 	var fetchedAt, generatedAt time.Time
 	var messages uint64
 	messageValid := false
 	stats := domain.Statistics{}
 	capabilities := domain.Capabilities(0)
 	health := aggregateHealth(snapshots)
-	for _, snapshot := range snapshots {
+	for _, input := range inputs {
+		snapshot := input.snapshot
 		capabilities |= snapshot.Capabilities
 		if snapshot.FetchedAt.After(fetchedAt) {
 			fetchedAt = snapshot.FetchedAt
@@ -250,50 +290,74 @@ func (manager *FeederManager) Rebuild() *domain.Snapshot {
 		stats.Messages += snapshot.Statistics.Messages
 		stats.MessageRate += snapshot.Statistics.MessageRate
 		stats.MaxRangeNM = max(stats.MaxRangeNM, snapshot.Statistics.MaxRangeNM)
-		for _, aircraft := range snapshot.Aircraft {
-			icao := strings.ToUpper(strings.TrimSpace(aircraft.ICAO))
-			if icao == "" {
-				continue
-			}
-			seenBy[icao] = appendUniqueFeeder(seenBy[icao], snapshot.FeederID)
-			if domain.EmergencyActive(aircraft) {
-				emergencyByICAO[icao] = aircraft
-			}
-			seenAt := snapshot.FetchedAt.Add(-max(aircraft.Seen, 0))
+		for aircraftIndex := range snapshot.Aircraft {
+			aircraft := snapshot.Aircraft[aircraftIndex]
+			icao := aircraft.ICAO
+			seenAt := snapshot.FetchedAt.Add(-max(aircraft.Seen, 0)).UnixNano()
 			current, exists := chosen[icao]
-			if !exists || betterObservation(aircraft, seenAt, current.aircraft, current.seenAt) {
-				copyValue := aircraft
-				copyValue.ICAO = icao
-				chosen[icao] = selected{aircraft: copyValue, seenAt: seenAt}
+			if !exists {
+				keys = append(keys, icao)
+				current = selected{snapshot: snapshot, aircraftIndex: uint32(aircraftIndex), seenAt: seenAt}
 			}
+			current.seenCount++
+			if domain.EmergencyActive(aircraft) && (current.emergencySnapshot == nil || seenAt > current.emergencyAt) {
+				current.emergencySnapshot = snapshot
+				current.emergencyIndex = uint32(aircraftIndex)
+				current.emergencyAt = seenAt
+			}
+			if !exists || betterObservationAt(aircraft, seenAt, current.snapshot.Aircraft[current.aircraftIndex], current.seenAt) {
+				current.snapshot = snapshot
+				current.aircraftIndex = uint32(aircraftIndex)
+				current.seenAt = seenAt
+			}
+			chosen[icao] = current
+		}
+	}
+	manager.uniqueHint.Store(int64(len(chosen)))
+	slices.Sort(keys)
+	totalSeen := 0
+	for _, icao := range keys {
+		value := chosen[icao]
+		value.seenOffset = uint32(totalSeen)
+		totalSeen += int(value.seenCount)
+		chosen[icao] = value
+	}
+	seenArena := make([]domain.FeederID, totalSeen)
+	for _, input := range inputs {
+		for _, item := range input.snapshot.Aircraft {
+			value := chosen[item.ICAO]
+			seenArena[int(value.seenOffset)+int(value.seenCursor)] = input.descriptor.ID
+			value.seenCursor++
+			chosen[item.ICAO] = value
 		}
 	}
 
-	aircraft := make([]domain.Aircraft, 0, len(chosen))
-	for icao, value := range chosen {
-		if emergency, active := emergencyByICAO[icao]; active && !domain.EmergencyActive(value.aircraft) {
-			value.aircraft.Emergency = emergency.Emergency
-			value.aircraft.Squawk = emergency.Squawk
+	aircraft := make([]domain.Aircraft, len(keys))
+	byICAO := make(map[string]int, len(keys))
+	search := make([]domain.AircraftKey, len(keys))
+	for index, icao := range keys {
+		value := chosen[icao]
+		item := value.snapshot.Aircraft[value.aircraftIndex]
+		if !domain.EmergencyActive(item) && value.emergencySnapshot != nil {
+			emergency := value.emergencySnapshot.Aircraft[value.emergencyIndex]
+			item.Emergency = emergency.Emergency
+			item.Squawk = emergency.Squawk
 		}
-		value.aircraft.SeenBy = append([]domain.FeederID(nil), seenBy[icao]...)
-		sort.Slice(value.aircraft.SeenBy, func(left, right int) bool { return value.aircraft.SeenBy[left] < value.aircraft.SeenBy[right] })
-		aircraft = append(aircraft, value.aircraft)
+		seenStart := int(value.seenOffset)
+		seenEnd := seenStart + int(value.seenCount)
+		item.SeenBy = seenArena[seenStart:seenEnd:seenEnd]
+		aircraft[index] = item
+		byICAO[icao] = index
+		search[index] = domain.AircraftKey{ICAO: icao, Callsign: item.Callsign, Registration: item.Registration}
 	}
-	sort.Slice(aircraft, func(left, right int) bool { return aircraft[left].ICAO < aircraft[right].ICAO })
-	byICAO := make(map[string]int, len(aircraft))
-	search := make([]domain.AircraftKey, 0, len(aircraft))
-	for index := range aircraft {
-		byICAO[aircraft[index].ICAO] = index
-		search = append(search, domain.AircraftKey{ICAO: aircraft[index].ICAO, Callsign: aircraft[index].Callsign, Registration: aircraft[index].Registration})
-	}
-	sort.Slice(search, func(left, right int) bool {
-		if search[left].Callsign != search[right].Callsign {
-			return search[left].Callsign < search[right].Callsign
+	slices.SortFunc(search, func(left, right domain.AircraftKey) int {
+		if left.Callsign != right.Callsign {
+			return strings.Compare(left.Callsign, right.Callsign)
 		}
-		if search[left].Registration != search[right].Registration {
-			return search[left].Registration < search[right].Registration
+		if left.Registration != right.Registration {
+			return strings.Compare(left.Registration, right.Registration)
 		}
-		return search[left].ICAO < search[right].ICAO
+		return strings.Compare(left.ICAO, right.ICAO)
 	})
 	stats.TrackedAircraft = len(aircraft)
 	stats.FetchedAt = fetchedAt
@@ -311,11 +375,11 @@ func (manager *FeederManager) Rebuild() *domain.Snapshot {
 	return next
 }
 
-func betterObservation(candidate domain.Aircraft, candidateAt time.Time, current domain.Aircraft, currentAt time.Time) bool {
-	if candidateAt.After(currentAt) {
+func betterObservationAt(candidate domain.Aircraft, candidateAt int64, current domain.Aircraft, currentAt int64) bool {
+	if candidateAt > currentAt {
 		return true
 	}
-	if candidateAt.Before(currentAt) {
+	if candidateAt < currentAt {
 		return false
 	}
 	if candidate.HasPosition != current.HasPosition {
@@ -324,13 +388,16 @@ func betterObservation(candidate domain.Aircraft, candidateAt time.Time, current
 	return candidate.Messages > current.Messages
 }
 
-func appendUniqueFeeder(values []domain.FeederID, value domain.FeederID) []domain.FeederID {
-	for _, existing := range values {
-		if existing == value {
-			return values
+func validSnapshotAircraft(aircraft []domain.Aircraft) bool {
+	previous := ""
+	for index := range aircraft {
+		icao := aircraft[index].ICAO
+		if icao == "" || icao != strings.TrimSpace(icao) || icao != strings.ToUpper(icao) || (previous != "" && previous >= icao) {
+			return false
 		}
+		previous = icao
 	}
-	return append(values, value)
+	return true
 }
 
 func aggregateHealth(snapshots []*domain.Snapshot) domain.Health {

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/rules"
+	"github.com/j4v3l/SkyFeed/internal/track"
 )
 
 func TestFeederManagerDeduplicatesByFreshestObservation(t *testing.T) {
@@ -45,6 +47,24 @@ func TestFeederManagerRejectsReservedAndDisabledFeeders(t *testing.T) {
 	}
 	if manager.Publish("disabled", feederSnapshot("disabled", time.Now(), nil)) {
 		t.Fatal("disabled feeder publication accepted")
+	}
+}
+
+func TestFeederManagerRejectsNonCanonicalAircraft(t *testing.T) {
+	manager := NewFeederManager(time.Second)
+	if err := manager.Register(domain.FeederDescriptor{ID: "feed", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	for name, aircraft := range map[string][]domain.Aircraft{
+		"lowercase": {{ICAO: "abc123"}},
+		"unsorted":  {{ICAO: "DEF456"}, {ICAO: "ABC123"}},
+		"duplicate": {{ICAO: "ABC123"}, {ICAO: "ABC123"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if manager.Publish("feed", feederSnapshot("feed", time.Now(), aircraft)) {
+				t.Fatal("non-canonical snapshot was published")
+			}
+		})
 	}
 }
 
@@ -96,10 +116,50 @@ func benchmarkAggregate(b *testing.B, aircraftPerFeeder int) {
 func BenchmarkPublishOneThousandAircraft(b *testing.B) {
 	manager := NewFeederManager(time.Second)
 	_ = manager.Register(domain.FeederDescriptor{ID: "bench", DisplayName: "bench", Enabled: true, SourceKind: domain.FeederSourceAgent})
-	snapshot := feederSnapshot("bench", time.Unix(1_800_000_000, 0), make([]domain.Aircraft, 1_000))
+	aircraft := make([]domain.Aircraft, 1_000)
+	for index := range aircraft {
+		aircraft[index].ICAO = fmt.Sprintf("%06X", index)
+	}
+	snapshot := feederSnapshot("bench", time.Unix(1_800_000_000, 0), aircraft)
 	b.ReportAllocs()
 	for range b.N {
 		manager.Publish("bench", snapshot)
+	}
+}
+
+func BenchmarkCommunityPipelineHundredFeeders(b *testing.B) {
+	manager := NewFeederManager(time.Second)
+	now := time.Unix(1_800_000_000, 0)
+	manager.now = func() time.Time {
+		now = now.Add(track.DefaultSampleInterval)
+		return now
+	}
+	for feederIndex := range 100 {
+		id := domain.FeederID(fmt.Sprintf("feed-%03d", feederIndex))
+		_ = manager.Register(domain.FeederDescriptor{ID: id, DisplayName: string(id), Enabled: true, SourceKind: domain.FeederSourceAgent})
+		aircraft := make([]domain.Aircraft, 250)
+		for aircraftIndex := range aircraft {
+			aircraft[aircraftIndex] = domain.Aircraft{
+				ICAO: fmt.Sprintf("%06X", feederIndex*125+aircraftIndex), Callsign: fmt.Sprintf("SF%04d", aircraftIndex),
+				HasDistance: true, DistanceNM: float64(aircraftIndex) / 10,
+			}
+		}
+		manager.Publish(id, feederSnapshot(id, now, aircraft))
+	}
+	ruleSet := make([]domain.WatchRule, 1_000)
+	for index := range ruleSet {
+		ruleSet[index] = domain.WatchRule{ID: int64(index + 1), FeederScope: domain.FeederAll, Type: domain.RuleICAO, Value: fmt.Sprintf("%06X", index), Enabled: true}
+	}
+	ruleEngine := rules.NewEngine(ruleSet, nil)
+	trackStore := track.NewStore()
+	manager.SetAggregateObserver(func(snapshot *domain.Snapshot) {
+		ruleEngine.Evaluate(snapshot)
+		trackStore.Observe(snapshot)
+	})
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		manager.Rebuild()
 	}
 }
 

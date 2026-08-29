@@ -5,7 +5,25 @@ versioning after the first public preview.
 
 ## Unreleased
 
-- No unreleased changes.
+### Changed
+
+- Reduced community aggregate allocation volume while preserving immutable
+  snapshots and deterministic feeder attribution.
+- Partitioned watch-rule indexes and state by feeder, keeping emergency
+  deduplication independently protected across the community view.
+- Moved enrichment discovery and route prefetch to the deduplicated aggregate,
+  with bounded tracking, rotating scans, and once-per-second telemetry.
+- Made track sampling skip off-cycle aggregate updates and use bounded LRU
+  eviction without temporary visibility maps or eviction sorts.
+- Reused agent compression state, separated Discord emergency and interaction
+  workers, and classified transient versus permanent SQLite writer failures.
+
+### Performance
+
+- Added realistic 1,000-aircraft readsb, agent codec/ingress, concurrent-rule,
+  track-store, and full 100-feeder pipeline benchmarks.
+- Recorded statistically significant improvements in aggregate, ingest,
+  replay, and heterogeneous rule workloads in `docs/performance.md`.
 
 ## 0.1.1 - 2026-08-28
 

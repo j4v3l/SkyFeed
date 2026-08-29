@@ -15,6 +15,12 @@ type batchSinkStub struct {
 	events []WriteEvent
 }
 
+type permanentBatchSink struct{}
+
+func (permanentBatchSink) ApplyBatch(context.Context, []WriteEvent) error {
+	return errors.New("database is corrupt")
+}
+
 func TestWriterNeverCoalescesDifferentFeederScopes(t *testing.T) {
 	sink := &retryBatchSink{}
 	writer := NewWriter(sink, 8, 8, time.Hour)
@@ -125,5 +131,29 @@ func TestWriterRetriesSameBatchAndCoalescesRollups(t *testing.T) {
 	}
 	if stats := writer.Stats(); stats.Failed != 2 || stats.Coalesced != 2 {
 		t.Fatalf("stats = %+v", stats)
+	}
+}
+
+func TestWriterDisablesDurabilityAfterPermanentFailure(t *testing.T) {
+	writer := NewWriter(permanentBatchSink{}, 4, 1, time.Millisecond)
+	if err := writer.Enqueue(WriteEvent{Kind: WriteFeederEvent}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- writer.Run(ctx) }()
+	deadline := time.Now().Add(time.Second)
+	for !writer.disabled.Load() && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !writer.disabled.Load() {
+		t.Fatal("writer did not disable after permanent failure")
+	}
+	if err := writer.Enqueue(WriteEvent{Kind: WriteAlertState}); !errors.Is(err, ErrWriterUnavailable) {
+		t.Fatalf("enqueue error = %v", err)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
 }

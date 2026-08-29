@@ -85,6 +85,55 @@ func TestStoreUniqueICAOChurnRemainsBoundedAndExpires(t *testing.T) {
 	}
 }
 
+func TestStoreSkipsSnapshotsBeforeSampleBoundary(t *testing.T) {
+	store := NewStore()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	store.clock = func() time.Time { return now.Add(time.Second) }
+	aircraft := []domain.Aircraft{{ICAO: "ABC123", HasDistance: true, DistanceNM: 10}}
+	store.Observe(&domain.Snapshot{PublishedAt: now, Aircraft: aircraft})
+	aircraft[0].DistanceNM = 9
+	store.Observe(&domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: aircraft})
+	points, err := store.points("ABC123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 || points[0].DistanceNM != 10 {
+		t.Fatalf("off-cycle observation was sampled: %+v", points)
+	}
+}
+
+func BenchmarkStoreObserveOffCycle(b *testing.B) {
+	store := NewStore()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	aircraft := make([]domain.Aircraft, 5_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{ICAO: icaoFor(index), HasDistance: true, DistanceNM: float64(index)}
+	}
+	store.Observe(&domain.Snapshot{PublishedAt: now, Aircraft: aircraft})
+	snapshot := &domain.Snapshot{PublishedAt: now.Add(time.Second), Aircraft: aircraft}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		store.Observe(snapshot)
+	}
+}
+
+func BenchmarkStoreObserveSampleFiveThousand(b *testing.B) {
+	store := NewStore()
+	now := time.Unix(1_700_000_000, 0).UTC()
+	aircraft := make([]domain.Aircraft, 5_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{ICAO: icaoFor(index), HasDistance: true, DistanceNM: float64(index)}
+	}
+	snapshot := &domain.Snapshot{Aircraft: aircraft}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; b.Loop(); index++ {
+		snapshot.PublishedAt = now.Add(time.Duration(index) * DefaultSampleInterval)
+		store.Observe(snapshot)
+	}
+}
+
 func icaoFor(value int) string {
 	const hex = "0123456789ABCDEF"
 	result := []byte("000000")

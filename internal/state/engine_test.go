@@ -249,6 +249,24 @@ func TestProviderTransitionTimestampTracksActualChange(t *testing.T) {
 	}
 }
 
+func TestAircraftPublicationNormalizesAndDeduplicatesICAO(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	engine := NewEngine(nil)
+	engine.applyAircraft(source.Frame[domain.AircraftBatch]{FetchedAt: now, Value: domain.AircraftBatch{Aircraft: []domain.Aircraft{
+		{ICAO: " def456 ", Messages: 1},
+		{ICAO: "abc123", Messages: 1},
+		{ICAO: "ABC123", Messages: 2, HasPosition: true},
+		{ICAO: ""},
+	}}}, time.Second)
+	snapshot := engine.Current()
+	if len(snapshot.Aircraft) != 2 || snapshot.Aircraft[0].ICAO != "ABC123" || snapshot.Aircraft[1].ICAO != "DEF456" {
+		t.Fatalf("aircraft = %+v", snapshot.Aircraft)
+	}
+	if snapshot.Aircraft[0].Messages != 2 || !snapshot.Aircraft[0].HasPosition {
+		t.Fatalf("deduplicated observation = %+v", snapshot.Aircraft[0])
+	}
+}
+
 func BenchmarkMetadataSnapshotReuse(b *testing.B) {
 	now := time.Unix(1_700_000_000, 0)
 	engine := NewEngine(nil)

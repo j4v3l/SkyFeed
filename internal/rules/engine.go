@@ -12,10 +12,9 @@ import (
 )
 
 type stateKey struct {
-	ruleID      int64
-	scope       domain.FeederID
-	icao        string
-	fingerprint string
+	ruleID int64
+	scope  domain.FeederID
+	icao   string
 }
 
 type stateRecord struct {
@@ -30,6 +29,13 @@ type seenRecord struct {
 	lastSeen  time.Time
 }
 
+type scopeState struct {
+	mu       sync.Mutex
+	states   map[stateKey]stateRecord
+	seen     map[string]seenRecord
+	sequence uint64
+}
+
 const (
 	minimumSeenRetention = 30 * time.Minute
 	stateRetention       = 7 * 24 * time.Hour
@@ -38,38 +44,45 @@ const (
 )
 
 type Engine struct {
-	mu       sync.Mutex
-	index    atomic.Pointer[Index]
-	states   map[stateKey]stateRecord
-	seen     map[string]seenRecord
-	sequence uint64
-	now      func() time.Time
+	index atomic.Pointer[Index]
+	now   func() time.Time
+
+	scopes     sync.Map
+	scopeCount atomic.Int64
+
+	emergencyMu       sync.Mutex
+	emergencies       map[string]stateRecord
+	emergencySequence uint64
 }
 
 func NewEngine(rules []domain.WatchRule, restored []domain.AlertState) *Engine {
-	engine := &Engine{states: make(map[stateKey]stateRecord, len(restored)), seen: make(map[string]seenRecord), now: time.Now}
-	engine.index.Store(BuildIndex(rules))
-	bestEffort := make(map[int64]bool, len(rules))
-	for _, rule := range rules {
-		bestEffort[rule.ID] = rule.BestEffortEnrichment || rule.Type == domain.RuleOperator || rule.Type == domain.RuleOwner || rule.Type == domain.RuleAircraftType
-	}
+	engine := &Engine{emergencies: make(map[string]stateRecord), now: time.Now}
+	index := BuildIndex(rules)
+	engine.index.Store(index)
 	for _, state := range restored {
 		if state.FeederScope == "" {
 			state.FeederScope = domain.FeederLocal
 		}
-		key := stateKey{ruleID: state.RuleID, scope: state.FeederScope, icao: state.AircraftICAO, fingerprint: state.ConditionFingerprint}
+		if state.RuleID > 0 && index.fingerprints[state.RuleID] != state.ConditionFingerprint {
+			continue
+		}
 		lastSeen := state.LastClearAt
 		if state.LastFiredAt.After(lastSeen) {
 			lastSeen = state.LastFiredAt
 		}
-		engine.states[key] = stateRecord{state: state, bestEffort: bestEffort[state.RuleID], lastSeenAt: lastSeen}
+		record := stateRecord{state: state, bestEffort: index.bestEffort[state.RuleID], lastSeenAt: lastSeen}
+		if state.RuleID == -1 {
+			engine.emergencies[state.AircraftICAO] = record
+			continue
+		}
+		scoped := engine.scope(state.FeederScope)
+		key := stateKey{ruleID: state.RuleID, scope: state.FeederScope, icao: state.AircraftICAO}
+		scoped.states[key] = record
 	}
 	return engine
 }
 
 func (engine *Engine) ReplaceRules(rules []domain.WatchRule) {
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
 	next := BuildIndex(rules)
 	engine.index.Store(next)
 	active := make(map[int64]struct{}, len(rules))
@@ -78,23 +91,46 @@ func (engine *Engine) ReplaceRules(rules []domain.WatchRule) {
 			active[rule.ID] = struct{}{}
 		}
 	}
-	for key := range engine.states {
-		if key.ruleID > 0 {
-			if _, ok := active[key.ruleID]; !ok {
-				delete(engine.states, key)
+	for _, scoped := range engine.scopeValues() {
+		scoped.mu.Lock()
+		for key := range scoped.states {
+			if key.ruleID > 0 {
+				record := scoped.states[key]
+				fingerprint, ok := next.fingerprints[key.ruleID]
+				if _, enabled := active[key.ruleID]; !enabled || !ok || record.state.ConditionFingerprint != fingerprint {
+					delete(scoped.states, key)
+				}
 			}
 		}
+		scoped.mu.Unlock()
 	}
 }
 
+func (engine *Engine) scope(id domain.FeederID) *scopeState {
+	if value, ok := engine.scopes.Load(id); ok {
+		return value.(*scopeState)
+	}
+	created := &scopeState{states: make(map[stateKey]stateRecord), seen: make(map[string]seenRecord)}
+	value, loaded := engine.scopes.LoadOrStore(id, created)
+	if !loaded {
+		engine.scopeCount.Add(1)
+	}
+	return value.(*scopeState)
+}
+
+func (engine *Engine) scopeValues() []*scopeState {
+	values := make([]*scopeState, 0, engine.scopeCount.Load())
+	engine.scopes.Range(func(_, value any) bool {
+		values = append(values, value.(*scopeState))
+		return true
+	})
+	return values
+}
+
 func (engine *Engine) Evaluate(snapshot *domain.Snapshot) ([]domain.Alert, []domain.AlertState) {
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
 	if snapshot == nil {
 		return nil, nil
 	}
-	engine.sequence++
-	sequence := engine.sequence
 	now := snapshot.PublishedAt
 	if now.IsZero() {
 		now = engine.now()
@@ -106,9 +142,36 @@ func (engine *Engine) Evaluate(snapshot *domain.Snapshot) ([]domain.Alert, []dom
 	}
 	alerts := make([]domain.Alert, 0, 4)
 	updates := make([]domain.AlertState, 0, 8)
+	if actualScope == domain.FeederAll || actualScope == domain.FeederLocal {
+		engine.emergencyMu.Lock()
+		engine.emergencySequence++
+		for _, aircraft := range snapshot.Aircraft {
+			alerts, updates = engine.evaluateEmergency(actualScope, aircraft, now, engine.emergencySequence, alerts, updates)
+		}
+		if engine.emergencySequence%300 == 0 || len(engine.emergencies) > maxSeenEntries {
+			pruneEmergencyLocked(engine.emergencies, now, maxSeenEntries)
+		}
+		engine.emergencyMu.Unlock()
+	} else {
+		for _, aircraft := range snapshot.Aircraft {
+			if !domain.EmergencyActive(aircraft) {
+				continue
+			}
+			engine.emergencyMu.Lock()
+			engine.emergencySequence++
+			alerts, updates = engine.evaluateEmergency(actualScope, aircraft, now, engine.emergencySequence, alerts, updates)
+			engine.emergencyMu.Unlock()
+		}
+	}
+
+	runtime := engine.scope(actualScope)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.sequence++
+	sequence := runtime.sequence
+	scoped := index.scope(actualScope)
 	for _, aircraft := range snapshot.Aircraft {
-		seenKey := string(actualScope) + "\x00" + aircraft.ICAO
-		previous, existed := engine.seen[seenKey]
+		previous, existed := runtime.seen[aircraft.ICAO]
 		gap := time.Duration(0)
 		if existed {
 			gap = now.Sub(previous.lastSeen)
@@ -116,49 +179,40 @@ func (engine *Engine) Evaluate(snapshot *domain.Snapshot) ([]domain.Alert, []dom
 		} else {
 			previous = seenRecord{firstSeen: now, lastSeen: now}
 		}
-		engine.seen[seenKey] = previous
-		alerts, updates = engine.evaluateEmergency(actualScope, aircraft, now, alerts, updates)
-		if index == nil {
+		runtime.seen[aircraft.ICAO] = previous
+		if scoped == nil {
 			continue
 		}
-		alerts, updates = engine.matchAll(index.icao[aircraft.ICAO], actualScope, aircraft, now, sequence, alerts, updates)
-		alerts, updates = engine.matchAll(index.registration[aircraft.Registration], actualScope, aircraft, now, sequence, alerts, updates)
-		alerts, updates = engine.matchAll(index.callsign[aircraft.Callsign], actualScope, aircraft, now, sequence, alerts, updates)
-		alerts, updates = engine.matchAll(index.squawk[aircraft.Squawk], actualScope, aircraft, now, sequence, alerts, updates)
-		for _, length := range index.prefixLengths {
+		alerts, updates = matchAll(runtime.states, scoped.icao[aircraft.ICAO], actualScope, aircraft, now, sequence, alerts, updates)
+		alerts, updates = matchAll(runtime.states, scoped.registration[aircraft.Registration], actualScope, aircraft, now, sequence, alerts, updates)
+		alerts, updates = matchAll(runtime.states, scoped.callsign[aircraft.Callsign], actualScope, aircraft, now, sequence, alerts, updates)
+		alerts, updates = matchAll(runtime.states, scoped.squawk[aircraft.Squawk], actualScope, aircraft, now, sequence, alerts, updates)
+		for _, length := range scoped.prefixLengths {
 			if length > len(aircraft.Callsign) {
 				break
 			}
-			alerts, updates = engine.matchAll(index.prefixes[length][aircraft.Callsign[:length]], actualScope, aircraft, now, sequence, alerts, updates)
+			alerts, updates = matchAll(runtime.states, scoped.prefixes[length][aircraft.Callsign[:length]], actualScope, aircraft, now, sequence, alerts, updates)
 		}
-		for _, rule := range index.radius {
-			if !ruleApplies(rule.rule, actualScope) {
-				continue
-			}
-			active := engine.active(rule, aircraft.ICAO)
+		for _, rule := range scoped.radius {
+			key, record, exists := ruleState(runtime.states, rule, aircraft.ICAO)
+			active := exists && record.state.Active
 			threshold := rule.rule.EnterThreshold
 			if active && rule.rule.ExitThreshold > 0 {
 				threshold = rule.rule.ExitThreshold
 			}
-			alerts, updates = engine.match(rule, actualScope, aircraft, aircraft.HasDistance && threshold > 0 && aircraft.DistanceNM <= threshold, now, sequence, alerts, updates)
+			alerts, updates = matchRecord(runtime.states, key, record, exists, rule, actualScope, aircraft, aircraft.HasDistance && threshold > 0 && aircraft.DistanceNM <= threshold, now, sequence, alerts, updates)
 		}
-		for _, rule := range index.altitude {
-			if !ruleApplies(rule.rule, actualScope) {
-				continue
-			}
+		for _, rule := range scoped.altitude {
 			matches := aircraft.HasAltitude && float64(aircraft.AltitudeFeet) >= rule.rule.EnterThreshold && (rule.rule.ExitThreshold <= 0 || float64(aircraft.AltitudeFeet) <= rule.rule.ExitThreshold)
-			alerts, updates = engine.match(rule, actualScope, aircraft, matches, now, sequence, alerts, updates)
+			alerts, updates = match(runtime.states, rule, actualScope, aircraft, matches, now, sequence, alerts, updates)
 		}
-		for _, rule := range index.firstSeen {
-			if !ruleApplies(rule.rule, actualScope) {
-				continue
-			}
+		for _, rule := range scoped.firstSeen {
 			quiet := rule.rule.Cooldown
 			matches := !existed || (quiet > 0 && gap >= quiet)
-			alerts, updates = engine.match(rule, actualScope, aircraft, matches, now, sequence, alerts, updates)
+			alerts, updates = match(runtime.states, rule, actualScope, aircraft, matches, now, sequence, alerts, updates)
 		}
 	}
-	for key, record := range engine.states {
+	for key, record := range runtime.states {
 		if key.scope != actualScope {
 			continue
 		}
@@ -173,11 +227,12 @@ func (engine *Engine) Evaluate(snapshot *domain.Snapshot) ([]domain.Alert, []dom
 		record.state.Active = false
 		record.state.ConsecutiveMatches = 0
 		record.state.LastClearAt = now
-		engine.states[key] = record
+		runtime.states[key] = record
 		updates = append(updates, record.state)
 	}
-	if sequence%300 == 0 || len(engine.seen) > maxSeenEntries || len(engine.states) > maxStateEntries {
-		engine.pruneLocked(now, index)
+	seenCap, stateCap := engine.scopeCaps()
+	if sequence%300 == 0 || len(runtime.seen) > seenCap || len(runtime.states) > stateCap {
+		pruneScopeLocked(runtime, now, index, seenCap, stateCap)
 	}
 	return alerts, updates
 }
@@ -186,8 +241,6 @@ func (engine *Engine) Evaluate(snapshot *domain.Snapshot) ([]domain.Alert, []dom
 // receiver evaluation. These rules are always best-effort and can never create
 // emergency alerts.
 func (engine *Engine) EvaluateEnrichment(value domain.Enrichment, aircraft domain.Aircraft, observedAt time.Time) ([]domain.Alert, []domain.AlertState) {
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
 	if aircraft.ICAO == "" || value.ICAO == "" {
 		return nil, nil
 	}
@@ -198,8 +251,6 @@ func (engine *Engine) EvaluateEnrichment(value domain.Enrichment, aircraft domai
 	if observedAt.IsZero() {
 		observedAt = engine.now()
 	}
-	engine.sequence++
-	sequence := engine.sequence
 	alerts := make([]domain.Alert, 0, 1)
 	updates := make([]domain.AlertState, 0, 2)
 	actualScope := domain.FeederLocal
@@ -208,6 +259,15 @@ func (engine *Engine) EvaluateEnrichment(value domain.Enrichment, aircraft domai
 	} else if len(aircraft.SeenBy) > 1 {
 		actualScope = domain.FeederAll
 	}
+	scoped := index.scope(actualScope)
+	if scoped == nil {
+		return nil, nil
+	}
+	runtime := engine.scope(actualScope)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.sequence++
+	sequence := runtime.sequence
 	metadata := value.Aircraft
 	operator, owner, aircraftType := "", "", ""
 	if value.Found && metadata != nil {
@@ -215,43 +275,47 @@ func (engine *Engine) EvaluateEnrichment(value domain.Enrichment, aircraft domai
 		owner = strings.ToUpper(strings.TrimSpace(metadata.Owner))
 		aircraftType = strings.ToUpper(strings.TrimSpace(firstNonEmpty(metadata.ICAOType, metadata.AircraftType)))
 	}
-	for expected, rules := range index.operator {
+	for expected, rules := range scoped.operator {
 		for _, rule := range rules {
-			if ruleApplies(rule.rule, actualScope) {
-				alerts, updates = engine.match(rule, actualScope, aircraft, operator != "" && operator == expected, observedAt, sequence, alerts, updates)
-			}
+			alerts, updates = match(runtime.states, rule, actualScope, aircraft, operator != "" && operator == expected, observedAt, sequence, alerts, updates)
 		}
 	}
-	for expected, rules := range index.owner {
+	for expected, rules := range scoped.owner {
 		for _, rule := range rules {
-			if ruleApplies(rule.rule, actualScope) {
-				alerts, updates = engine.match(rule, actualScope, aircraft, owner != "" && owner == expected, observedAt, sequence, alerts, updates)
-			}
+			alerts, updates = match(runtime.states, rule, actualScope, aircraft, owner != "" && owner == expected, observedAt, sequence, alerts, updates)
 		}
 	}
-	for expected, rules := range index.aircraftType {
+	for expected, rules := range scoped.aircraftType {
 		for _, rule := range rules {
-			if ruleApplies(rule.rule, actualScope) {
-				alerts, updates = engine.match(rule, actualScope, aircraft, aircraftType != "" && aircraftType == expected, observedAt, sequence, alerts, updates)
-			}
+			alerts, updates = match(runtime.states, rule, actualScope, aircraft, aircraftType != "" && aircraftType == expected, observedAt, sequence, alerts, updates)
 		}
 	}
 	return alerts, updates
 }
 
-func (engine *Engine) matchAll(rules []compiledRule, actualScope domain.FeederID, aircraft domain.Aircraft, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
+func matchAll(states map[stateKey]stateRecord, rules []compiledRule, actualScope domain.FeederID, aircraft domain.Aircraft, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
 	for _, rule := range rules {
-		if ruleApplies(rule.rule, actualScope) {
-			alerts, updates = engine.match(rule, actualScope, aircraft, true, now, sequence, alerts, updates)
-		}
+		alerts, updates = match(states, rule, actualScope, aircraft, true, now, sequence, alerts, updates)
 	}
 	return alerts, updates
 }
 
-func (engine *Engine) match(rule compiledRule, actualScope domain.FeederID, aircraft domain.Aircraft, matches bool, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
-	scope := normalizedRuleScope(rule.rule)
-	key := stateKey{ruleID: rule.rule.ID, scope: scope, icao: aircraft.ICAO, fingerprint: rule.fingerprint}
-	record, exists := engine.states[key]
+func match(states map[stateKey]stateRecord, rule compiledRule, actualScope domain.FeederID, aircraft domain.Aircraft, matches bool, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
+	key, record, exists := ruleState(states, rule, aircraft.ICAO)
+	return matchRecord(states, key, record, exists, rule, actualScope, aircraft, matches, now, sequence, alerts, updates)
+}
+
+func ruleState(states map[stateKey]stateRecord, rule compiledRule, icao string) (stateKey, stateRecord, bool) {
+	key := stateKey{ruleID: rule.rule.ID, scope: normalizedRuleScope(rule.rule), icao: icao}
+	record, exists := states[key]
+	if exists && record.state.ConditionFingerprint != rule.fingerprint {
+		record = stateRecord{}
+		exists = false
+	}
+	return key, record, exists
+}
+
+func matchRecord(states map[stateKey]stateRecord, key stateKey, record stateRecord, exists bool, rule compiledRule, actualScope domain.FeederID, aircraft domain.Aircraft, matches bool, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
 	record.seenSequence = sequence
 	record.bestEffort = rule.rule.BestEffortEnrichment
 	record.lastSeenAt = now
@@ -265,11 +329,11 @@ func (engine *Engine) match(rule compiledRule, actualScope domain.FeederID, airc
 			record.state.LastClearAt = now
 			updates = append(updates, record.state)
 		}
-		engine.states[key] = record
+		states[key] = record
 		return alerts, updates
 	}
 	if record.state.RuleID == 0 {
-		record.state = domain.AlertState{RuleID: rule.rule.ID, FeederScope: scope, AircraftICAO: aircraft.ICAO, ConditionFingerprint: rule.fingerprint}
+		record.state = domain.AlertState{RuleID: rule.rule.ID, FeederScope: key.scope, AircraftICAO: aircraft.ICAO, ConditionFingerprint: rule.fingerprint}
 	}
 	minimum := rule.rule.MinimumObservations
 	if minimum < 1 {
@@ -287,29 +351,24 @@ func (engine *Engine) match(rule compiledRule, actualScope domain.FeederID, airc
 		changed = true
 		alerts = append(alerts, buildAlert(rule, actualScope, aircraft, now))
 	}
-	engine.states[key] = record
+	states[key] = record
 	if changed {
 		updates = append(updates, record.state)
 	}
 	return alerts, updates
 }
 
-func (engine *Engine) active(rule compiledRule, icao string) bool {
-	return engine.states[stateKey{ruleID: rule.rule.ID, scope: normalizedRuleScope(rule.rule), icao: icao, fingerprint: rule.fingerprint}].state.Active
-}
-
-func (engine *Engine) evaluateEmergency(actualScope domain.FeederID, aircraft domain.Aircraft, now time.Time, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
+func (engine *Engine) evaluateEmergency(actualScope domain.FeederID, aircraft domain.Aircraft, now time.Time, sequence uint64, alerts []domain.Alert, updates []domain.AlertState) ([]domain.Alert, []domain.AlertState) {
 	recognized := domain.EmergencyActive(aircraft)
 	fingerprint := "emergency"
-	key := stateKey{ruleID: -1, scope: domain.FeederAll, icao: aircraft.ICAO, fingerprint: fingerprint}
-	record, exists := engine.states[key]
+	record, exists := engine.emergencies[aircraft.ICAO]
 	if !recognized && !exists {
 		return alerts, updates
 	}
 	if !recognized && actualScope != domain.FeederAll && actualScope != domain.FeederLocal {
 		return alerts, updates
 	}
-	record.seenSequence = engine.sequence
+	record.seenSequence = sequence
 	record.lastSeenAt = now
 	if !recognized {
 		if record.state.Active {
@@ -318,7 +377,7 @@ func (engine *Engine) evaluateEmergency(actualScope domain.FeederID, aircraft do
 			record.state.LastClearAt = now
 			updates = append(updates, record.state)
 		}
-		engine.states[key] = record
+		engine.emergencies[aircraft.ICAO] = record
 		return alerts, updates
 	}
 	if recognized && !record.state.Active {
@@ -329,71 +388,117 @@ func (engine *Engine) evaluateEmergency(actualScope domain.FeederID, aircraft do
 			Type: domain.RuleEmergency, Priority: domain.AlertEmergency, Title: "Emergency aircraft", Description: emergencyDescription(aircraft), ObservedAt: now,
 		})
 	}
-	engine.states[key] = record
+	engine.emergencies[aircraft.ICAO] = record
 	return alerts, updates
 }
 
+func pruneEmergencyLocked(states map[string]stateRecord, now time.Time, limit int) int {
+	removed := 0
+	cutoff := now.Add(-stateRetention)
+	for icao, record := range states {
+		if !record.state.Active && !record.lastSeenAt.IsZero() && record.lastSeenAt.Before(cutoff) {
+			delete(states, icao)
+			removed++
+		}
+	}
+	if len(states) <= limit {
+		return removed
+	}
+	entries := make([]struct {
+		icao string
+		at   time.Time
+	}, 0, len(states))
+	for icao, record := range states {
+		if !record.state.Active {
+			entries = append(entries, struct {
+				icao string
+				at   time.Time
+			}{icao, record.lastSeenAt})
+		}
+	}
+	sort.Slice(entries, func(left, right int) bool { return entries[left].at.Before(entries[right].at) })
+	for _, entry := range entries[:min(len(entries), len(states)-limit)] {
+		delete(states, entry.icao)
+		removed++
+	}
+	return removed
+}
+
 func (engine *Engine) Prune(now time.Time) (seenRemoved, statesRemoved int) {
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
 	if now.IsZero() {
 		now = engine.now()
 	}
-	return engine.pruneLocked(now, engine.index.Load())
+	seenCap, stateCap := engine.scopeCaps()
+	for _, scoped := range engine.scopeValues() {
+		scoped.mu.Lock()
+		seen, states := pruneScopeLocked(scoped, now, engine.index.Load(), seenCap, stateCap)
+		scoped.mu.Unlock()
+		seenRemoved += seen
+		statesRemoved += states
+	}
+	engine.emergencyMu.Lock()
+	statesRemoved += pruneEmergencyLocked(engine.emergencies, now, maxSeenEntries)
+	engine.emergencyMu.Unlock()
+	return seenRemoved, statesRemoved
 }
 
 func (engine *Engine) Sizes() (seen, states int) {
-	engine.mu.Lock()
-	defer engine.mu.Unlock()
-	return len(engine.seen), len(engine.states)
+	for _, scoped := range engine.scopeValues() {
+		scoped.mu.Lock()
+		seen += len(scoped.seen)
+		states += len(scoped.states)
+		scoped.mu.Unlock()
+	}
+	engine.emergencyMu.Lock()
+	states += len(engine.emergencies)
+	engine.emergencyMu.Unlock()
+	return seen, states
 }
 
-func (engine *Engine) pruneLocked(now time.Time, index *Index) (seenRemoved, statesRemoved int) {
-	seenRetention := minimumSeenRetention
-	if index != nil {
-		for _, rule := range index.firstSeen {
-			if rule.rule.Cooldown > seenRetention {
-				seenRetention = rule.rule.Cooldown
-			}
-		}
-	}
+func (engine *Engine) scopeCaps() (seen, states int) {
+	count := max(1, int(engine.scopeCount.Load()))
+	return max(1_000, maxSeenEntries/count), max(2_500, maxStateEntries/count)
+}
+
+func pruneScopeLocked(scoped *scopeState, now time.Time, index *Index, seenCap, stateCap int) (seenRemoved, statesRemoved int) {
+	seenRetention := index.maxSeenRetention()
 	seenCutoff := now.Add(-seenRetention)
-	for icao, record := range engine.seen {
+	for icao, record := range scoped.seen {
 		if record.lastSeen.Before(seenCutoff) {
-			delete(engine.seen, icao)
+			delete(scoped.seen, icao)
 			seenRemoved++
 		}
 	}
 	stateCutoff := now.Add(-stateRetention)
-	for key, record := range engine.states {
+	for key, record := range scoped.states {
 		if !record.state.Active && !record.lastSeenAt.IsZero() && record.lastSeenAt.Before(stateCutoff) {
-			delete(engine.states, key)
+			delete(scoped.states, key)
 			statesRemoved++
 		}
 	}
-	if len(engine.seen) > maxSeenEntries {
+	if len(scoped.seen) > seenCap {
 		entries := make([]struct {
-			icao string
-			at   time.Time
-		}, 0, len(engine.seen))
-		for icao, record := range engine.seen {
+			key string
+			at  time.Time
+		}, 0, len(scoped.seen))
+		for key, record := range scoped.seen {
 			entries = append(entries, struct {
-				icao string
-				at   time.Time
-			}{icao, record.lastSeen})
+				key string
+				at  time.Time
+			}{key, record.lastSeen})
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
-		for _, entry := range entries[:len(entries)-maxSeenEntries] {
-			delete(engine.seen, entry.icao)
+		for _, entry := range entries[:len(entries)-seenCap] {
+			delete(scoped.seen, entry.key)
 			seenRemoved++
 		}
 	}
-	if len(engine.states) > maxStateEntries {
+	if len(scoped.states) > stateCap {
 		entries := make([]struct {
 			key stateKey
 			at  time.Time
-		}, 0, len(engine.states))
-		for key, record := range engine.states {
+		}, 0, len(scoped.states))
+		for key, record := range scoped.states {
 			if !record.state.Active {
 				entries = append(entries, struct {
 					key stateKey
@@ -402,9 +507,9 @@ func (engine *Engine) pruneLocked(now time.Time, index *Index) (seenRemoved, sta
 			}
 		}
 		sort.Slice(entries, func(i, j int) bool { return entries[i].at.Before(entries[j].at) })
-		remove := min(len(entries), len(engine.states)-maxStateEntries)
+		remove := min(len(entries), len(scoped.states)-stateCap)
 		for _, entry := range entries[:remove] {
-			delete(engine.states, entry.key)
+			delete(scoped.states, entry.key)
 			statesRemoved++
 		}
 	}
@@ -424,10 +529,6 @@ func normalizedRuleScope(rule domain.WatchRule) domain.FeederID {
 		return domain.FeederLocal
 	}
 	return rule.FeederScope
-}
-
-func ruleApplies(rule domain.WatchRule, actual domain.FeederID) bool {
-	return normalizedRuleScope(rule) == actual
 }
 
 func emergencyDescription(aircraft domain.Aircraft) string {
