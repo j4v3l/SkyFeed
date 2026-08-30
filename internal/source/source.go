@@ -10,6 +10,10 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
+// Frame transfers ownership of Value to its consumer. In particular, an
+// AircraftBatch source must not mutate or reuse its aircraft slice after the
+// frame is returned; this lets the state engine publish it without a redundant
+// full-slice copy while preserving immutable snapshots.
 type Frame[T any] struct {
 	FeederID  domain.FeederID
 	FetchedAt time.Time

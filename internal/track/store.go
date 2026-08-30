@@ -1,6 +1,7 @@
 package track
 
 import (
+	"container/list"
 	"errors"
 	"math"
 	"sort"
@@ -47,27 +48,33 @@ type Summary struct {
 }
 
 type record struct {
-	points   []Point
-	lastSeen time.Time
-	plot     []byte
-	plotAt   time.Time
-	plotKey  time.Time
+	points     []Point
+	lastSeen   time.Time
+	generation uint64
+	element    *list.Element
+	plot       []byte
+	plotAt     time.Time
+	plotKey    time.Time
 }
 
 type Store struct {
 	mu             sync.Mutex
 	records        map[string]*record
+	order          *list.List
 	retention      time.Duration
 	sampleInterval time.Duration
 	maxPoints      int
 	maxAircraft    int
 	plotTTL        time.Duration
 	clock          func() time.Time
+	generation     uint64
+	nextSample     time.Time
 }
 
 func NewStore() *Store {
 	return &Store{
 		records:        make(map[string]*record),
+		order:          list.New(),
 		retention:      DefaultRetention,
 		sampleInterval: DefaultSampleInterval,
 		maxPoints:      DefaultMaxPoints,
@@ -87,20 +94,12 @@ func (store *Store) Observe(snapshot *domain.Snapshot) {
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.pruneLocked(now)
-	visible := make(map[string]struct{}, min(len(snapshot.Aircraft), store.maxAircraft))
-	newTracks := 0
-	for _, aircraft := range snapshot.Aircraft {
-		icao := strings.ToUpper(strings.TrimSpace(aircraft.ICAO))
-		if icao == "" || !aircraft.HasDistance {
-			continue
-		}
-		visible[icao] = struct{}{}
-		if _, exists := store.records[icao]; !exists {
-			newTracks++
-		}
+	if !store.nextSample.IsZero() && now.Before(store.nextSample) {
+		return
 	}
-	store.evictAbsentLocked(visible, max(0, len(store.records)+newTracks-store.maxAircraft))
+	store.nextSample = now.Add(store.sampleInterval)
+	store.pruneLocked(now)
+	store.generation++
 	for _, aircraft := range snapshot.Aircraft {
 		icao := strings.ToUpper(strings.TrimSpace(aircraft.ICAO))
 		if icao == "" || !aircraft.HasDistance {
@@ -109,15 +108,25 @@ func (store *Store) Observe(snapshot *domain.Snapshot) {
 		recordValue, exists := store.records[icao]
 		if !exists {
 			if len(store.records) >= store.maxAircraft {
-				continue
+				oldest := store.order.Back()
+				if oldest == nil {
+					continue
+				}
+				oldICAO := oldest.Value.(string)
+				oldRecord := store.records[oldICAO]
+				if oldRecord == nil || oldRecord.generation == store.generation {
+					continue
+				}
+				store.deleteLocked(oldICAO, oldRecord)
 			}
 			recordValue = &record{points: make([]Point, 0, min(store.maxPoints, 32))}
+			recordValue.element = store.order.PushFront(icao)
 			store.records[icao] = recordValue
+		} else {
+			store.order.MoveToFront(recordValue.element)
 		}
+		recordValue.generation = store.generation
 		recordValue.lastSeen = now
-		if len(recordValue.points) > 0 && now.Sub(recordValue.points[len(recordValue.points)-1].At) < store.sampleInterval {
-			continue
-		}
 		recordValue.points = append(recordValue.points, Point{
 			At:             now,
 			DistanceNM:     aircraft.DistanceNM,
@@ -133,26 +142,6 @@ func (store *Store) Observe(snapshot *domain.Snapshot) {
 			recordValue.points = recordValue.points[:store.maxPoints]
 		}
 		recordValue.plot = nil
-	}
-}
-
-func (store *Store) evictAbsentLocked(visible map[string]struct{}, count int) {
-	if count <= 0 {
-		return
-	}
-	type candidate struct {
-		icao string
-		at   time.Time
-	}
-	candidates := make([]candidate, 0, count)
-	for icao, recordValue := range store.records {
-		if _, currentlyVisible := visible[icao]; !currentlyVisible {
-			candidates = append(candidates, candidate{icao: icao, at: recordValue.lastSeen})
-		}
-	}
-	sort.Slice(candidates, func(left, right int) bool { return candidates[left].at.Before(candidates[right].at) })
-	for _, entry := range candidates[:min(count, len(candidates))] {
-		delete(store.records, entry.icao)
 	}
 }
 
@@ -193,8 +182,15 @@ func (store *Store) pruneLocked(now time.Time) {
 			recordValue.plot = nil
 		}
 		if recordValue.lastSeen.Before(cutoff) || len(recordValue.points) == 0 {
-			delete(store.records, icao)
+			store.deleteLocked(icao, recordValue)
 		}
+	}
+}
+
+func (store *Store) deleteLocked(icao string, recordValue *record) {
+	delete(store.records, icao)
+	if recordValue != nil && recordValue.element != nil {
+		store.order.Remove(recordValue.element)
 	}
 }
 

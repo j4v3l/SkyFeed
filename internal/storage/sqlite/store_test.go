@@ -215,6 +215,29 @@ func TestUserUnitPreferencePersistsAndValidates(t *testing.T) {
 	}
 }
 
+func TestGuildAndUserUnitsDefaultToImperial(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := store.GuildSettings(ctx, 7)
+	if err != nil || settings.Units != "imperial" {
+		t.Fatalf("settings=%+v err=%v", settings, err)
+	}
+	if err := store.UpsertUserPreference(ctx, storage.UserPreference{GuildID: 7, UserID: 9, Units: "imperial"}); err != nil {
+		t.Fatal(err)
+	}
+	preference, err := store.UserPreference(ctx, 7, 9)
+	if err != nil || preference.Units != "imperial" {
+		t.Fatalf("preference=%+v err=%v", preference, err)
+	}
+}
+
 func TestPurgeAlertStatesRemovesOnlyOldInactiveRows(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
 	if err != nil {
@@ -259,6 +282,35 @@ func TestDeleteMessageBindingRemovesDashboard(t *testing.T) {
 	}
 	if _, found, err := store.MessageBinding(ctx, 9, "dashboard"); err != nil || found {
 		t.Fatalf("found=%v err=%v", found, err)
+	}
+}
+
+func TestDeleteMessageBindingByTargetRemovesOnlyMatchingMessage(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 9); err != nil {
+		t.Fatal(err)
+	}
+	for _, binding := range []storage.MessageBinding{
+		{GuildID: 9, Purpose: "dashboard", ChannelID: 1, MessageID: 2},
+		{GuildID: 9, Purpose: "flight-leaders", ChannelID: 3, MessageID: 4},
+	} {
+		if err := store.UpsertMessageBinding(ctx, binding); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.DeleteMessageBindingByTarget(ctx, 9, 3, 4); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.MessageBinding(ctx, 9, "flight-leaders"); err != nil || found {
+		t.Fatalf("flight leader binding found=%v err=%v", found, err)
+	}
+	if _, found, err := store.MessageBinding(ctx, 9, "dashboard"); err != nil || !found {
+		t.Fatalf("dashboard binding found=%v err=%v", found, err)
 	}
 }
 

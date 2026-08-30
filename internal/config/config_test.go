@@ -37,6 +37,9 @@ func TestLoadWithDefaultsAndRedaction(t *testing.T) {
 	if cfg.Discord.GlobalCommands {
 		t.Fatal("Discord commands must default to guild scope")
 	}
+	if cfg.FlightLeadersInterval != 5*time.Minute {
+		t.Fatalf("flight leaders interval = %s, want 5m", cfg.FlightLeadersInterval)
+	}
 	if cfg.Discord.Token.Reveal() != "synthetic.token.value" {
 		t.Fatal("token was not loaded or trimmed")
 	}
@@ -116,6 +119,8 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 		{name: "missing guild", mutate: func(values map[string]string) { delete(values, "SKYFEED_DISCORD_GUILD_ID") }, wantError: "GUILD_ID"},
 		{name: "bad source path", mutate: func(values map[string]string) { values["SKYFEED_ADSB_BASE_URL"] = "http://receiver.invalid/not-data" }, wantError: "end in /data"},
 		{name: "fast polling", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_POLL"] = "1ms" }, wantError: "AIRCRAFT_POLL"},
+		{name: "fast flight leaders", mutate: func(values map[string]string) { values["SKYFEED_FLIGHT_LEADERS_INTERVAL"] = "30s" }, wantError: "FLIGHT_LEADERS_INTERVAL"},
+		{name: "slow flight leaders", mutate: func(values map[string]string) { values["SKYFEED_FLIGHT_LEADERS_INTERVAL"] = "61m" }, wantError: "FLIGHT_LEADERS_INTERVAL"},
 		{name: "unknown aircraft provider", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,other" }, wantError: "airplanes-live"},
 		{name: "reversed aircraft providers", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "airplanes-live,readsb" }, wantError: "start with readsb"},
 		{name: "fallback without public center", mutate: func(values map[string]string) { values["SKYFEED_AIRCRAFT_PROVIDER_ORDER"] = "readsb,airplanes-live" }, wantError: "public center"},
@@ -148,6 +153,18 @@ func TestLoadWithRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatalf("error = %v, want substring %q", err, test.wantError)
 			}
 		})
+	}
+}
+
+func TestLoadWithFlightLeadersCanBeDisabled(t *testing.T) {
+	environment := validEnvironment()
+	environment["SKYFEED_FLIGHT_LEADERS_INTERVAL"] = "0"
+	cfg, err := LoadWith(mapLookup(environment), func(string) ([]byte, error) { return []byte("token"), nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.FlightLeadersInterval != 0 {
+		t.Fatalf("flight leaders interval = %s, want disabled", cfg.FlightLeadersInterval)
 	}
 }
 

@@ -3,6 +3,7 @@ package readsb
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -259,6 +260,33 @@ func BenchmarkDecodeAircraftJSON(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for range b.N {
+		var response aircraftResponse
+		if err := json.Unmarshal(data, &response); err != nil {
+			b.Fatal(err)
+		}
+		_ = normalizeAircraft(response)
+	}
+}
+
+func BenchmarkDecodeAircraftJSONOneThousand(b *testing.B) {
+	aircraft := make([]map[string]any, 1_000)
+	for index := range aircraft {
+		aircraft[index] = map[string]any{
+			"hex": fmt.Sprintf("%06x", index), "flight": fmt.Sprintf("SF%04d ", index),
+			"r": fmt.Sprintf("N%05d", index), "t": "A320", "category": "A3",
+			"lat": 25.0 + float64(index)/10_000, "lon": -80.0 - float64(index)/10_000,
+			"alt_baro": 1_000 + index*20, "gs": 250.5, "track": 91.2, "baro_rate": -640,
+			"squawk": "1200", "emergency": "none", "messages": 10_000 + index, "seen": 0.2, "seen_pos": 0.4, "rssi": -12.5,
+		}
+	}
+	data, err := json.Marshal(map[string]any{"now": 1_800_000_000, "messages": 10_000_000, "aircraft": aircraft})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
 		var response aircraftResponse
 		if err := json.Unmarshal(data, &response); err != nil {
 			b.Fatal(err)

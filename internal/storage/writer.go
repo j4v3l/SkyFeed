@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -10,7 +11,18 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
 
-var ErrWriterFull = errors.New("persistence queue full")
+var (
+	ErrWriterFull        = errors.New("persistence queue full")
+	ErrWriterUnavailable = errors.New("persistence writer unavailable")
+)
+
+type applyResult uint8
+
+const (
+	applySucceeded applyResult = iota
+	applyRetryLater
+	applyPermanentFailure
+)
 
 type WriterStats struct {
 	Accepted  uint64
@@ -29,10 +41,12 @@ type Writer struct {
 	batchMax    int
 	flush       time.Duration
 	rollupFlush time.Duration
+	retryBudget time.Duration
 
 	observerMu sync.RWMutex
 	observer   func(error)
 	degraded   atomic.Bool
+	disabled   atomic.Bool
 
 	accepted  atomic.Uint64
 	dropped   atomic.Uint64
@@ -45,7 +59,7 @@ type Writer struct {
 }
 
 func NewWriter(sink BatchSink, capacity, batchMax int, flush time.Duration) *Writer {
-	return &Writer{sink: sink, queue: make(chan WriteEvent, capacity), batchMax: batchMax, flush: flush, rollupFlush: 15 * time.Second}
+	return &Writer{sink: sink, queue: make(chan WriteEvent, capacity), batchMax: batchMax, flush: flush, rollupFlush: 15 * time.Second, retryBudget: 2 * time.Second}
 }
 
 func (writer *Writer) SetObserver(observer func(error)) {
@@ -55,6 +69,10 @@ func (writer *Writer) SetObserver(observer func(error)) {
 }
 
 func (writer *Writer) Enqueue(event WriteEvent) error {
+	if writer.disabled.Load() {
+		writer.dropped.Add(1)
+		return ErrWriterUnavailable
+	}
 	select {
 	case writer.queue <- event:
 		writer.accepted.Add(1)
@@ -73,30 +91,45 @@ func (writer *Writer) Run(ctx context.Context) error {
 	batch := make([]WriteEvent, 0, writer.batchMax)
 	rollups := make(map[reportRollupKey]ReportRollup)
 	for {
+		if !writer.disabled.Load() && (len(batch) >= writer.batchMax || len(rollups) >= writer.batchMax) {
+			if len(batch) >= writer.batchMax {
+				switch writer.applyUntil(ctx, batch) {
+				case applySucceeded, applyPermanentFailure:
+					batch = batch[:0]
+				case applyRetryLater:
+				}
+			} else {
+				switch writer.applyUntil(ctx, rollupEvents(rollups)) {
+				case applySucceeded, applyPermanentFailure:
+					clear(rollups)
+				case applyRetryLater:
+				}
+			}
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			flushContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			defer cancel()
 			writer.drainInto(&batch, rollups)
-			if !writer.applyUntil(flushContext, batch) {
-				return nil
-			}
+			_ = writer.applyUntil(flushContext, batch)
 			_ = writer.applyUntil(flushContext, rollupEvents(rollups))
 			return nil
 		case event := <-writer.queue:
-			writer.addEvent(&batch, rollups, event)
-			if len(batch) >= writer.batchMax {
-				if writer.applyUntil(ctx, batch) {
-					batch = batch[:0]
-				}
+			if writer.disabled.Load() {
+				writer.dropped.Add(1)
+				continue
 			}
+			writer.addEvent(&batch, rollups, event)
 		case <-ticker.C:
-			if writer.applyUntil(ctx, batch) {
+			switch writer.applyUntil(ctx, batch) {
+			case applySucceeded, applyPermanentFailure:
 				batch = batch[:0]
 			}
 		case <-rollupTicker.C:
 			events := rollupEvents(rollups)
-			if writer.applyUntil(ctx, events) {
+			switch writer.applyUntil(ctx, events) {
+			case applySucceeded, applyPermanentFailure:
 				clear(rollups)
 			}
 		}
@@ -156,27 +189,50 @@ func rollupEvents(rollups map[reportRollupKey]ReportRollup) []WriteEvent {
 	return events
 }
 
-func (writer *Writer) applyUntil(ctx context.Context, batch []WriteEvent) bool {
+func (writer *Writer) applyUntil(ctx context.Context, batch []WriteEvent) applyResult {
 	if len(batch) == 0 {
-		return true
+		return applySucceeded
 	}
 	delay := 50 * time.Millisecond
+	deadline := time.Now().Add(writer.retryBudget)
 	for {
 		if err := writer.apply(ctx, batch); err == nil {
 			writer.notify(nil)
-			return true
+			return applySucceeded
 		} else {
 			writer.notify(err)
+			if !transientWriteError(err) {
+				writer.disabled.Store(true)
+				return applyPermanentFailure
+			}
+		}
+		if time.Now().Add(delay).After(deadline) {
+			return applyRetryLater
 		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return false
+			return applyRetryLater
 		case <-timer.C:
 		}
 		delay = min(delay*2, time.Second)
 	}
+}
+
+func transientWriteError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	type temporary interface{ Temporary() bool }
+	var value temporary
+	if errors.As(err, &value) && value.Temporary() {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "database is locked") || strings.Contains(message, "database locked") ||
+		strings.Contains(message, "database is busy") || strings.Contains(message, "database busy") ||
+		strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked")
 }
 
 func (writer *Writer) notify(err error) {

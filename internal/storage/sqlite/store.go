@@ -19,8 +19,8 @@ import (
 var ErrNotFound = errors.New("storage record not found")
 
 const (
-	moderationCaseSelect  = `SELECT id, guild_id, moderator_id, target_user_id, action, reason, duration_seconds, delete_message_seconds, status, dm_status, error_code, created_at, completed_at FROM moderation_cases`
-	moderationCaseColumns = `c.id, c.guild_id, c.moderator_id, c.target_user_id, c.action, c.reason, c.duration_seconds, c.delete_message_seconds, c.status, c.dm_status, c.error_code, c.created_at, c.completed_at`
+	moderationCaseSelect  = `SELECT id, guild_id, moderator_id, target_user_id, target_channel_id, target_message_id, target_message_created_at, action, reason, duration_seconds, delete_message_seconds, status, dm_status, error_code, created_at, completed_at FROM moderation_cases`
+	moderationCaseColumns = `c.id, c.guild_id, c.moderator_id, c.target_user_id, c.target_channel_id, c.target_message_id, c.target_message_created_at, c.action, c.reason, c.duration_seconds, c.delete_message_seconds, c.status, c.dm_status, c.error_code, c.created_at, c.completed_at`
 )
 
 type rowScanner interface {
@@ -63,7 +63,7 @@ func (store *Store) EnsureGuild(ctx context.Context, guildID uint64) error {
 	if err != nil {
 		return fmt.Errorf("begin ensure guild: %w", err)
 	}
-	if _, err = transaction.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (?, 'aviation', 'UTC', ?, ?) ON CONFLICT(guild_id) DO NOTHING`, guildID, now, now); err == nil {
+	if _, err = transaction.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (?, 'imperial', 'UTC', ?, ?) ON CONFLICT(guild_id) DO NOTHING`, guildID, now, now); err == nil {
 		_, err = transaction.ExecContext(ctx, `INSERT INTO feeders(id, guild_id, display_name, source_kind, enabled, created_at, updated_at) VALUES ('local', ?, 'Local feeder', 'local', 1, ?, ?) ON CONFLICT(id) DO NOTHING`, guildID, now, now)
 	}
 	if err != nil {
@@ -88,7 +88,7 @@ func (store *Store) UpsertGuildSettings(ctx context.Context, settings storage.Gu
 	}
 	_, err := store.db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, alerts_paused, muted_squawks, default_feeder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(guild_id) DO UPDATE SET units=excluded.units, timezone=excluded.timezone, alerts_paused=excluded.alerts_paused, muted_squawks=excluded.muted_squawks, default_feeder_id=excluded.default_feeder_id, updated_at=excluded.updated_at`,
-		settings.GuildID, valueOr(settings.Units, "aviation"), valueOr(settings.Timezone, "UTC"), boolToInt(settings.AlertsPaused), settings.MutedSquawks, feeder, formatTime(created), formatTime(now))
+		settings.GuildID, valueOr(settings.Units, string(domain.DefaultUnitSystem)), valueOr(settings.Timezone, "UTC"), boolToInt(settings.AlertsPaused), settings.MutedSquawks, feeder, formatTime(created), formatTime(now))
 	return wrap("upsert guild settings", err)
 }
 
@@ -115,7 +115,7 @@ func (store *Store) GuildSettings(ctx context.Context, guildID uint64) (storage.
 func (store *Store) UpsertUserPreference(ctx context.Context, preference storage.UserPreference) error {
 	units, ok := domain.ParseUnitSystem(preference.Units)
 	if !ok {
-		return errors.New("user preference units must be aviation or metric")
+		return errors.New("user preference units must be imperial, aviation, or metric")
 	}
 	now := preference.UpdatedAt.UTC()
 	if now.IsZero() {
@@ -552,6 +552,11 @@ func (store *Store) DeleteMessageBinding(ctx context.Context, guildID uint64, pu
 	return wrap("delete message binding", err)
 }
 
+func (store *Store) DeleteMessageBindingByTarget(ctx context.Context, guildID, channelID, messageID uint64) error {
+	_, err := store.db.ExecContext(ctx, `DELETE FROM message_bindings WHERE guild_id=? AND channel_id=? AND message_id=?`, guildID, channelID, messageID)
+	return wrap("delete message binding by target", err)
+}
+
 func (store *Store) PlaneAlertReferenceCount(ctx context.Context) (int, error) {
 	var count int
 	err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM plane_alert_reference`).Scan(&count)
@@ -685,8 +690,8 @@ func (store *Store) CreateModerationCase(ctx context.Context, value storage.Mode
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	result, err := store.db.ExecContext(ctx, `INSERT INTO moderation_cases(guild_id, moderator_id, target_user_id, action, reason, duration_seconds, delete_message_seconds, status, dm_status, error_code, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 'not-attempted', '', ?)`, value.GuildID, value.ModeratorID, value.TargetUserID, value.Action, strings.TrimSpace(value.Reason), int64(value.Duration/time.Second), int64(value.DeleteMessageDuration/time.Second), formatTime(now))
+	result, err := store.db.ExecContext(ctx, `INSERT INTO moderation_cases(guild_id, moderator_id, target_user_id, target_channel_id, target_message_id, target_message_created_at, action, reason, duration_seconds, delete_message_seconds, status, dm_status, error_code, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'not-attempted', '', ?)`, value.GuildID, value.ModeratorID, value.TargetUserID, nullableUint64(value.TargetChannelID), nullableUint64(value.TargetMessageID), nullableTime(value.TargetMessageCreatedAt), value.Action, strings.TrimSpace(value.Reason), int64(value.Duration/time.Second), int64(value.DeleteMessageDuration/time.Second), formatTime(now))
 	if err != nil {
 		return storage.ModerationCase{}, fmt.Errorf("create moderation case: %w", err)
 	}
@@ -787,9 +792,16 @@ WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? ORDER BY o.next_attempt_at
 		var nextAttempt, created string
 		var duration, deleteDuration int64
 		var caseCreated string
-		var completed sql.NullString
-		if err := rows.Scan(&value.ID, &value.Attempts, &nextAttempt, &created, &value.Case.ID, &value.Case.GuildID, &value.Case.ModeratorID, &value.Case.TargetUserID, &value.Case.Action, &value.Case.Reason, &duration, &deleteDuration, &value.Case.Status, &value.Case.DMStatus, &value.Case.ErrorCode, &caseCreated, &completed); err != nil {
+		var targetChannel, targetMessage sql.NullInt64
+		var targetCreated, completed sql.NullString
+		if err := rows.Scan(&value.ID, &value.Attempts, &nextAttempt, &created, &value.Case.ID, &value.Case.GuildID, &value.Case.ModeratorID, &value.Case.TargetUserID, &targetChannel, &targetMessage, &targetCreated, &value.Case.Action, &value.Case.Reason, &duration, &deleteDuration, &value.Case.Status, &value.Case.DMStatus, &value.Case.ErrorCode, &caseCreated, &completed); err != nil {
 			return nil, fmt.Errorf("scan moderation log: %w", err)
+		}
+		if targetChannel.Valid {
+			value.Case.TargetChannelID = uint64(targetChannel.Int64)
+		}
+		if targetMessage.Valid {
+			value.Case.TargetMessageID = uint64(targetMessage.Int64)
 		}
 		value.Case.Duration = time.Duration(duration) * time.Second
 		value.Case.DeleteMessageDuration = time.Duration(deleteDuration) * time.Second
@@ -798,6 +810,9 @@ WHERE o.delivered_at IS NULL AND o.next_attempt_at<=? ORDER BY o.next_attempt_at
 		}
 		if err == nil {
 			value.Case.CreatedAt, err = parseTime(caseCreated)
+		}
+		if err == nil && targetCreated.Valid {
+			value.Case.TargetMessageCreatedAt, err = parseTime(targetCreated.String)
 		}
 		if err == nil && completed.Valid {
 			value.Case.CompletedAt, err = parseTime(completed.String)
@@ -1050,18 +1065,35 @@ func scanModerationCase(scanner rowScanner) (storage.ModerationCase, error) {
 	var value storage.ModerationCase
 	var duration, deleteDuration int64
 	var created string
-	var completed sql.NullString
-	if err := scanner.Scan(&value.ID, &value.GuildID, &value.ModeratorID, &value.TargetUserID, &value.Action, &value.Reason, &duration, &deleteDuration, &value.Status, &value.DMStatus, &value.ErrorCode, &created, &completed); err != nil {
+	var targetChannel, targetMessage sql.NullInt64
+	var targetCreated, completed sql.NullString
+	if err := scanner.Scan(&value.ID, &value.GuildID, &value.ModeratorID, &value.TargetUserID, &targetChannel, &targetMessage, &targetCreated, &value.Action, &value.Reason, &duration, &deleteDuration, &value.Status, &value.DMStatus, &value.ErrorCode, &created, &completed); err != nil {
 		return storage.ModerationCase{}, err
+	}
+	if targetChannel.Valid {
+		value.TargetChannelID = uint64(targetChannel.Int64)
+	}
+	if targetMessage.Valid {
+		value.TargetMessageID = uint64(targetMessage.Int64)
 	}
 	value.Duration = time.Duration(duration) * time.Second
 	value.DeleteMessageDuration = time.Duration(deleteDuration) * time.Second
 	var err error
 	value.CreatedAt, err = parseTime(created)
+	if err == nil && targetCreated.Valid {
+		value.TargetMessageCreatedAt, err = parseTime(targetCreated.String)
+	}
 	if err == nil && completed.Valid {
 		value.CompletedAt, err = parseTime(completed.String)
 	}
 	return value, err
+}
+
+func nullableUint64(value uint64) any {
+	if value == 0 {
+		return nil
+	}
+	return value
 }
 
 func truncateStorage(value string, maximum int) string {

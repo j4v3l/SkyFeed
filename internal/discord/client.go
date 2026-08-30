@@ -21,6 +21,7 @@ import (
 	"github.com/j4v3l/SkyFeed/internal/config"
 	"github.com/j4v3l/SkyFeed/internal/discord/render"
 	"github.com/j4v3l/SkyFeed/internal/domain"
+	"github.com/j4v3l/SkyFeed/internal/report"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -35,6 +36,7 @@ type GatewayService struct {
 	outbound                 *OutboundScheduler
 	client                   atomic.Pointer[bot.Client]
 	dashboardInterval        time.Duration
+	flightLeadersInterval    time.Duration
 	reportInterval           time.Duration
 	adminDigestInterval      time.Duration
 	interactionMetric        func(time.Duration)
@@ -83,6 +85,10 @@ func (service *GatewayService) SetRepository(repository storage.Repository) {
 }
 func (service *GatewayService) SetDashboardInterval(interval time.Duration) {
 	service.dashboardInterval = interval
+}
+
+func (service *GatewayService) SetFlightLeadersInterval(interval time.Duration) {
+	service.flightLeadersInterval = interval
 }
 
 func (service *GatewayService) SetReportInterval(interval time.Duration) {
@@ -222,6 +228,11 @@ func (service *GatewayService) Run(ctx context.Context) error {
 		service.runReportScheduler(ctx)
 		close(reportsDone)
 	}()
+	leadersDone := make(chan struct{})
+	go func() {
+		service.runFlightLeaders(ctx)
+		close(leadersDone)
+	}()
 	digestDone := make(chan struct{})
 	go func() {
 		service.runAdminDigestScheduler(ctx)
@@ -236,9 +247,98 @@ func (service *GatewayService) Run(ctx context.Context) error {
 	err = <-outboundDone
 	<-dashboardDone
 	<-reportsDone
+	<-leadersDone
 	<-digestDone
 	<-moderationDone
 	return err
+}
+
+func (service *GatewayService) runFlightLeaders(ctx context.Context) {
+	if service.flightLeadersInterval <= 0 || service.repository == nil || service.router == nil || service.router.snapshots == nil {
+		<-ctx.Done()
+		return
+	}
+	ticker := time.NewTicker(service.flightLeadersInterval)
+	defer ticker.Stop()
+	service.enqueueFlightLeaders()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			service.enqueueFlightLeaders()
+		}
+	}
+}
+
+func (service *GatewayService) enqueueFlightLeaders() {
+	if err := service.outbound.Enqueue(context.Background(), OutboundJob{
+		Key: "flight-leaders", Priority: PriorityReport, Retryable: true, Run: service.updateFlightLeaders,
+	}); err != nil {
+		service.logger.Warn("flight leaders refresh was coalesced or dropped", "component", "discord", "event", "flight_leaders_enqueue", "error", err)
+	}
+}
+
+func (service *GatewayService) updateFlightLeaders(ctx context.Context) error {
+	client := service.client.Load()
+	if client == nil || service.repository == nil {
+		return errors.New("discord flight leaders delivery is not ready")
+	}
+	return service.updateFlightLeadersWithREST(ctx, client.Rest)
+}
+
+type flightLeadersREST interface {
+	UpdateMessage(snowflake.ID, snowflake.ID, disgocord.MessageUpdate, ...rest.RequestOpt) (*disgocord.Message, error)
+	CreateMessage(snowflake.ID, disgocord.MessageCreate, ...rest.RequestOpt) (*disgocord.Message, error)
+}
+
+func (service *GatewayService) updateFlightLeadersWithREST(ctx context.Context, discordREST flightLeadersREST) error {
+	if service.repository == nil || service.router == nil || service.router.snapshots == nil {
+		return errors.New("discord flight leaders delivery is not ready")
+	}
+	bindings, err := service.repository.ChannelBindings(ctx, service.config.GuildID)
+	if err != nil {
+		return err
+	}
+	var channelID uint64
+	for _, binding := range bindings {
+		if binding.Purpose == "reports" {
+			channelID = binding.ChannelID
+			break
+		}
+	}
+	if channelID == 0 {
+		return nil
+	}
+	snapshot := service.router.snapshots.Current()
+	if provider, ok := service.router.snapshots.(FeederSnapshotProvider); ok {
+		snapshot = provider.Aggregate()
+	}
+	now := time.Now().UTC()
+	units := domain.DefaultUnitSystem
+	if settings, settingsErr := service.repository.GuildSettings(ctx, service.config.GuildID); settingsErr == nil {
+		units = domain.NormalizeUnitSystem(settings.Units)
+	}
+	message := render.SafeMessage(render.FlightLeaders(snapshot, report.SelectLiveLeaders(snapshot, now), units, now), false)
+	binding, found, err := service.repository.MessageBinding(ctx, service.config.GuildID, "flight-leaders")
+	if err != nil {
+		return err
+	}
+	if found && binding.ChannelID == channelID {
+		if _, updateErr := discordREST.UpdateMessage(snowflake.ID(channelID), snowflake.ID(binding.MessageID), messageUpdate(message), rest.WithCtx(ctx)); updateErr == nil {
+			return nil
+		} else if !isUnknownDiscordMessage(updateErr) {
+			return updateErr
+		}
+	}
+	message = message.WithNonce(boundedNonce(fmt.Sprintf("skyfeed-flight-leaders-%d", service.config.GuildID))).WithEnforceNonce(true)
+	created, err := discordREST.CreateMessage(snowflake.ID(channelID), message, rest.WithCtx(ctx))
+	if err != nil {
+		return err
+	}
+	return service.repository.UpsertMessageBinding(ctx, storage.MessageBinding{
+		GuildID: service.config.GuildID, Purpose: "flight-leaders", ChannelID: channelID, MessageID: uint64(created.ID),
+	})
 }
 
 func (service *GatewayService) runModerationMaintenance(ctx context.Context) {
@@ -551,7 +651,7 @@ func (service *GatewayService) sendScheduledReport(ctx context.Context, schedule
 	if err != nil {
 		return err
 	}
-	units := domain.UnitsAviation
+	units := domain.DefaultUnitSystem
 	if settings, settingsErr := service.repository.GuildSettings(ctx, schedule.GuildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
@@ -608,7 +708,7 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 	if channel == 0 {
 		return nil
 	}
-	units := domain.UnitsAviation
+	units := domain.DefaultUnitSystem
 	if settings, settingsErr := service.repository.GuildSettings(ctx, guildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
@@ -737,9 +837,13 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if alert.Priority != domain.AlertEmergency && cooldown > 0 && service.inCooldown(cooldownKey, alert.ObservedAt, cooldown) {
 		return nil
 	}
-	message := render.SafeMessage(render.Alert(alert), false)
+	units := domain.DefaultUnitSystem
+	if settings, settingsErr := service.repository.GuildSettings(ctx, alert.GuildID); settingsErr == nil {
+		units = domain.NormalizeUnitSystem(settings.Units)
+	}
+	message := render.SafeMessage(render.AlertWithUnits(alert, units), false)
 	if alert.Type == domain.RuleInteresting {
-		message = render.InterestingAlertMessage(alert, false)
+		message = render.InterestingAlertMessageWithUnits(alert, units, false)
 	}
 	message = message.WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
 	_, err = client.Rest.CreateMessage(snowflake.ID(destination), message, rest.WithCtx(ctx))
@@ -845,7 +949,7 @@ func (service *GatewayService) commandEvent(event *events.ApplicationCommandInte
 	request, commandName := service.applicationCommandRequest(event)
 	responseOnce := &sync.Once{}
 	beforeResponse := func() { responseOnce.Do(func() { service.observeInteractionHandler(started) }) }
-	responder := eventResponder{create: event.CreateMessage, beforeResponse: beforeResponse}
+	responder := eventResponder{create: event.CreateMessage, modal: event.Modal, beforeResponse: beforeResponse}
 	observed := false
 	defer func() {
 		if !observed {
@@ -881,6 +985,12 @@ func (service *GatewayService) applicationCommandRequest(event *events.Applicati
 		if data.CommandName() == LookupAircraftCommand {
 			request.Name = "aircraft"
 			request.Strings["query"] = extractAircraftQuery(data.TargetMessage())
+		} else if data.CommandName() == DeleteMessageCommand {
+			target := data.TargetMessage()
+			request.Name = "delete-message-context"
+			request.IDs["message"] = uint64(target.ID)
+			request.IDs["channel"] = uint64(target.ChannelID)
+			request.IDs["author"] = uint64(target.Author.ID)
 		}
 		return request, data.CommandName()
 	}
@@ -906,7 +1016,7 @@ func (service *GatewayService) componentEvent(event *events.ComponentInteraction
 	}
 	responder := eventResponder{create: event.CreateMessage, update: event.UpdateMessage, modal: event.Modal, beforeResponse: beforeResponse}
 	_, action, parseErr := ParseCustomID(request.CustomID)
-	if parseErr == nil && action == "moderate-confirm" {
+	if parseErr == nil && (action == "moderate-confirm" || action == "delete-confirm") {
 		beforeResponse()
 		if err := event.DeferUpdateMessage(); err != nil {
 			service.logInteractionError("component_defer", request.CustomID, err)
@@ -975,7 +1085,7 @@ func (service *GatewayService) modalEvent(event *events.ModalSubmitInteractionCr
 	service.observeInteraction(started)
 	request := ModalRequest{
 		CustomID: event.Data.CustomID, UserID: uint64(event.User().ID), GuildID: guildID(event.GuildID()), ChannelID: channelID(event.Channel()),
-		Values: map[string]string{"label": event.Data.Text("label"), "cooldown": event.Data.Text("cooldown")},
+		Values: map[string]string{"label": event.Data.Text("label"), "cooldown": event.Data.Text("cooldown"), "reason": event.Data.Text("reason")},
 	}
 	responder := eventResponder{create: func(message disgocord.MessageCreate, opts ...rest.RequestOpt) error {
 		_, err := event.Client().Rest.UpdateInteractionResponse(event.ApplicationID(), event.Token(), messageUpdate(message), opts...)

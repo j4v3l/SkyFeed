@@ -127,6 +127,44 @@ func TestOutboundCriticalLaneBypassesSlowRetryingBackground(t *testing.T) {
 	}
 }
 
+func TestOutboundInteractionDoesNotWaitForRetryingEmergency(t *testing.T) {
+	scheduler := NewOutboundScheduler(1, 1, 1, 1)
+	emergencyStarted := make(chan struct{})
+	releaseEmergency := make(chan struct{})
+	if err := scheduler.Enqueue(context.Background(), OutboundJob{Priority: PriorityEmergency, Retryable: true, Run: func(context.Context) error {
+		select {
+		case <-emergencyStarted:
+		default:
+			close(emergencyStarted)
+		}
+		<-releaseEmergency
+		return errors.New("retry emergency")
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- scheduler.Run(ctx) }()
+	<-emergencyStarted
+	interactionRan := make(chan struct{})
+	if err := scheduler.Enqueue(context.Background(), OutboundJob{Priority: PriorityInteraction, Run: func(context.Context) error {
+		close(interactionRan)
+		return nil
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-interactionRan:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("interaction waited behind emergency retry")
+	}
+	close(releaseEmergency)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestModerationLogBackoffIsBounded(t *testing.T) {
 	if got := moderationLogBackoff(0); got != 5*time.Second {
 		t.Fatalf("first retry=%s", got)

@@ -172,9 +172,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			descriptor := feeder.Descriptor
 			if descriptor.ID == domain.FeederLocal {
 				localRegistered = true
-				descriptor.PublicArea = localDescriptor.PublicArea
-				descriptor.AirportICAO = localDescriptor.AirportICAO
-				descriptor.Latitude, descriptor.Longitude, descriptor.HasCenter = localDescriptor.Latitude, localDescriptor.Longitude, localDescriptor.HasCenter
+				descriptor = mergeLocalFeederDescriptor(localDescriptor, descriptor)
 				localDescriptor = descriptor
 				feeder.Descriptor = descriptor
 				feeder.UpdatedAt = time.Now().UTC()
@@ -227,8 +225,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	} else {
 		healthState.SetComponent("adsblol", "disabled", "route enrichment disabled")
 	}
-	lastCallsigns := make(map[string]string)
-	var lastCallsignsMu sync.Mutex
+	discoveryTracker := enrichment.NewDiscoveryTracker()
 	feederManager.SetPublishObserver(func(feederID domain.FeederID, snapshot *domain.Snapshot) {
 		age := time.Duration(0)
 		if !snapshot.FetchedAt.IsZero() {
@@ -325,49 +322,6 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 				}
 			}
 		}
-		if enrichmentService != nil {
-			lastCallsignsMu.Lock()
-			nextCallsigns := make(map[string]string, len(snapshot.Aircraft))
-			for _, aircraft := range snapshot.Aircraft {
-				if previous, exists := lastCallsigns[aircraft.ICAO]; !exists || previous != aircraft.Callsign {
-					enrichmentService.Enqueue(aircraft.ICAO, aircraft.Callsign)
-				}
-				nextCallsigns[aircraft.ICAO] = aircraft.Callsign
-			}
-			lastCallsigns = nextCallsigns
-			lastCallsignsMu.Unlock()
-		}
-		if routeService != nil {
-			routeService.Prefetch(snapshot.Aircraft)
-		}
-		emergencyDepth, normalDepth := alertQueue.Depth()
-		persistenceDepth, enrichmentCache := 0, 0
-		if persistence != nil {
-			persistenceDepth = persistence.Depth()
-			writerStats := persistence.Stats()
-			metrics.SetSQLite(writerStats.LastSize, writerStats.Latency, writerStats.Failed)
-		}
-		if enrichmentService != nil {
-			enrichmentCache = enrichmentService.CacheLen()
-			enrichmentStats := enrichmentService.Stats()
-			metrics.SetEnrichment(enrichmentStats.Hits, enrichmentStats.Misses, enrichmentStats.Requests, enrichmentStats.Failures, enrichmentStats.CircuitRejects)
-		}
-		if routeService != nil {
-			routeStats := routeService.Stats()
-			metrics.SetRouteEnrichment(
-				routeStats.Hits,
-				routeStats.Misses,
-				routeStats.Requests,
-				routeStats.Failures,
-				routeStats.CircuitRejects,
-				routeStats.Dropped,
-				routeStats.Batches,
-				routeService.RouteCacheLen(),
-				routeService.AirportCacheLen(),
-			)
-			enrichmentCache += routeService.RouteCacheLen() + routeService.AirportCacheLen()
-		}
-		metrics.SetQueues(emergencyDepth, normalDepth, alertQueue.Dropped(), persistenceDepth, enrichmentCache)
 	})
 	engine := state.NewEngine(func(snapshot *domain.Snapshot) {
 		feederManager.Publish(domain.FeederLocal, snapshot)
@@ -376,6 +330,14 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		trackStore.Observe(snapshot)
 		if snapshot == nil || snapshot.FetchedAt.IsZero() {
 			return
+		}
+		if enrichmentService != nil {
+			discoveryTracker.Observe(snapshot.Aircraft, snapshot.PublishedAt, func(icao, callsign string) {
+				enrichmentService.Enqueue(icao, callsign)
+			})
+		}
+		if routeService != nil {
+			routeService.Prefetch(snapshot.Aircraft)
 		}
 		started := time.Now()
 		alerts, updates := ruleEngine.Evaluate(snapshot)
@@ -504,6 +466,38 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	}, func(serviceContext context.Context) error {
 		sessions.RunCleanup(serviceContext.Done(), time.Minute)
 		return nil
+	}, func(serviceContext context.Context) error {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-serviceContext.Done():
+				return nil
+			case <-ticker.C:
+				emergencyDepth, normalDepth := alertQueue.Depth()
+				persistenceDepth, enrichmentCache := 0, 0
+				if persistence != nil {
+					persistenceDepth = persistence.Depth()
+					writerStats := persistence.Stats()
+					metrics.SetSQLite(writerStats.LastSize, writerStats.Latency, writerStats.Failed)
+				}
+				if enrichmentService != nil {
+					enrichmentCache = enrichmentService.CacheLen()
+					enrichmentStats := enrichmentService.Stats()
+					metrics.SetEnrichment(enrichmentStats.Hits, enrichmentStats.Misses, enrichmentStats.Requests, enrichmentStats.Failures, enrichmentStats.CircuitRejects)
+				}
+				if routeService != nil {
+					routeStats := routeService.Stats()
+					metrics.SetRouteEnrichment(
+						routeStats.Hits, routeStats.Misses, routeStats.Requests, routeStats.Failures,
+						routeStats.CircuitRejects, routeStats.Dropped, routeStats.Batches,
+						routeService.RouteCacheLen(), routeService.AirportCacheLen(),
+					)
+					enrichmentCache += routeService.RouteCacheLen() + routeService.AirportCacheLen()
+				}
+				metrics.SetQueues(emergencyDepth, normalDepth, alertQueue.Dropped(), persistenceDepth, enrichmentCache)
+			}
+		}
 	}}
 	if cfg.AgentIngress.Enabled {
 		ingress, ingressErr := agentsource.NewIngressServer(agentsource.IngressConfig{
@@ -584,11 +578,13 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		})
 		gateway.SetRepository(repository)
 		gateway.SetDashboardInterval(cfg.DashboardInterval)
+		gateway.SetFlightLeadersInterval(cfg.FlightLeadersInterval)
 		gateway.SetAdminDigestInterval(cfg.AdminDigestInterval)
 		gateway.SetInteractionObserver(metrics.ObserveInteraction)
 		gateway.SetInteractionHandlerObserver(metrics.ObserveInteractionHandler)
 		router.SetTestSender(gateway.SubmitDestinationTest)
 		router.SetModeration(gateway)
+		router.SetMessageDeletion(gateway)
 		router.SetGuildMemberProvider(gateway)
 		router.SetHealth(healthState)
 		if repository != nil {
@@ -632,6 +628,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	healthState.SetLive(false)
 	logger.Info("SkyFeed stopped", "component", "app", "event", "stop")
 	return err
+}
+
+// mergeLocalFeederDescriptor keeps durable administrator-owned presentation
+// values while refreshing receiver-derived public location metadata.
+func mergeLocalFeederDescriptor(configured, stored domain.FeederDescriptor) domain.FeederDescriptor {
+	stored.PublicArea = configured.PublicArea
+	stored.AirportICAO = configured.AirportICAO
+	stored.Latitude, stored.Longitude, stored.HasCenter = configured.Latitude, configured.Longitude, configured.HasCenter
+	return stored
 }
 
 func sourcesInitialized(value domain.Health) bool {

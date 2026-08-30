@@ -21,8 +21,9 @@ Depending on enabled features, SkyFeed may process:
 - Discord server, channel, role, message, and user IDs needed for configuration,
   permissions, interaction sessions, delivery, and moderation cases;
 - user preferences and personal or server aircraft watch rules;
-- moderation case details, including moderator and target user IDs, action,
-  reason, timing, result, and warning-DM delivery status;
+- moderation case details, including moderator and target user IDs, optional
+  target channel/message IDs, action, reason, timing, result, and warning-DM
+  delivery status; deleted message content is not retained;
 - operational events and low-cardinality service logs needed for security,
   reliability, and troubleshooting;
 - live ADS-B aircraft observations supplied by the configured receiver;

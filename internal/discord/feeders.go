@@ -156,9 +156,9 @@ func (router *Router) inviteFeeder(ctx context.Context, request CommandRequest, 
 	if remoteCount >= router.feederAdmin.MaxFeeders {
 		return responder.CreateMessage(errorMessage("This server has reached its configured community feeder limit."))
 	}
-	name := strings.TrimSpace(request.Strings["name"])
+	name, nameErr := domain.NormalizeFeederDisplayName(request.Strings["name"])
 	area := strings.TrimSpace(request.Strings["area"])
-	if name == "" || len(name) > 80 || area == "" || len(area) > 80 {
+	if nameErr != nil || area == "" || len(area) > 80 {
 		return responder.CreateMessage(errorMessage("Provide a public name and area of 1–80 characters."))
 	}
 	airport := ""
@@ -200,8 +200,8 @@ func (router *Router) mutateFeeder(ctx context.Context, request CommandRequest, 
 	case "test":
 		return router.showFeeder(ctx, request, responder, true)
 	case "rename":
-		name := strings.TrimSpace(request.Strings["name"])
-		if name == "" || len(name) > 80 {
+		name, nameErr := domain.NormalizeFeederDisplayName(request.Strings["name"])
+		if nameErr != nil {
 			return responder.CreateMessage(errorMessage("The public name must contain 1–80 characters."))
 		}
 		feeder.Descriptor.DisplayName = name

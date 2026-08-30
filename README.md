@@ -117,8 +117,9 @@ metrics bind only to `127.0.0.1:9090` on the host.
 SkyFeed registers `/status`, `/nearby`, `/aircraft`, `/route`, `/airport`,
 `/airline`, `/squawk`, `/emergency`, `/traffic`, `/top live`, `/top traffic`,
 `/privacy`, `/preferences units`, `/watch`, `/alerts`, `/reports`, `/audit`,
-`/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus a **Lookup aircraft**
-message context menu. Aircraft results begin with a concise card. The primary
+`/feeder`, `/feeders`, `/settings`, `/moderation`, and `/help`, plus **Lookup
+aircraft** and **Delete with SkyFeed** message context menus. Aircraft results
+begin with a concise card. The primary
 row contains **Details**, **Refresh**, and **Close**; an invoker-bound **More
 aircraft actions…** menu offers Track, Watch, and Route & weather when those
 actions are available. Track plots are generated locally from a bounded,
@@ -127,9 +128,15 @@ Nearby pages and component sessions expire. Buttons, select menus, HTTPS link
 buttons, modals, and autocomplete use opaque versioned session IDs. Settings
 and durable administration are private; allowed mentions default to none.
 
-Use `/preferences units` to choose personal aviation or metric units. A personal
-choice overrides the server default set by `/settings units`; scheduled reports
-and the live dashboard use the server default.
+Use `/preferences units` to choose personal Imperial, Aviation, or Metric
+measurements. Imperial is the default and uses miles, feet, miles per hour,
+Fahrenheit, and inches of mercury. Aviation uses nautical miles, feet, knots,
+Celsius, and inches of mercury; Metric uses kilometres, metres, kilometres per
+hour, Celsius, and hectopascals. A personal choice overrides the server default
+set by `/settings units`; scheduled reports, alerts, audits, flight leaders, and
+the live dashboard use the server default. Command filters named `radius-nm`
+and altitude-in-feet remain explicit canonical inputs regardless of display
+preference.
 
 `/alerts configure` can target the Movements category (takeoff, landing, and
 approach, feeder-only) in addition to watches, emergencies, feeder health, and
@@ -157,8 +164,10 @@ action:
 Set `SKYFEED_DISCORD_ADMIN_ROLE_ID`, `SKYFEED_DISCORD_OPERATOR_ROLE_ID`, and
 `SKYFEED_DISCORD_MODERATOR_ROLE_ID` in `.env` to auto-bind these on startup, or
 run `python3 scripts/setup-discord-governance.py` to apply channel permissions
-and post server rules. Grant `@SkyFeed Admin` the **Manage Roles** permission in
-Discord so admins can assign Operator and Moderator roles to members.
+and post server rules. Grant `@SkyFeed Admin` **Manage Roles** and **Manage
+Messages** so admins can assign Operator and Moderator roles and approve
+message deletion. Grant the SkyFeed bot role **Manage Messages** so it can
+perform approved deletions. Neither role needs Administrator.
 
 ```text
 /settings channels purpose:Moderation log channel:#moderation-log
@@ -178,11 +187,24 @@ DM delivery and Discord failures are recorded. Moderation log delivery retries
 from a bounded SQLite outbox across restarts, and cases expire after 365 days in
 bounded purge batches.
 
+SkyFeed Admins with Manage Messages can use `/moderation delete-message` with a
+Discord message link or ID, or choose **Apps → Delete with SkyFeed** on a
+message. SkyFeed privately previews the target, requires a 3–400 character
+reason and one-minute confirmation, then rechecks both the admin and bot
+access. The moderation case stores IDs, reason, timestamps, and outcome—never
+the deleted message content. Deletion records use the existing
+`#moderation-log` delivery path.
+
 Configure durable channel IDs with `/settings channels`. Names such as
 `#adsb-alerts` and `#interesting-aircraft` are documentation only and are never
 treated as identifiers.
 Daily and weekly report schedules are delivered by the bounded outbound
 scheduler and record their last successful run to prevent restart duplicates.
+The reports destination also holds one persistent **Live flight leaders** card.
+It is edited every five minutes by default and shows the fastest, slowest,
+highest, and lowest fresh airborne aircraft across the deduplicated community
+view. Set `SKYFEED_FLIGHT_LEADERS_INTERVAL=0` to disable it, or choose an
+interval from `1m` through `1h`.
 Operator, owner, and aircraft-type watch rules are visibly best-effort and use
 only asynchronously cached ADSBDB metadata; they can never become emergencies.
 Movement alerts require three consecutive compatible observations and are
@@ -204,9 +226,11 @@ Ed25519 key, and sends it outbound. The central service stores only the public
 key and durable replay sequence. It accepts no proxy or arbitrary URL command.
 
 An Admin with Manage Server creates an ephemeral 15-minute invitation using
-`/feeders invite`. Other `/feeders` actions rename approved public metadata,
-set the public airport/weather station, pause, rotate, revoke, test, or choose a
-default view. Ordinary members see only approved public summaries.
+`/feeders invite`. `/feeders rename` changes the approved public name of either
+the local receiver or an invited feeder and persists it across restarts;
+`/feeders set-default` chooses the view used when a command omits its feeder
+option. Other actions set the public airport/weather station, pause, rotate,
+revoke, or test a feeder. Ordinary members see only approved public summaries.
 
 Central ingress remains disabled by default. To put a private HTTPS reverse
 proxy or mesh endpoint in front of loopback port 9091:

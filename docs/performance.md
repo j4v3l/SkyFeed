@@ -55,3 +55,41 @@ correct.
 
 PGO remains excluded under [ADR 0007](adr/0007-pgo-deferred.md): no
 representative intended-host CPU profile exists yet.
+
+## 2026-08-28 multi-feeder optimization
+
+The measurements below compare the unchanged `v0.1.1` tree with the optimized
+`dev` tree on the same Apple M3 Pro using eight samples and the official Go
+`benchstat` tool (`golang.org/x/perf` revision `19be9d8e6c70`).
+
+| Benchmark | v0.1.1 median | Optimized median | Change |
+|---|---:|---:|---:|
+| Normalize/publish 1,000 aircraft | 119.49 µs, 425.0 KiB | 99.73 µs, 104.4 KiB | 16.5% faster, 75.4% fewer bytes |
+| Combined 1,000-aircraft replay | 444.9 µs, 441.5 KiB | 364.0 µs, 105.2 KiB | 18.2% faster, 76.2% fewer bytes |
+| Heterogeneous 5,000-rule evaluation | 11.354 ms, 1,002 allocs | 9.193 ms, 2 allocs | 19.0% faster, 99.8% fewer allocations |
+| Aggregate 100 × 250 observations | 10.623 ms, 13.144 MiB | 3.777 ms, 8.044 MiB | 64.5% faster, 38.8% fewer bytes |
+| Aggregate 100 × 1,000 observations | 53.48 ms, 54.18 MiB | 21.62 ms, 32.67 MiB | 59.6% faster, 39.7% fewer bytes |
+
+The 25,000-observation aggregate now uses a median 265 allocations per rebuild,
+down from 75,904. The 100,000-observation stress case uses a median 4,256,
+down from 312,257. Both retain immutable published snapshots; no memory still
+reachable by readers is pooled or reused.
+
+New representative coverage records:
+
+- a generated 1,000-aircraft readsb payload decodes and normalizes in
+  1.88–1.93 ms;
+- the full 100-feeder pipeline (aggregate, rules, and accepted track sample)
+  completes in 8.36–8.62 ms for 25,000 observations;
+- four feeder rule evaluations complete in about 0.29 ms together, down from
+  about 1.34 ms before per-scope locking; engine mutex contention is below 5%
+  of the recorded contention profile;
+- off-cycle track observations take about 5 ns with zero allocations;
+- reusable agent encoding is 1.18–1.43 ms, decoding is 2.93–3.46 ms, and the
+  signed SQLite-backed ingress path is about 3.32 ms for 1,000 aircraft.
+
+The 10× and 50× HTTP replay reruns published 100 snapshots in 9.930 seconds and
+2.085 seconds. A 10-second, 100×-cadence smoke soak completed 1,000 iterations
+with goroutines 1→1, file descriptors 5→5, and no retained-heap growth after
+GC. These results do not replace the required 24-hour soak on the intended
+ARM64 deployment host.

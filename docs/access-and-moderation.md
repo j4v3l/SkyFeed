@@ -20,12 +20,13 @@ Administrator permission provides the initial bootstrap.
 - Moderators use moderation commands with the matching native Discord
   permission and a valid role hierarchy.
 - Admins manage SkyFeed settings with Manage Server. Role-binding changes also
-  require Manage Roles.
+  require Manage Roles. Message deletion additionally requires Manage Messages
+  in the target channel.
 
 The bot itself should receive only the permissions it needs: View Channels,
-Send Messages, Embed Links, Read Message History, Moderate Members, Kick
-Members, and Ban Members. Attach Files is optional. Do not grant Administrator,
-Manage Roles, Message Content, or privileged member intents.
+Send Messages, Embed Links, Read Message History, Manage Messages, Moderate
+Members, Kick Members, and Ban Members. Attach Files is optional. Do not grant
+Administrator, Manage Roles, Message Content, or privileged member intents.
 
 ## Moderation records
 
@@ -33,8 +34,15 @@ SkyFeed supports warnings, timeouts, timeout removal, kicks, bans, unbans, case
 lookup, and bounded case history. Destructive actions require a private,
 invoker-bound confirmation that expires after 60 seconds.
 
-A durable case records the moderator, target, reason, time, outcome, and warning
-DM status. Moderation-log delivery uses a bounded SQLite outbox so a Discord
+`/moderation delete-message` accepts a Discord message link or an ID with an
+optional channel. The **Delete with SkyFeed** message action opens the same
+private reason and confirmation flow on desktop and mobile. SkyFeed rechecks
+the guild, member role, target identity, and both users' channel permissions at
+confirmation time.
+
+A durable case records the moderator, target IDs, reason, time, outcome, and
+warning DM status. Deleted message content is never persisted or logged.
+Moderation-log delivery uses a bounded SQLite outbox so a Discord
 delivery failure cannot undo a completed action. Cases are retained for 365
 days and then removed in bounded batches.
 

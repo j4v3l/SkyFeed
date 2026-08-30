@@ -49,6 +49,31 @@ const (
 	AlertEmergency
 )
 
+type AlertObservation struct {
+	DistanceNM          float64
+	HasDistance         bool
+	DistanceFromAirport bool
+	AltitudeFeet        int
+	HasAltitude         bool
+	GroundSpeedKts      float64
+	HasGroundSpeed      bool
+	VerticalRateFPM     int
+	HasVerticalRate     bool
+}
+
+func AlertObservationFromAircraft(aircraft Aircraft) AlertObservation {
+	return AlertObservation{
+		DistanceNM:      aircraft.DistanceNM,
+		HasDistance:     aircraft.HasDistance,
+		AltitudeFeet:    aircraft.AltitudeFeet,
+		HasAltitude:     aircraft.HasAltitude,
+		GroundSpeedKts:  aircraft.GroundSpeedKts,
+		HasGroundSpeed:  aircraft.HasGroundSpeed,
+		VerticalRateFPM: aircraft.VerticalRateFPM,
+		HasVerticalRate: aircraft.HasVerticalRate,
+	}
+}
+
 type Alert struct {
 	ID                   string
 	RuleID               int64
@@ -69,6 +94,7 @@ type Alert struct {
 	InterestingPriority  bool
 	InterestingLink      string
 	InterestingImage     string
+	Observation          AlertObservation
 	ObservedAt           time.Time
 	Cooldown             time.Duration
 }

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/disgoorg/disgo/discord"
+	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -17,6 +18,7 @@ type AuditComponent struct {
 
 type SystemAuditData struct {
 	GeneratedAt           time.Time
+	Units                 domain.UnitSystem
 	Uptime                time.Duration
 	OverallStatus         string
 	Live                  bool
@@ -41,6 +43,8 @@ type SystemAuditData struct {
 	RecentFeeders         []string
 	PendingModerationLogs int
 	PlaneAlertRecords     int
+	MessageDeleteChannels int
+	MessageDeleteGaps     int
 	ADSBDBEnabled         bool
 	ADSBDBCache           int
 	ADSBDBHits            uint64
@@ -66,8 +70,8 @@ func SystemAudit(data SystemAuditData) discord.Embed {
 		fmt.Sprintf("%s **%s**\nLive `%t` • Ready `%t` • Up %s", auditBadge(data.OverallStatus), status, data.Live, data.Ready, conciseDuration(data.Uptime)),
 	)
 	embed.Fields = []discord.EmbedField{
-		section("📡 Live traffic", fmt.Sprintf("%d aircraft • Provider `%s` • Age %s\n%.1f msg/s • Maximum range %.1f NM",
-			data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), conciseDuration(data.SnapshotAge), data.MessageRate, data.MaxRangeNM)),
+		section("📡 Live traffic", fmt.Sprintf("%d aircraft • Provider `%s` • Age %s\n%.1f msg/s • Maximum range %s",
+			data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), conciseDuration(data.SnapshotAge), data.MessageRate, distance(data.MaxRangeNM, data.Units))),
 		section("🩺 Components", formatAuditComponents(data.Components)),
 		section("🔔 Server operations", formatGuildOps(data)),
 		section("🔗 Discord bindings", formatBindings(data)),
@@ -89,7 +93,7 @@ func AdminDigest(data SystemAuditData, interval time.Duration) discord.Embed {
 	)
 	embed.Fields = []discord.EmbedField{
 		section("🩺 Health", fmt.Sprintf("Live `%t` • Ready `%t` • Up %s\n%s", data.Live, data.Ready, conciseDuration(data.Uptime), formatAuditComponents(data.Components))),
-		section("📡 Traffic", fmt.Sprintf("%d aircraft • `%s` • %.1f msg/s\nMaximum range %.1f NM", data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), data.MessageRate, data.MaxRangeNM)),
+		section("📡 Traffic", fmt.Sprintf("%d aircraft • `%s` • %.1f msg/s\nMaximum range %s", data.AircraftCount, PlainText(valueOr(data.ActiveProvider, "unknown")), data.MessageRate, distance(data.MaxRangeNM, data.Units))),
 		section("🔔 Operations", formatGuildOps(data)),
 		section("📈 24-hour rollup", formatReportWindow(data)),
 		section("✨ Enrichment", formatEnrichment(data)),
@@ -148,8 +152,12 @@ func formatGuildOps(data SystemAuditData) string {
 	if muted == "" {
 		muted = "none"
 	}
-	return fmt.Sprintf("alerts %s · muted squawks `%s`\nwatch %d · alert configs %d · report schedules %d\ninteresting seen %d · pending mod logs %d · plane-alert %d",
-		paused, PlainText(muted), data.WatchRules, data.AlertConfigs, data.ReportSchedules, data.InterestingSeen, data.PendingModerationLogs, data.PlaneAlertRecords)
+	deleteAccess := fmt.Sprintf("message delete %d/%d channels", data.MessageDeleteChannels-data.MessageDeleteGaps, data.MessageDeleteChannels)
+	if data.MessageDeleteGaps > 0 {
+		deleteAccess += fmt.Sprintf(" · %d permission gaps", data.MessageDeleteGaps)
+	}
+	return fmt.Sprintf("alerts %s · muted squawks `%s`\nwatch %d · alert configs %d · report schedules %d\ninteresting seen %d · pending mod logs %d · plane-alert %d\n%s",
+		paused, PlainText(muted), data.WatchRules, data.AlertConfigs, data.ReportSchedules, data.InterestingSeen, data.PendingModerationLogs, data.PlaneAlertRecords, deleteAccess)
 }
 
 func formatBindings(data SystemAuditData) string {
@@ -171,8 +179,8 @@ func formatBindings(data SystemAuditData) string {
 }
 
 func formatReportWindow(data SystemAuditData) string {
-	return fmt.Sprintf("%d aircraft observations · %d peak tracked · %d msgs\nmax %.1f NM · %d emergency events\nroute catalog %d · route sightings %d",
-		data.Report24h.AircraftObservations, data.Report24h.PeakTracked, data.Report24h.Messages, data.Report24h.MaximumRangeNM, data.Report24h.EmergencyEvents, data.RouteCatalog, data.RouteSightings24h)
+	return fmt.Sprintf("%d aircraft observations · %d peak tracked · %d msgs\nmax %s · %d emergency events\nroute catalog %d · route sightings %d",
+		data.Report24h.AircraftObservations, data.Report24h.PeakTracked, data.Report24h.Messages, distance(data.Report24h.MaximumRangeNM, data.Units), data.Report24h.EmergencyEvents, data.RouteCatalog, data.RouteSightings24h)
 }
 
 func formatEnrichment(data SystemAuditData) string {

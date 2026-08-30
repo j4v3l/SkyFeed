@@ -121,6 +121,23 @@ func TestRouteServicePrefetchSkipsCachedEntriesAndRotatesBeyondFifty(t *testing.
 	}
 }
 
+func TestRouteServicePrefetchBoundsEachAggregateScan(t *testing.T) {
+	config := fastRouteConfig()
+	config.PrefetchLimit = 10
+	config.PrefetchScanLimit = 10
+	service := NewRouteService(&routeUpstreamStub{}, config)
+	aircraft := make([]domain.Aircraft, 1_000)
+	for index := range aircraft {
+		aircraft[index] = domain.Aircraft{Callsign: fmt.Sprintf("SF%04d", index), Latitude: 1, Longitude: 2, HasPosition: true}
+	}
+	if queued := service.Prefetch(aircraft); queued != 10 {
+		t.Fatalf("queued = %d", queued)
+	}
+	if cursor := service.prefetchCursor.Load(); cursor != 10 {
+		t.Fatalf("cursor = %d, want 10", cursor)
+	}
+}
+
 func TestRouteServiceQueueCoalescesNormalizedCallsigns(t *testing.T) {
 	stub := &routeUpstreamStub{}
 	service := NewRouteService(stub, fastRouteConfig())

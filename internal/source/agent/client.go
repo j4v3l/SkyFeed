@@ -38,6 +38,7 @@ type Client struct {
 	mu         sync.Mutex
 	credential Credentials
 	pending    *SignedEnvelope
+	encoder    *SnapshotEncoder
 }
 
 func NewClient(serverURL, stateDir string, allowPrivateHTTP bool) (*Client, error) {
@@ -59,10 +60,30 @@ func NewClient(serverURL, stateDir string, allowPrivateHTTP bool) (*Client, erro
 		ForceAttemptHTTP2: true, MaxIdleConns: 4, MaxIdleConnsPerHost: 2, MaxConnsPerHost: 2,
 		IdleConnTimeout: 60 * time.Second, TLSHandshakeTimeout: 2 * time.Second, ResponseHeaderTimeout: 5 * time.Second,
 	}
+	encoder, err := NewSnapshotEncoder()
+	if err != nil {
+		return nil, err
+	}
 	return &Client{
 		base: base, stateDir: stateDir, now: time.Now,
 		httpClient: &http.Client{Transport: transport, Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		encoder:    encoder,
 	}, nil
+}
+
+func (client *Client) Close() {
+	if client == nil {
+		return
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.encoder != nil {
+		client.encoder.Close()
+		client.encoder = nil
+	}
+	if transport, ok := client.httpClient.Transport.(*http.Transport); ok {
+		transport.CloseIdleConnections()
+	}
 }
 
 func privateHost(host string) bool {
@@ -135,8 +156,11 @@ func (client *Client) Send(ctx context.Context, snapshot *domain.Snapshot) error
 	if len(client.credential.PrivateKey) != ed25519.PrivateKeySize {
 		return errors.New("agent is not enrolled")
 	}
+	if client.encoder == nil {
+		return errors.New("agent client is closed")
+	}
 	if client.pending == nil {
-		payload, err := EncodeSnapshot(snapshot)
+		payload, err := client.encoder.Encode(snapshot)
 		if err != nil {
 			return err
 		}

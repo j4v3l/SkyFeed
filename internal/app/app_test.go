@@ -62,6 +62,25 @@ func TestSourcesInitializedRequiresSuccessfulFetches(t *testing.T) {
 	}
 }
 
+func TestMergeLocalFeederDescriptorPreservesAdminName(t *testing.T) {
+	configured := domain.FeederDescriptor{
+		ID: domain.FeederLocal, DisplayName: "Local feeder", PublicArea: "Palm Beach", AirportICAO: "KPBI",
+		Latitude: 26.6832, Longitude: -80.0956, HasCenter: true, SourceKind: domain.FeederSourceLocal, Enabled: true,
+	}
+	stored := domain.FeederDescriptor{
+		ID: domain.FeederLocal, DisplayName: "Palm Beach Radar", WeatherStationICAO: "KDJT",
+		PublicArea: "old", AirportICAO: "KOLD", SourceKind: domain.FeederSourceLocal, Enabled: true,
+	}
+
+	got := mergeLocalFeederDescriptor(configured, stored)
+	if got.DisplayName != "Palm Beach Radar" || got.WeatherStationICAO != "KDJT" {
+		t.Fatalf("durable administrator values were overwritten: %+v", got)
+	}
+	if got.PublicArea != "Palm Beach" || got.AirportICAO != "KPBI" || !got.HasCenter || got.Latitude != configured.Latitude || got.Longitude != configured.Longitude {
+		t.Fatalf("configured public location was not refreshed: %+v", got)
+	}
+}
+
 func TestPrivacyDisclosureReflectsEnabledProvidersWithoutCoordinates(t *testing.T) {
 	disclosure := privacyDisclosure(config.Config{ADSBDB: config.ADSBDB{Enabled: true}})
 	if len(disclosure.Providers) != 3 ||

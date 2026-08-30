@@ -56,7 +56,7 @@ func (monitor *InterestingMonitor) Evaluate(guildID uint64, snapshot *domain.Sna
 		}
 		monitor.seen[icao] = struct{}{}
 		title := firstNonEmpty(record.Operator, record.Type, record.Group, "Interesting aircraft")
-		description := interestingDescription(record, aircraft)
+		description := interestingDescription(record)
 		alerts = append(alerts, domain.Alert{
 			ID:                   fmt.Sprintf("interesting:%s:%d", icao, now.UnixNano()),
 			GuildID:              guildID,
@@ -74,12 +74,13 @@ func (monitor *InterestingMonitor) Evaluate(guildID uint64, snapshot *domain.Sna
 			InterestingPriority:  record.HighInterest(),
 			InterestingLink:      record.Link,
 			InterestingImage:     record.PrimaryImage(),
+			Observation:          domain.AlertObservationFromAircraft(aircraft),
 		})
 	}
 	return alerts
 }
 
-func interestingDescription(record planealert.Record, aircraft domain.Aircraft) string {
+func interestingDescription(record planealert.Record) string {
 	parts := make([]string, 0, 4)
 	if record.Group != "" {
 		parts = append(parts, record.Group)
@@ -89,9 +90,6 @@ func interestingDescription(record planealert.Record, aircraft domain.Aircraft) 
 	}
 	if tags := record.Tags(); tags != "" {
 		parts = append(parts, tags)
-	}
-	if aircraft.HasDistance {
-		parts = append(parts, fmt.Sprintf("%.1f NM", aircraft.DistanceNM))
 	}
 	if len(parts) == 0 {
 		return "Matched plane-alert-db reference entry."

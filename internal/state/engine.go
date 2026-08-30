@@ -2,7 +2,8 @@ package state
 
 import (
 	"context"
-	"sort"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -179,9 +180,6 @@ func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], in
 		provider = engine.health.Aircraft.Provider
 	}
 	engine.batch.Provider = provider
-	for index := range engine.batch.Aircraft {
-		engine.batch.Aircraft[index].Provider = provider
-	}
 	if previous.Known() && previous != provider {
 		engine.providerChangedAt = frame.FetchedAt
 		if engine.providerChangedAt.IsZero() {
@@ -196,7 +194,7 @@ func (engine *Engine) applyAircraft(frame source.Frame[domain.AircraftBatch], in
 	engine.fetched = frame.FetchedAt
 	engine.health.Aircraft = successHealth(engine.health.Aircraft, frame.FetchedAt, frame.Value.GeneratedAt, interval)
 	engine.health.Aircraft.Provider = provider
-	snapshot := engine.buildLocked(true)
+	snapshot := engine.buildNewAircraftLocked()
 	engine.mu.Unlock()
 	engine.store(snapshot)
 }
@@ -254,46 +252,76 @@ func (engine *Engine) buildLocked(rebuildAircraft bool) *domain.Snapshot {
 	var aircraft []domain.Aircraft
 	var byICAO map[string]int
 	var search []domain.AircraftKey
-	if !rebuildAircraft && current != nil {
+	if current == nil {
+		aircraft, byICAO, search = []domain.Aircraft{}, map[string]int{}, []domain.AircraftKey{}
+	} else if !rebuildAircraft {
 		aircraft, byICAO, search = current.Aircraft, current.ByICAO, current.Search
 	} else {
-		aircraft = make([]domain.Aircraft, len(engine.batch.Aircraft))
-		copy(aircraft, engine.batch.Aircraft)
-		if engine.receiver.HasPosition {
-			for index := range aircraft {
-				if !aircraft[index].HasPosition {
-					continue
-				}
-				aircraft[index].DistanceNM, aircraft[index].BearingDegrees = DistanceBearing(
-					engine.receiver.Latitude,
-					engine.receiver.Longitude,
-					aircraft[index].Latitude,
-					aircraft[index].Longitude,
-				)
-				aircraft[index].HasDistance = true
-			}
-		}
-		sort.Slice(aircraft, func(left, right int) bool { return aircraft[left].ICAO < aircraft[right].ICAO })
-		byICAO = make(map[string]int, len(aircraft))
-		search = make([]domain.AircraftKey, 0, len(aircraft))
-		for index := range aircraft {
-			byICAO[aircraft[index].ICAO] = index
-			search = append(search, domain.AircraftKey{
-				ICAO:         aircraft[index].ICAO,
-				Callsign:     aircraft[index].Callsign,
-				Registration: aircraft[index].Registration,
-			})
-		}
-		sort.Slice(search, func(left, right int) bool {
-			if search[left].Callsign != search[right].Callsign {
-				return search[left].Callsign < search[right].Callsign
-			}
-			if search[left].Registration != search[right].Registration {
-				return search[left].Registration < search[right].Registration
-			}
-			return search[left].ICAO < search[right].ICAO
-		})
+		// A receiver-location change is rare and must not mutate aircraft still
+		// reachable through the previous immutable snapshot.
+		aircraft = append([]domain.Aircraft(nil), current.Aircraft...)
+		deriveDistances(aircraft, engine.receiver)
+		engine.batch.Aircraft = aircraft
+		byICAO, search = current.ByICAO, current.Search
 	}
+	return engine.snapshotLocked(aircraft, byICAO, search)
+}
+
+// buildNewAircraftLocked consumes the slice supplied by the source frame. A
+// source transfers ownership of frame values to the engine and must not mutate
+// or reuse that slice after publication.
+func (engine *Engine) buildNewAircraftLocked() *domain.Snapshot {
+	engine.sequence++
+	aircraft := engine.batch.Aircraft
+	sortedUnique := true
+	previous := ""
+	for index := range aircraft {
+		aircraft[index].ICAO = normalizeICAO(aircraft[index].ICAO)
+		aircraft[index].Provider = engine.batch.Provider
+		aircraft[index].SeenBy = nil
+		if aircraft[index].ICAO == "" || (previous != "" && previous >= aircraft[index].ICAO) {
+			sortedUnique = false
+		}
+		previous = aircraft[index].ICAO
+	}
+	if !sortedUnique {
+		slices.SortFunc(aircraft, func(left, right domain.Aircraft) int {
+			return strings.Compare(left.ICAO, right.ICAO)
+		})
+		write := 0
+		for index := range aircraft {
+			if aircraft[index].ICAO == "" {
+				continue
+			}
+			if write > 0 && aircraft[write-1].ICAO == aircraft[index].ICAO {
+				if betterBatchObservation(aircraft[index], aircraft[write-1]) {
+					aircraft[write-1] = aircraft[index]
+				}
+				continue
+			}
+			aircraft[write] = aircraft[index]
+			write++
+		}
+		clear(aircraft[write:])
+		aircraft = aircraft[:write:write]
+	}
+	deriveDistances(aircraft, engine.receiver)
+	engine.batch.Aircraft = aircraft
+	byICAO, search := buildAircraftIndexes(aircraft)
+	return engine.snapshotLocked(aircraft, byICAO, search)
+}
+
+func normalizeICAO(value string) string {
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if character <= ' ' || character >= 0x7f || (character >= 'a' && character <= 'z') {
+			return strings.ToUpper(strings.TrimSpace(value))
+		}
+	}
+	return value
+}
+
+func (engine *Engine) snapshotLocked(aircraft []domain.Aircraft, byICAO map[string]int, search []domain.AircraftKey) *domain.Snapshot {
 	return &domain.Snapshot{
 		FeederID:            engine.feeder,
 		Sequence:            engine.sequence,
@@ -312,6 +340,53 @@ func (engine *Engine) buildLocked(rebuildAircraft bool) *domain.Snapshot {
 		Search:              search,
 		Health:              engine.health,
 	}
+}
+
+func deriveDistances(aircraft []domain.Aircraft, receiver domain.Receiver) {
+	for index := range aircraft {
+		aircraft[index].DistanceNM = 0
+		aircraft[index].BearingDegrees = 0
+		aircraft[index].HasDistance = false
+		if !receiver.HasPosition || !aircraft[index].HasPosition {
+			continue
+		}
+		aircraft[index].DistanceNM, aircraft[index].BearingDegrees = DistanceBearing(
+			receiver.Latitude,
+			receiver.Longitude,
+			aircraft[index].Latitude,
+			aircraft[index].Longitude,
+		)
+		aircraft[index].HasDistance = true
+	}
+}
+
+func buildAircraftIndexes(aircraft []domain.Aircraft) (map[string]int, []domain.AircraftKey) {
+	byICAO := make(map[string]int, len(aircraft))
+	search := make([]domain.AircraftKey, len(aircraft))
+	for index := range aircraft {
+		byICAO[aircraft[index].ICAO] = index
+		search[index] = domain.AircraftKey{ICAO: aircraft[index].ICAO, Callsign: aircraft[index].Callsign, Registration: aircraft[index].Registration}
+	}
+	slices.SortFunc(search, func(left, right domain.AircraftKey) int {
+		if left.Callsign != right.Callsign {
+			return strings.Compare(left.Callsign, right.Callsign)
+		}
+		if left.Registration != right.Registration {
+			return strings.Compare(left.Registration, right.Registration)
+		}
+		return strings.Compare(left.ICAO, right.ICAO)
+	})
+	return byICAO, search
+}
+
+func betterBatchObservation(candidate, current domain.Aircraft) bool {
+	if candidate.Seen != current.Seen {
+		return candidate.Seen < current.Seen
+	}
+	if candidate.HasPosition != current.HasPosition {
+		return candidate.HasPosition
+	}
+	return candidate.Messages > current.Messages
 }
 
 func (engine *Engine) store(snapshot *domain.Snapshot) {

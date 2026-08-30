@@ -35,6 +35,7 @@ type RouteConfig struct {
 	BatchSize          int
 	BatchWait          time.Duration
 	PrefetchLimit      int
+	PrefetchScanLimit  int
 	RequestBudget      time.Duration
 	RouteTTL           time.Duration
 	AirportTTL         time.Duration
@@ -59,6 +60,7 @@ func DefaultRouteConfig() RouteConfig {
 		BatchSize:          MaxRouteBatchSize,
 		BatchWait:          25 * time.Millisecond,
 		PrefetchLimit:      MaxRouteBatchSize,
+		PrefetchScanLimit:  500,
 		RequestBudget:      4 * time.Second,
 		RouteTTL:           8 * time.Hour,
 		AirportTTL:         7 * 24 * time.Hour,
@@ -148,6 +150,9 @@ func normalizeRouteConfig(config RouteConfig) RouteConfig {
 	if config.PrefetchLimit < 1 || config.PrefetchLimit > MaxRouteBatchSize {
 		config.PrefetchLimit = defaults.PrefetchLimit
 	}
+	if config.PrefetchScanLimit < config.PrefetchLimit {
+		config.PrefetchScanLimit = defaults.PrefetchScanLimit
+	}
 	if config.RequestBudget <= 0 {
 		config.RequestBudget = defaults.RequestBudget
 	}
@@ -205,7 +210,8 @@ func (service *RouteService) Prefetch(aircraft []domain.Aircraft) int {
 	queued := 0
 	start := int(service.prefetchCursor.Load() % uint64(len(aircraft)))
 	examined := 0
-	for examined < len(aircraft) {
+	scanLimit := min(len(aircraft), service.config.PrefetchScanLimit)
+	for examined < scanLimit {
 		if queued >= service.config.PrefetchLimit {
 			break
 		}

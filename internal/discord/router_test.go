@@ -397,12 +397,22 @@ func TestRouterPersonalUnitsOverrideGuildDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if settings.Units != "imperial" {
+		t.Fatalf("new guild units=%q", settings.Units)
+	}
+	imperial := &responseRecorder{}
+	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 2, now)
+	router.SetRepository(repository)
+	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, imperial); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(imperial.created[0].Embeds[0].Fields[0].Value, "mi") {
+		t.Fatalf("imperial guild default not used: %#v", imperial.created[0].Embeds[0])
+	}
 	settings.Units = "metric"
 	if err := repository.UpsertGuildSettings(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
-	router := NewRouter(snapshotStub{testSnapshot(now)}, NewSessionManager(100, 10, time.Minute), 2, now)
-	router.SetRepository(repository)
 	metric := &responseRecorder{}
 	if err := router.HandleCommand(CommandRequest{Name: "aircraft", UserID: 1, GuildID: 2, ChannelID: 3, Strings: map[string]string{"query": "ABC123"}}, metric); err != nil {
 		t.Fatal(err)

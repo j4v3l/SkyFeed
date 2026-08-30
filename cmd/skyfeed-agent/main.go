@@ -47,6 +47,7 @@ func execute(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	defer client.Close()
 	receiverURL, aircraftPoll, metadataPoll, err := agentSourceConfig()
 	if err != nil {
 		return err

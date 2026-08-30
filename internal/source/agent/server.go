@@ -202,18 +202,26 @@ func (ingress *IngressServer) handleSnapshot(writer http.ResponseWriter, request
 }
 
 func (ingress *IngressServer) worker(ctx context.Context) {
+	decoder, decoderErr := NewSnapshotDecoder()
+	if decoderErr == nil {
+		defer decoder.Close()
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case job := <-ingress.jobs:
-			result := ingress.process(ctx, job.envelope)
+			if decoderErr != nil {
+				job.result <- ingressResult{err: decoderErr}
+				continue
+			}
+			result := ingress.process(ctx, decoder, job.envelope)
 			job.result <- result
 		}
 	}
 }
 
-func (ingress *IngressServer) process(ctx context.Context, envelope SignedEnvelope) ingressResult {
+func (ingress *IngressServer) process(ctx context.Context, decoder *SnapshotDecoder, envelope SignedEnvelope) ingressResult {
 	lockValue, _ := ingress.feederLock.LoadOrStore(envelope.FeederID, &sync.Mutex{})
 	lock := lockValue.(*sync.Mutex)
 	lock.Lock()
@@ -226,11 +234,8 @@ func (ingress *IngressServer) process(ctx context.Context, envelope SignedEnvelo
 	if err != nil {
 		return ingressResult{err: err}
 	}
-	snapshot, err := DecodeSnapshot(envelope.FeederID, envelope.Payload, ingress.now().UTC())
+	snapshot, err := decoder.Decode(envelope.FeederID, envelope.Payload, ingress.now().UTC())
 	if err != nil {
-		return ingressResult{err: err}
-	}
-	if err := ingress.publisher.Register(feeder.Descriptor); err != nil {
 		return ingressResult{err: err}
 	}
 	applyPublicCenter(snapshot, feeder.Descriptor)

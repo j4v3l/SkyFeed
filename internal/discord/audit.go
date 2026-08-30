@@ -43,6 +43,7 @@ func (router *Router) handleAudit(request CommandRequest, responder InteractionR
 	if err != nil {
 		return responder.CreateMessage(errorMessage("The system audit could not be assembled."))
 	}
+	audit.Units = router.effectiveUnits(request.GuildID, request.UserID)
 	return responder.CreateMessage(render.SafeMessage(render.SystemAudit(audit), true))
 }
 
@@ -51,6 +52,7 @@ func (router *Router) buildSystemAudit(ctx context.Context, guildID uint64) (ren
 	audit := render.SystemAuditData{
 		GeneratedAt: now,
 		Uptime:      now.Sub(router.startedAt),
+		Units:       domain.DefaultUnitSystem,
 	}
 	if router.health != nil {
 		view := router.health.View(now)
@@ -102,6 +104,7 @@ func (router *Router) buildSystemAudit(ctx context.Context, guildID uint64) (ren
 		return audit, err
 	}
 	if settings, err := router.repository.GuildSettings(ctx, guildID); err == nil {
+		audit.Units = domain.NormalizeUnitSystem(settings.Units)
 		audit.AlertsPaused = settings.AlertsPaused
 		audit.MutedSquawks = settings.MutedSquawks
 	}
@@ -144,6 +147,12 @@ func (router *Router) buildSystemAudit(ctx context.Context, guildID uint64) (ren
 	}
 	if count, err := router.repository.PlaneAlertReferenceCount(ctx); err == nil {
 		audit.PlaneAlertRecords = count
+	}
+	if auditor, ok := router.messageDeletion.(MessageDeletionAuditor); ok {
+		if access, err := auditor.AuditMessageDeletionAccess(ctx, guildID); err == nil {
+			audit.MessageDeleteChannels = access.Channels
+			audit.MessageDeleteGaps = access.Gaps
+		}
 	}
 	if router.enrichmentAudit != nil {
 		stats := router.enrichmentAudit.Stats()

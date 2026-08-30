@@ -413,8 +413,8 @@ func (router *Router) respondError(responder InteractionResponder, description s
 	return responder.CreateMessage(render.SafeMessage(render.Error(description, router.now()), false))
 }
 
-func (router *Router) handlePrivacy(responder InteractionResponder) error {
-	return responder.CreateMessage(render.SafeMessage(render.Privacy(router.privacy), true))
+func (router *Router) handlePrivacy(request CommandRequest, responder InteractionResponder) error {
+	return responder.CreateMessage(render.SafeMessage(render.PrivacyWithUnits(router.privacy, router.effectiveUnits(request.GuildID, request.UserID)), true))
 }
 
 func (router *Router) squawkMessage(session Session, snapshot *domain.Snapshot) (disgocord.MessageCreate, error) {

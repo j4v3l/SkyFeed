@@ -73,19 +73,22 @@ type RoleBinding struct {
 }
 
 type ModerationCase struct {
-	ID                    int64
-	GuildID               uint64
-	ModeratorID           uint64
-	TargetUserID          uint64
-	Action                string
-	Reason                string
-	Duration              time.Duration
-	DeleteMessageDuration time.Duration
-	Status                string
-	DMStatus              string
-	ErrorCode             string
-	CreatedAt             time.Time
-	CompletedAt           time.Time
+	ID                     int64
+	GuildID                uint64
+	ModeratorID            uint64
+	TargetUserID           uint64
+	TargetChannelID        uint64
+	TargetMessageID        uint64
+	TargetMessageCreatedAt time.Time
+	Action                 string
+	Reason                 string
+	Duration               time.Duration
+	DeleteMessageDuration  time.Duration
+	Status                 string
+	DMStatus               string
+	ErrorCode              string
+	CreatedAt              time.Time
+	CompletedAt            time.Time
 }
 
 type ModerationLog struct {
@@ -225,6 +228,7 @@ type Repository interface {
 	UpsertMessageBinding(context.Context, MessageBinding) error
 	MessageBinding(context.Context, uint64, string) (MessageBinding, bool, error)
 	DeleteMessageBinding(context.Context, uint64, string) error
+	DeleteMessageBindingByTarget(context.Context, uint64, uint64, uint64) error
 	PlaneAlertReferenceCount(context.Context) (int, error)
 	PlaneAlertCommitHash(context.Context) (string, error)
 	ReplacePlaneAlertReference(context.Context, []PlaneAlertReference, string) error

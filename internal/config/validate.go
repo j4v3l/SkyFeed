@@ -67,6 +67,11 @@ func (cfg *Config) validateStatic() error {
 		validateDuration("SKYFEED_ADSBDB_STALE_TTL", cfg.ADSBDB.StaleTTL, time.Hour, 7*24*time.Hour),
 		validateDuration("SKYFEED_DASHBOARD_INTERVAL", cfg.DashboardInterval, 10*time.Second, 15*time.Minute),
 	)
+	if cfg.FlightLeadersInterval < 0 {
+		errs = append(errs, errors.New("SKYFEED_FLIGHT_LEADERS_INTERVAL must be zero (disabled) or a positive duration"))
+	} else if cfg.FlightLeadersInterval > 0 && (cfg.FlightLeadersInterval < time.Minute || cfg.FlightLeadersInterval > time.Hour) {
+		errs = append(errs, errors.New("SKYFEED_FLIGHT_LEADERS_INTERVAL must be between 1m and 1h when enabled"))
+	}
 	if cfg.AdminDigestInterval < 0 {
 		errs = append(errs, errors.New("SKYFEED_ADMIN_DIGEST_INTERVAL must be zero (disabled) or a positive duration"))
 	} else if cfg.AdminDigestInterval > 0 && (cfg.AdminDigestInterval < time.Hour || cfg.AdminDigestInterval > 24*time.Hour) {

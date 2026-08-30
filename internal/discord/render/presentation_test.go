@@ -8,6 +8,7 @@ import (
 	"github.com/disgoorg/disgo/discord"
 	"github.com/j4v3l/SkyFeed/internal/domain"
 	"github.com/j4v3l/SkyFeed/internal/privacy"
+	"github.com/j4v3l/SkyFeed/internal/report"
 	"github.com/j4v3l/SkyFeed/internal/storage"
 )
 
@@ -131,6 +132,64 @@ func TestHelpOnlyShowsSettingsToManagers(t *testing.T) {
 	}
 }
 
+func TestFlightLeadersIsResponsiveProviderAwareAndUnitAware(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	snapshot := &domain.Snapshot{
+		FeederID:    domain.FeederAll,
+		PublishedAt: now.Add(-time.Second),
+		Health:      domain.Health{Aircraft: domain.SourceHealth{Status: domain.HealthHealthy}},
+		Aircraft: []domain.Aircraft{
+			{ICAO: "ABC123", Provider: domain.ProviderReadsb, Callsign: "SKY1", HasGroundSpeed: true, GroundSpeedKts: 500, HasAltitude: true, AltitudeFeet: 40_000, Seen: time.Second, SeenBy: []domain.FeederID{domain.FeederLocal, "coast"}},
+			{ICAO: "DEF456", Provider: domain.ProviderReadsb, Registration: "N123SF", HasGroundSpeed: true, GroundSpeedKts: 90, HasAltitude: true, AltitudeFeet: 1_500, Seen: 2 * time.Second, SeenBy: []domain.FeederID{domain.FeederLocal}},
+		},
+	}
+	leaders := report.SelectLiveLeaders(snapshot, now)
+	aviation := FlightLeaders(snapshot, leaders, domain.UnitsAviation, now)
+	if aviation.Title != "SkyFeed • Live flight leaders" || len(aviation.Fields) != 4 {
+		t.Fatalf("unexpected leader card: %#v", aviation)
+	}
+	for _, field := range aviation.Fields {
+		if field.Inline == nil || *field.Inline {
+			t.Fatalf("leader field %q is inline", field.Name)
+		}
+		if !strings.Contains(field.Value, "\n") {
+			t.Fatalf("leader field %q lacks mobile line breaks: %q", field.Name, field.Value)
+		}
+	}
+	values := embedFieldValues(aviation)
+	for _, expected := range []string{"500 kt", "40000 ft", "2 feeders", "90 kt", "1500 ft"} {
+		if !strings.Contains(values, expected) {
+			t.Fatalf("aviation card missing %q: %q", expected, values)
+		}
+	}
+	if aviation.Footer == nil || !strings.Contains(strings.ToLower(aviation.Footer.Text), "readsb") || !strings.Contains(strings.ToLower(aviation.Footer.Text), "community aggregate") {
+		t.Fatalf("provider footer = %#v", aviation.Footer)
+	}
+	metric := FlightLeaders(snapshot, leaders, domain.UnitsMetric, now)
+	metricValues := embedFieldValues(metric)
+	if !strings.Contains(metricValues, "km/h") || !strings.Contains(metricValues, "m") {
+		t.Fatalf("metric card = %q", metricValues)
+	}
+}
+
+func TestFlightLeadersShowsStaleAndEmptyStatesWithoutColor(t *testing.T) {
+	now := time.Date(2026, 8, 28, 12, 0, 0, 0, time.UTC)
+	snapshot := &domain.Snapshot{
+		PublishedAt: now.Add(-time.Minute),
+		Health:      domain.Health{Aircraft: domain.SourceHealth{Status: domain.HealthStale}},
+		Aircraft:    []domain.Aircraft{{ICAO: "STALE1", HasGroundSpeed: true, GroundSpeedKts: 200}},
+	}
+	embed := FlightLeaders(snapshot, report.SelectLiveLeaders(snapshot, now), domain.UnitsAviation, now)
+	if !strings.Contains(embed.Description, "STALE") || !strings.Contains(embed.Description, "No aircraft currently") {
+		t.Fatalf("empty stale state = %q", embed.Description)
+	}
+	for _, field := range embed.Fields {
+		if !strings.Contains(field.Value, "No fresh airborne aircraft") {
+			t.Fatalf("empty field = %q", field.Value)
+		}
+	}
+}
+
 func TestFeederShowsUnknownRefresh(t *testing.T) {
 	embed := Feeder(&domain.Snapshot{}, time.Unix(1_700_000_000, 0))
 	if receiver := fieldValueContaining(embed, "Receiver"); !strings.Contains(receiver, "Refresh Unavailable") {
@@ -185,12 +244,12 @@ func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
 	}
 	statusEmbed := Status(snapshot, time.Minute, now, false)
 	status := fieldValueContaining(statusEmbed, "Live traffic")
-	if !strings.Contains(status, "30.0 msg/s") || !strings.Contains(status, "110.0 NM") {
+	if !strings.Contains(status, "30.0 msg/s") || !strings.Contains(status, "126.6 mi") {
 		t.Fatalf("status live = %q", status)
 	}
 
 	feeder := fieldValueContaining(Feeder(snapshot, now), "Statistics")
-	if !strings.Contains(feeder, "1800 messages") || !strings.Contains(feeder, "6 tracks") || !strings.Contains(feeder, "Max range 110.0 NM") {
+	if !strings.Contains(feeder, "1800 messages") || !strings.Contains(feeder, "6 tracks") || !strings.Contains(feeder, "Max range 126.6 mi") {
 		t.Fatalf("feeder statistics = %q", feeder)
 	}
 }

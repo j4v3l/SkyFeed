@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,7 +52,28 @@ type SnapshotPayload struct {
 	Health            domain.Health       `json:"health"`
 }
 
-func EncodeSnapshot(snapshot *domain.Snapshot) ([]byte, error) {
+type SnapshotEncoder struct {
+	encoder *zstd.Encoder
+}
+
+func NewSnapshotEncoder() (*SnapshotEncoder, error) {
+	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedFastest))
+	if err != nil {
+		return nil, fmt.Errorf("create snapshot compressor: %w", err)
+	}
+	return &SnapshotEncoder{encoder: encoder}, nil
+}
+
+func (encoder *SnapshotEncoder) Close() {
+	if encoder != nil && encoder.encoder != nil {
+		encoder.encoder.Close()
+	}
+}
+
+func (encoder *SnapshotEncoder) Encode(snapshot *domain.Snapshot) ([]byte, error) {
+	if encoder == nil || encoder.encoder == nil {
+		return nil, errors.New("snapshot encoder is required")
+	}
 	if snapshot == nil {
 		return nil, errors.New("snapshot is required")
 	}
@@ -88,29 +109,48 @@ func EncodeSnapshot(snapshot *domain.Snapshot) ([]byte, error) {
 	if len(raw) > MaxDecompressedBytes {
 		return nil, fmt.Errorf("snapshot JSON exceeds %d bytes", MaxDecompressedBytes)
 	}
-	encoder, err := zstd.NewWriter(nil, zstd.WithEncoderConcurrency(1), zstd.WithEncoderLevel(zstd.SpeedFastest))
-	if err != nil {
-		return nil, fmt.Errorf("create snapshot compressor: %w", err)
-	}
-	defer encoder.Close()
-	compressed := encoder.EncodeAll(raw, make([]byte, 0, min(len(raw), MaxCompressedBytes)))
+	compressed := encoder.encoder.EncodeAll(raw, make([]byte, 0, min(len(raw), MaxCompressedBytes)))
 	if len(compressed) > MaxCompressedBytes {
 		return nil, fmt.Errorf("compressed snapshot exceeds %d bytes", MaxCompressedBytes)
 	}
 	return compressed, nil
 }
 
-func DecodeSnapshot(feederID domain.FeederID, compressed []byte, publishedAt time.Time) (*domain.Snapshot, error) {
-	if len(compressed) == 0 || len(compressed) > MaxCompressedBytes {
-		return nil, ErrPayload
+func EncodeSnapshot(snapshot *domain.Snapshot) ([]byte, error) {
+	encoder, err := NewSnapshotEncoder()
+	if err != nil {
+		return nil, err
 	}
-	decoder, err := zstd.NewReader(bytes.NewReader(compressed), zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(MaxDecompressedBytes))
+	defer encoder.Close()
+	return encoder.Encode(snapshot)
+}
+
+type SnapshotDecoder struct {
+	decoder *zstd.Decoder
+}
+
+func NewSnapshotDecoder() (*SnapshotDecoder, error) {
+	decoder, err := zstd.NewReader(nil, zstd.WithDecoderConcurrency(1), zstd.WithDecoderMaxMemory(MaxDecompressedBytes))
 	if err != nil {
 		return nil, fmt.Errorf("%w: create snapshot decoder", ErrPayload)
 	}
-	defer decoder.Close()
-	limited := io.LimitReader(decoder, MaxDecompressedBytes+1)
-	raw, err := io.ReadAll(limited)
+	return &SnapshotDecoder{decoder: decoder}, nil
+}
+
+func (decoder *SnapshotDecoder) Close() {
+	if decoder != nil && decoder.decoder != nil {
+		decoder.decoder.Close()
+	}
+}
+
+func (decoder *SnapshotDecoder) Decode(feederID domain.FeederID, compressed []byte, publishedAt time.Time) (*domain.Snapshot, error) {
+	if decoder == nil || decoder.decoder == nil {
+		return nil, ErrPayload
+	}
+	if len(compressed) == 0 || len(compressed) > MaxCompressedBytes {
+		return nil, ErrPayload
+	}
+	raw, err := decoder.decoder.DecodeAll(compressed, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: decompress agent snapshot", ErrPayload)
 	}
@@ -137,7 +177,7 @@ func DecodeSnapshot(feederID domain.FeederID, compressed []byte, publishedAt tim
 		aircraft[index].ICAO = strings.ToUpper(strings.TrimSpace(aircraft[index].ICAO))
 		aircraft[index].SeenBy = nil
 	}
-	sort.Slice(aircraft, func(left, right int) bool { return aircraft[left].ICAO < aircraft[right].ICAO })
+	slices.SortFunc(aircraft, func(left, right domain.Aircraft) int { return strings.Compare(left.ICAO, right.ICAO) })
 	byICAO := make(map[string]int, len(aircraft))
 	search := make([]domain.AircraftKey, 0, len(aircraft))
 	for index := range aircraft {
@@ -157,6 +197,15 @@ func DecodeSnapshot(feederID domain.FeederID, compressed []byte, publishedAt tim
 		Receiver: payload.Receiver, Statistics: payload.Statistics, ReceiverMessages: payload.ReceiverMessages,
 		MessageCounterValid: payload.MessageValid, Aircraft: aircraft, ByICAO: byICAO, Search: search, Health: payload.Health,
 	}, nil
+}
+
+func DecodeSnapshot(feederID domain.FeederID, compressed []byte, publishedAt time.Time) (*domain.Snapshot, error) {
+	decoder, err := NewSnapshotDecoder()
+	if err != nil {
+		return nil, err
+	}
+	defer decoder.Close()
+	return decoder.Decode(feederID, compressed, publishedAt)
 }
 
 func SignEnvelope(privateKey ed25519.PrivateKey, feederID domain.FeederID, sequence uint64, sentAt time.Time, payload []byte) (SignedEnvelope, error) {

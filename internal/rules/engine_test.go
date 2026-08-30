@@ -2,11 +2,27 @@ package rules
 
 import (
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/j4v3l/SkyFeed/internal/domain"
 )
+
+func TestRuleIndexEvaluatesOnlyMatchingFeederScope(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	rules := []domain.WatchRule{
+		{ID: 1, FeederScope: "north", Type: domain.RuleICAO, Value: "ABC123", Enabled: true, MinimumObservations: 1},
+		{ID: 2, FeederScope: "south", Type: domain.RuleICAO, Value: "ABC123", Enabled: true, MinimumObservations: 1},
+	}
+	engine := NewEngine(rules, nil)
+	snapshot := ruleSnapshot(now, domain.Aircraft{ICAO: "ABC123"})
+	snapshot.FeederID = "north"
+	alerts, _ := engine.Evaluate(snapshot)
+	if len(alerts) != 1 || alerts[0].RuleID != 1 {
+		t.Fatalf("north alerts = %+v", alerts)
+	}
+}
 
 func TestRuleCooldownConsecutiveAndRestartState(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
@@ -170,6 +186,48 @@ func BenchmarkRuleEngineHeterogeneous(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		engine.Evaluate(snapshot)
+	}
+}
+
+func BenchmarkRuleEngineConcurrentFeeders(b *testing.B) {
+	const workers = 4
+	rules := make([]domain.WatchRule, 0, workers*1_250)
+	snapshots := make([]*domain.Snapshot, workers)
+	for worker := range workers {
+		scope := domain.FeederID(fmt.Sprintf("feeder-%d", worker))
+		for index := 0; index < 1_250; index++ {
+			rules = append(rules, domain.WatchRule{
+				ID:                  int64(worker*1_250 + index + 1),
+				FeederScope:         scope,
+				Type:                domain.RuleICAO,
+				Value:               fmt.Sprintf("%06X", index),
+				Enabled:             true,
+				MinimumObservations: 2,
+			})
+		}
+		aircraft := make([]domain.Aircraft, 1_000)
+		byICAO := make(map[string]int, len(aircraft))
+		for index := range aircraft {
+			icao := fmt.Sprintf("%06X", index)
+			aircraft[index] = domain.Aircraft{ICAO: icao}
+			byICAO[icao] = index
+		}
+		snapshots[worker] = &domain.Snapshot{FeederID: scope, PublishedAt: time.Unix(1_700_000_000, 0), Aircraft: aircraft, ByICAO: byICAO}
+	}
+	engine := NewEngine(rules, nil)
+	engine.Evaluate(snapshots[0])
+	b.ReportMetric(workers, "workers")
+	b.ResetTimer()
+	for b.Loop() {
+		var group sync.WaitGroup
+		group.Add(workers)
+		for worker := range workers {
+			go func(snapshot *domain.Snapshot) {
+				defer group.Done()
+				engine.Evaluate(snapshot)
+			}(snapshots[worker])
+		}
+		group.Wait()
 	}
 }
 

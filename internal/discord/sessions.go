@@ -23,30 +23,34 @@ var (
 )
 
 type Session struct {
-	ID                    string
-	UserID                uint64
-	GuildID               uint64
-	ChannelID             uint64
-	View                  string
-	Sort                  string
-	Query                 string
-	Squawk                string
-	FeederID              domain.FeederID
-	Units                 domain.UnitSystem
-	Page                  int
-	PageSize              int
-	RadiusNM              float64
-	MinFeet               int
-	MaxFeet               int
-	HasMin                bool
-	HasMax                bool
-	Action                string
-	TargetID              uint64
-	Reason                string
-	Duration              time.Duration
-	DeleteMessageDuration time.Duration
-	CreatedAt             time.Time
-	ExpiresAt             time.Time
+	ID                     string
+	UserID                 uint64
+	GuildID                uint64
+	ChannelID              uint64
+	View                   string
+	Sort                   string
+	Query                  string
+	Squawk                 string
+	FeederID               domain.FeederID
+	Units                  domain.UnitSystem
+	Page                   int
+	PageSize               int
+	RadiusNM               float64
+	MinFeet                int
+	MaxFeet                int
+	HasMin                 bool
+	HasMax                 bool
+	Action                 string
+	TargetID               uint64
+	TargetChannelID        uint64
+	TargetMessageID        uint64
+	TargetMessageCreatedAt time.Time
+	TargetPreview          string
+	Reason                 string
+	Duration               time.Duration
+	DeleteMessageDuration  time.Duration
+	CreatedAt              time.Time
+	ExpiresAt              time.Time
 }
 
 type SessionManager struct {
