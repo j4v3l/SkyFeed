@@ -30,7 +30,11 @@ func SafeMessage(embed discord.Embed, ephemeral bool) discord.MessageCreate {
 }
 
 func InterestingAlertMessage(alert domain.Alert, ephemeral bool) discord.MessageCreate {
-	message := SafeMessage(InterestingAlert(alert), ephemeral)
+	return InterestingAlertMessageWithUnits(alert, domain.DefaultUnitSystem, ephemeral)
+}
+
+func InterestingAlertMessageWithUnits(alert domain.Alert, units domain.UnitSystem, ephemeral bool) discord.MessageCreate {
+	message := SafeMessage(InterestingAlertWithUnits(alert, units), ephemeral)
 	if link, ok := SafeHTTPSURL(alert.InterestingLink); ok {
 		message = message.AddActionRow(discord.NewLinkButton(referenceLinkLabel(link), link))
 	}
@@ -38,7 +42,7 @@ func InterestingAlertMessage(alert domain.Alert, ephemeral bool) discord.Message
 }
 
 func Status(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enrichmentEnabled bool) discord.Embed {
-	return StatusWithUnits(snapshot, uptime, now, enrichmentEnabled, domain.UnitsAviation)
+	return StatusWithUnits(snapshot, uptime, now, enrichmentEnabled, domain.DefaultUnitSystem)
 }
 
 func StatusWithUnits(snapshot *domain.Snapshot, uptime time.Duration, now time.Time, enrichmentEnabled bool, units domain.UnitSystem) discord.Embed {
@@ -132,7 +136,7 @@ func feederOverview(feeders []domain.FeederSummary) string {
 }
 
 func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
-	return FeederWithUnits(snapshot, now, domain.UnitsAviation)
+	return FeederWithUnits(snapshot, now, domain.DefaultUnitSystem)
 }
 
 func FeederWithUnits(snapshot *domain.Snapshot, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -396,7 +400,7 @@ type CommunityActivityView struct {
 }
 
 func AirportWithWeatherView(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time) discord.Embed {
-	return AirportWithWeatherViewAndUnits(airport, weather, rawDetails, now, domain.UnitsAviation)
+	return AirportWithWeatherViewAndUnits(airport, weather, rawDetails, now, domain.DefaultUnitSystem)
 }
 
 func AirportWithWeatherViewAndUnits(airport domain.Airport, weather WeatherView, rawDetails bool, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -417,11 +421,7 @@ func AirportDashboard(airport domain.Airport, weather WeatherView, activity doma
 	}
 	elevation := "Unavailable"
 	if airport.HasElevation {
-		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-			elevation = fmt.Sprintf("%.0f m", airport.ElevationFeet*0.3048)
-		} else {
-			elevation = fmt.Sprintf("%d ft", int(airport.ElevationFeet))
-		}
+		elevation = unitsFor(units).elevationFeet(airport.ElevationFeet)
 	}
 	embed.Description = "📍 **" + PlainText(valueOr(airport.Name, "Name unavailable")) + "**\n" + location
 	identity := fmt.Sprintf("`%s` / `%s` · elevation %s", PlainText(valueOr(airport.ICAO, "????")), PlainText(valueOr(airport.IATA, "—")), elevation)
@@ -483,11 +483,7 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 	if weather.ReportingICAO != "" && weather.RequestedICAO != "" && !strings.EqualFold(weather.ReportingICAO, weather.RequestedICAO) {
 		station := fmt.Sprintf("📡 Observed at **%s** for %s", PlainText(weather.ReportingICAO), PlainText(weather.RequestedICAO))
 		if weather.HasStationDistance {
-			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-				station += fmt.Sprintf(" · %.1f km away", weather.StationDistanceNM*1.852)
-			} else {
-				station += fmt.Sprintf(" · %.1f NM away", weather.StationDistanceNM)
-			}
+			station += " · " + unitsFor(units).distanceNM(weather.StationDistanceNM) + " away"
 		}
 		if weather.StationStatus == "nearby" {
 			station += " · nearest reporting station"
@@ -503,16 +499,10 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		} else if !weather.WindVariable {
 			wind = strings.ToLower(compassLong(float64(weather.WindDirectionDegrees))) + fmt.Sprintf(" wind from %03d°", weather.WindDirectionDegrees)
 		}
-		speed := fmt.Sprintf("%d kt", weather.WindSpeedKts)
-		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-			speed = fmt.Sprintf("%.0f km/h", float64(weather.WindSpeedKts)*1.852)
-		}
+		formatter := unitsFor(units)
+		speed := formatter.speedKts(float64(weather.WindSpeedKts))
 		if weather.WindGustKts > 0 {
-			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-				speed += fmt.Sprintf(", gusting %.0f km/h", float64(weather.WindGustKts)*1.852)
-			} else {
-				speed += fmt.Sprintf(", gusting %d kt", weather.WindGustKts)
-			}
+			speed += ", gusting " + formatter.speedKts(float64(weather.WindGustKts))
 		}
 		lines = append(lines, "💨 "+wind+" at "+speed)
 	}
@@ -523,10 +513,7 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		} else if weather.VisibilityLessThan {
 			prefix = "less than "
 		}
-		visibility := fmt.Sprintf("%s%.1f statute miles", prefix, weather.VisibilitySM)
-		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-			visibility = fmt.Sprintf("%s%.1f km", prefix, weather.VisibilitySM*1.609344)
-		}
+		visibility := unitsFor(units).visibilitySM(weather.VisibilitySM, prefix)
 		lines = append(lines, "👁️ Visibility "+visibility)
 	}
 	if clouds := cloudSummary(weather.Clouds, units); clouds != "" {
@@ -536,18 +523,15 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		lines = append(lines, "🌧️ "+PlainText(strings.Join(weather.Conditions, ", ")))
 	}
 	measurements := make([]string, 0, 3)
+	formatter := unitsFor(units)
 	if weather.HasTemperature {
-		measurements = append(measurements, fmt.Sprintf("temperature %d°C", weather.TemperatureC))
+		measurements = append(measurements, "temperature "+formatter.temperatureC(weather.TemperatureC))
 	}
 	if weather.HasDewpoint {
-		measurements = append(measurements, fmt.Sprintf("dew point %d°C", weather.DewpointC))
+		measurements = append(measurements, "dew point "+formatter.temperatureC(weather.DewpointC))
 	}
 	if weather.HasAltimeter {
-		pressure := fmt.Sprintf("%.2f inHg", weather.AltimeterInHg)
-		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-			pressure = fmt.Sprintf("%.0f hPa", weather.AltimeterInHg*33.8639)
-		}
-		measurements = append(measurements, "pressure "+pressure)
+		measurements = append(measurements, "pressure "+formatter.pressureInHg(weather.AltimeterInHg))
 	}
 	if len(measurements) > 0 {
 		lines = append(lines, "🌡️ "+strings.Join(measurements, " · "))
@@ -607,11 +591,7 @@ func cloudSummary(clouds []WeatherCloudView, units domain.UnitSystem) string {
 			cover = strings.ToLower(cloud.Cover)
 		}
 		if cloud.HasBase {
-			if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-				cover += fmt.Sprintf(" at %.0f m", float64(cloud.BaseFeet)*0.3048)
-			} else {
-				cover += fmt.Sprintf(" at %s ft", commaInt(cloud.BaseFeet))
-			}
+			cover += " at " + unitsFor(units).cloudBaseFeet(cloud.BaseFeet)
 		}
 		parts = append(parts, cover)
 	}
@@ -729,7 +709,7 @@ func commaInt(value int) string {
 }
 
 func Airline(airline domain.Airline, flights []domain.Aircraft, now time.Time) discord.Embed {
-	return AirlineWithUnits(airline, flights, now, domain.UnitsAviation)
+	return AirlineWithUnits(airline, flights, now, domain.DefaultUnitSystem)
 }
 
 func AirlineWithUnits(airline domain.Airline, flights []domain.Aircraft, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -776,11 +756,7 @@ func TrackSummary(summary trackdata.Summary, units domain.UnitSystem, now time.T
 	}
 	altitudeChange := "Unavailable"
 	if summary.HasAltitudeChange {
-		if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-			altitudeChange = fmt.Sprintf("%+.0f m", float64(summary.AltitudeChangeFeet)*0.3048)
-		} else {
-			altitudeChange = fmt.Sprintf("%+d ft", summary.AltitudeChangeFeet)
-		}
+		altitudeChange = unitsFor(units).signedAltitudeFeet(summary.AltitudeChangeFeet)
 	}
 	embed.Fields = []discord.EmbedField{
 		section("📈 Track summary", Facts(window, "Closest "+closest, "Altitude "+altitudeChange)),
@@ -791,7 +767,7 @@ func TrackSummary(summary trackdata.Summary, units domain.UnitSystem, now time.T
 }
 
 func Emergency(aircraft []domain.Aircraft, page, pageSize int, now time.Time) discord.Embed {
-	return EmergencyWithUnits(aircraft, page, pageSize, now, domain.UnitsAviation)
+	return EmergencyWithUnits(aircraft, page, pageSize, now, domain.DefaultUnitSystem)
 }
 
 func EmergencyWithUnits(aircraft []domain.Aircraft, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -813,7 +789,7 @@ func EmergencyWithUnits(aircraft []domain.Aircraft, page, pageSize int, now time
 }
 
 func Traffic(aircraft []domain.Aircraft, airportCode string, radiusNM float64, page, pageSize int, now time.Time) discord.Embed {
-	return TrafficWithUnits(aircraft, airportCode, radiusNM, page, pageSize, now, domain.UnitsAviation)
+	return TrafficWithUnits(aircraft, airportCode, radiusNM, page, pageSize, now, domain.DefaultUnitSystem)
 }
 
 func TrafficWithUnits(aircraft []domain.Aircraft, airportCode string, radiusNM float64, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -835,7 +811,7 @@ func TrafficWithUnits(aircraft []domain.Aircraft, airportCode string, radiusNM f
 }
 
 func Squawk(aircraft []domain.Aircraft, code string, page, pageSize int, now time.Time) discord.Embed {
-	return SquawkWithUnits(aircraft, code, page, pageSize, now, domain.UnitsAviation)
+	return SquawkWithUnits(aircraft, code, page, pageSize, now, domain.DefaultUnitSystem)
 }
 
 func SquawkWithUnits(aircraft []domain.Aircraft, code string, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -856,7 +832,7 @@ func SquawkWithUnits(aircraft []domain.Aircraft, code string, page, pageSize int
 }
 
 func Top(aircraft []domain.Aircraft, metric string, limit int, now time.Time) discord.Embed {
-	return TopWithUnits(aircraft, metric, limit, now, domain.UnitsAviation)
+	return TopWithUnits(aircraft, metric, limit, now, domain.DefaultUnitSystem)
 }
 
 func TopWithUnits(aircraft []domain.Aircraft, metric string, limit int, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -941,6 +917,10 @@ func routeRankingPeriodLabel(period string) string {
 }
 
 func Privacy(disclosure privacy.Disclosure) discord.Embed {
+	return PrivacyWithUnits(disclosure, domain.DefaultUnitSystem)
+}
+
+func PrivacyWithUnits(disclosure privacy.Disclosure, units domain.UnitSystem) discord.Embed {
 	embed := base("Privacy", Scope, time.Now())
 	providers := "readsb only"
 	if len(disclosure.Providers) > 0 {
@@ -956,7 +936,7 @@ func Privacy(disclosure privacy.Disclosure) discord.Embed {
 			}
 		}
 		if externalFallback {
-			center = fmt.Sprintf("Airport activity and external fallback use public airport %s within %d NM (airplanes.live: 1 req/s, max 250 NM).", PlainText(disclosure.PublicAirportCode), disclosure.RadiusNM)
+			center = fmt.Sprintf("Airport activity and external fallback use public airport %s within %s (airplanes.live: 1 req/s, max %s).", PlainText(disclosure.PublicAirportCode), distance(float64(disclosure.RadiusNM), units), distance(250, units))
 		} else {
 			center = fmt.Sprintf("Airport activity uses published airport %s as its reference point. No external aircraft fallback is configured.", PlainText(disclosure.PublicAirportCode))
 		}
@@ -984,7 +964,7 @@ func Privacy(disclosure privacy.Disclosure) discord.Embed {
 }
 
 func AircraftWithEnrichment(aircraft domain.Aircraft, snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time) discord.Embed {
-	return AircraftWithEnrichmentAndUnits(aircraft, snapshot, enrichment, route, now, domain.UnitsAviation)
+	return AircraftWithEnrichmentAndUnits(aircraft, snapshot, enrichment, route, now, domain.DefaultUnitSystem)
 }
 
 func AircraftWithEnrichmentAndUnits(aircraft domain.Aircraft, snapshot *domain.Snapshot, enrichment *domain.Enrichment, route *domain.Route, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -1038,7 +1018,7 @@ func AircraftWithEnrichmentAndUnits(aircraft domain.Aircraft, snapshot *domain.S
 }
 
 func Nearby(aircraft []domain.Aircraft, page, pageSize int, now time.Time) discord.Embed {
-	return NearbyWithUnits(aircraft, page, pageSize, now, domain.UnitsAviation)
+	return NearbyWithUnits(aircraft, page, pageSize, now, domain.DefaultUnitSystem)
 }
 
 func NearbyWithUnits(aircraft []domain.Aircraft, page, pageSize int, now time.Time, units domain.UnitSystem) discord.Embed {
@@ -1065,7 +1045,7 @@ func Help(now time.Time, manageGuild bool) discord.Embed {
 		section("🔔 Alerts", "Use `/watch` for personal rules. Operators can configure server delivery with `/alerts`."),
 		section("📊 Reports & health", "`/status` `/feeder` `/reports` `/privacy`"),
 		section("🛡️ Moderation", "Authorized moderators can warn, timeout, kick, ban, and review case history with `/moderation`. SkyFeed Admins with Manage Messages can securely delete a message by link, ID, or its context menu."),
-		section("⚙️ Preferences", "Use `/preferences units` to choose aviation or metric values for your own views."),
+		section("⚙️ Preferences", "Use `/preferences units` to choose imperial, aviation, or metric values for your own views."),
 	}
 	if manageGuild {
 		embed.Fields = append(embed.Fields, section("🔧 Administration", "Use `/settings`, `/feeders`, and `/audit` for server configuration and diagnostics. Role changes also require Manage Roles."))
@@ -1081,6 +1061,10 @@ func freshnessLabel(age time.Duration) string {
 }
 
 func Alert(alert domain.Alert) discord.Embed {
+	return AlertWithUnits(alert, domain.DefaultUnitSystem)
+}
+
+func AlertWithUnits(alert domain.Alert, units domain.UnitSystem) discord.Embed {
 	color := Caution
 	view := "Alert"
 	priority := "NORMAL"
@@ -1108,6 +1092,9 @@ func Alert(alert domain.Alert) discord.Embed {
 	}
 	embed := base(view, color, alert.ObservedAt).WithDescription(description)
 	embed.Fields = []discord.EmbedField{section("Aircraft", fmt.Sprintf("`%s` · %s", PlainText(valueOr(alert.AircraftICAO, "Unknown")), PlainText(valueOr(alert.Callsign, "Unknown"))))}
+	if observation := alertObservationFacts(alert.Observation, units); observation != "" {
+		embed.Fields = append(embed.Fields, section("Live observation", observation))
+	}
 	if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
 		embed.Fields = append(embed.Fields,
 			section("How confident is this?", "Three consecutive local ADS-B samples matched the airport-relative movement pattern."),
@@ -1120,6 +1107,10 @@ func Alert(alert domain.Alert) discord.Embed {
 }
 
 func InterestingAlert(alert domain.Alert) discord.Embed {
+	return InterestingAlertWithUnits(alert, domain.DefaultUnitSystem)
+}
+
+func InterestingAlertWithUnits(alert domain.Alert, units domain.UnitSystem) discord.Embed {
 	color := Scope
 	view := "Interesting aircraft"
 	description := PlainText(alert.Description)
@@ -1138,6 +1129,9 @@ func InterestingAlert(alert domain.Alert) discord.Embed {
 	embed.Fields = []discord.EmbedField{
 		section("✈️ Aircraft", Facts("`"+PlainText(valueOr(alert.AircraftICAO, "Unknown"))+"`", PlainText(valueOr(alert.Callsign, "Unknown")))),
 		section("🏷️ Classification", PlainText(valueOr(alert.InterestingGroup, "Unknown"))),
+	}
+	if observation := alertObservationFacts(alert.Observation, units); observation != "" {
+		embed.Fields = append(embed.Fields, section("📍 Live observation", observation))
 	}
 	if alert.InterestingOperator != "" {
 		embed.Fields = append(embed.Fields, section("🏢 Operator", PlainText(alert.InterestingOperator)))
@@ -1158,8 +1152,29 @@ func InterestingAlert(alert domain.Alert) discord.Embed {
 	return BoundEmbed(embed)
 }
 
+func alertObservationFacts(observation domain.AlertObservation, units domain.UnitSystem) string {
+	parts := make([]string, 0, 4)
+	if observation.HasDistance {
+		label := "Receiver distance "
+		if observation.DistanceFromAirport {
+			label = "Airport distance "
+		}
+		parts = append(parts, label+distance(observation.DistanceNM, units))
+	}
+	if observation.HasAltitude {
+		parts = append(parts, "Altitude "+unitsFor(units).altitudeFeet(observation.AltitudeFeet))
+	}
+	if observation.HasGroundSpeed {
+		parts = append(parts, "Speed "+unitsFor(units).speedKts(observation.GroundSpeedKts))
+	}
+	if observation.HasVerticalRate {
+		parts = append(parts, "Vertical "+unitsFor(units).verticalRateFPM(observation.VerticalRateFPM))
+	}
+	return Facts(parts...)
+}
+
 func Report(summary storage.ReportSummary) discord.Embed {
-	return ReportWithUnits(summary, domain.UnitsAviation)
+	return ReportWithUnits(summary, domain.DefaultUnitSystem)
 }
 
 func ReportWithUnits(summary storage.ReportSummary, units domain.UnitSystem) discord.Embed {
@@ -1242,20 +1257,14 @@ func altitudeWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string
 	if !aircraft.HasAltitude {
 		return "Unknown"
 	}
-	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-		return fmt.Sprintf("%d m", int(float64(aircraft.AltitudeFeet)*0.3048))
-	}
-	return fmt.Sprintf("%d ft", aircraft.AltitudeFeet)
+	return unitsFor(units).altitudeFeet(aircraft.AltitudeFeet)
 }
 
 func groundSpeedWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) string {
 	if !aircraft.HasGroundSpeed {
 		return "Unknown"
 	}
-	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-		return fmt.Sprintf("%.0f km/h", aircraft.GroundSpeedKts*1.852)
-	}
-	return fmt.Sprintf("%.0f kt", aircraft.GroundSpeedKts)
+	return unitsFor(units).speedKts(aircraft.GroundSpeedKts)
 }
 
 func trackWithCompass(aircraft domain.Aircraft) string {
@@ -1275,17 +1284,11 @@ func verticalRateWithUnits(aircraft domain.Aircraft, units domain.UnitSystem) st
 	} else if aircraft.VerticalRateFPM < -64 {
 		arrow = "↓"
 	}
-	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-		return fmt.Sprintf("%s %+.1f m/s", arrow, float64(aircraft.VerticalRateFPM)*0.00508)
-	}
-	return fmt.Sprintf("%s %+d ft/min", arrow, aircraft.VerticalRateFPM)
+	return arrow + " " + unitsFor(units).verticalRateFPM(aircraft.VerticalRateFPM)
 }
 
 func distance(valueNM float64, units domain.UnitSystem) string {
-	if domain.NormalizeUnitSystem(string(units)) == domain.UnitsMetric {
-		return fmt.Sprintf("%.1f km", valueNM*1.852)
-	}
-	return fmt.Sprintf("%.1f NM", valueNM)
+	return unitsFor(units).distanceNM(valueNM)
 }
 
 func compass(degrees float64) string {

@@ -315,7 +315,7 @@ func (service *GatewayService) updateFlightLeadersWithREST(ctx context.Context, 
 		snapshot = provider.Aggregate()
 	}
 	now := time.Now().UTC()
-	units := domain.UnitsAviation
+	units := domain.DefaultUnitSystem
 	if settings, settingsErr := service.repository.GuildSettings(ctx, service.config.GuildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
@@ -651,7 +651,7 @@ func (service *GatewayService) sendScheduledReport(ctx context.Context, schedule
 	if err != nil {
 		return err
 	}
-	units := domain.UnitsAviation
+	units := domain.DefaultUnitSystem
 	if settings, settingsErr := service.repository.GuildSettings(ctx, schedule.GuildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
@@ -708,7 +708,7 @@ func (service *GatewayService) updateDashboard(ctx context.Context) error {
 	if channel == 0 {
 		return nil
 	}
-	units := domain.UnitsAviation
+	units := domain.DefaultUnitSystem
 	if settings, settingsErr := service.repository.GuildSettings(ctx, guildID); settingsErr == nil {
 		units = domain.NormalizeUnitSystem(settings.Units)
 	}
@@ -837,9 +837,13 @@ func (service *GatewayService) sendAlert(ctx context.Context, alert domain.Alert
 	if alert.Priority != domain.AlertEmergency && cooldown > 0 && service.inCooldown(cooldownKey, alert.ObservedAt, cooldown) {
 		return nil
 	}
-	message := render.SafeMessage(render.Alert(alert), false)
+	units := domain.DefaultUnitSystem
+	if settings, settingsErr := service.repository.GuildSettings(ctx, alert.GuildID); settingsErr == nil {
+		units = domain.NormalizeUnitSystem(settings.Units)
+	}
+	message := render.SafeMessage(render.AlertWithUnits(alert, units), false)
 	if alert.Type == domain.RuleInteresting {
-		message = render.InterestingAlertMessage(alert, false)
+		message = render.InterestingAlertMessageWithUnits(alert, units, false)
 	}
 	message = message.WithNonce(boundedNonce(alert.ID)).WithEnforceNonce(true)
 	_, err = client.Rest.CreateMessage(snowflake.ID(destination), message, rest.WithCtx(ctx))

@@ -63,7 +63,7 @@ func (store *Store) EnsureGuild(ctx context.Context, guildID uint64) error {
 	if err != nil {
 		return fmt.Errorf("begin ensure guild: %w", err)
 	}
-	if _, err = transaction.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (?, 'aviation', 'UTC', ?, ?) ON CONFLICT(guild_id) DO NOTHING`, guildID, now, now); err == nil {
+	if _, err = transaction.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (?, 'imperial', 'UTC', ?, ?) ON CONFLICT(guild_id) DO NOTHING`, guildID, now, now); err == nil {
 		_, err = transaction.ExecContext(ctx, `INSERT INTO feeders(id, guild_id, display_name, source_kind, enabled, created_at, updated_at) VALUES ('local', ?, 'Local feeder', 'local', 1, ?, ?) ON CONFLICT(id) DO NOTHING`, guildID, now, now)
 	}
 	if err != nil {
@@ -88,7 +88,7 @@ func (store *Store) UpsertGuildSettings(ctx context.Context, settings storage.Gu
 	}
 	_, err := store.db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, alerts_paused, muted_squawks, default_feeder_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(guild_id) DO UPDATE SET units=excluded.units, timezone=excluded.timezone, alerts_paused=excluded.alerts_paused, muted_squawks=excluded.muted_squawks, default_feeder_id=excluded.default_feeder_id, updated_at=excluded.updated_at`,
-		settings.GuildID, valueOr(settings.Units, "aviation"), valueOr(settings.Timezone, "UTC"), boolToInt(settings.AlertsPaused), settings.MutedSquawks, feeder, formatTime(created), formatTime(now))
+		settings.GuildID, valueOr(settings.Units, string(domain.DefaultUnitSystem)), valueOr(settings.Timezone, "UTC"), boolToInt(settings.AlertsPaused), settings.MutedSquawks, feeder, formatTime(created), formatTime(now))
 	return wrap("upsert guild settings", err)
 }
 
@@ -115,7 +115,7 @@ func (store *Store) GuildSettings(ctx context.Context, guildID uint64) (storage.
 func (store *Store) UpsertUserPreference(ctx context.Context, preference storage.UserPreference) error {
 	units, ok := domain.ParseUnitSystem(preference.Units)
 	if !ok {
-		return errors.New("user preference units must be aviation or metric")
+		return errors.New("user preference units must be imperial, aviation, or metric")
 	}
 	now := preference.UpdatedAt.UTC()
 	if now.IsZero() {

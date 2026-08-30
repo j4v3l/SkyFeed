@@ -244,9 +244,9 @@ func (monitor *MovementMonitor) evaluateApproach(guildID uint64, aircraft domain
 	state.lastApproach = now
 	state.phase = domain.MovementApproach
 	state.phaseAt = now
-	description := movementSentence("appears to be approaching", monitor.config.AirportCode, aircraft, distance, verticalRate, hasVerticalRate,
+	description := movementSentence("appears to be approaching", monitor.config.AirportCode, aircraft,
 		"It has been descending toward the airport for three consecutive updates.")
-	return movementAlert(guildID, aircraft, domain.RuleApproach, "Likely approach", description, now), true
+	return movementAlert(guildID, aircraft, domain.RuleApproach, "Likely approach", description, distance, verticalRate, hasVerticalRate, now), true
 }
 
 func (monitor *MovementMonitor) evaluateDeparture(guildID uint64, aircraft domain.Aircraft, state *movementState, distance, fromAirport, radialSpeed float64, hasRadialSpeed bool, verticalRate int, hasVerticalRate bool, now time.Time) (domain.Alert, bool) {
@@ -279,9 +279,9 @@ func (monitor *MovementMonitor) evaluateDeparture(guildID uint64, aircraft domai
 	state.approaching = false
 	state.phase = domain.MovementDeparture
 	state.phaseAt = now
-	description := movementSentence("appears to be departing", monitor.config.AirportCode, aircraft, distance, verticalRate, hasVerticalRate,
+	description := movementSentence("appears to be departing", monitor.config.AirportCode, aircraft,
 		"It has been climbing and moving away from the airport for three consecutive updates.")
-	return movementAlert(guildID, aircraft, domain.RuleTakeoff, "Likely departure", description, now), true
+	return movementAlert(guildID, aircraft, domain.RuleTakeoff, "Likely departure", description, distance, verticalRate, hasVerticalRate, now), true
 }
 
 func (monitor *MovementMonitor) evaluateLanding(guildID uint64, aircraft domain.Aircraft, state *movementState, distance float64, verticalRate int, hasVerticalRate bool, now time.Time) (domain.Alert, bool) {
@@ -303,13 +303,19 @@ func (monitor *MovementMonitor) evaluateLanding(guildID uint64, aircraft domain.
 	state.airborneNear = false
 	state.phase = domain.MovementLanded
 	state.phaseAt = now
-	description := movementSentence("appears to have landed near", monitor.config.AirportCode, aircraft, distance, verticalRate, hasVerticalRate,
+	description := movementSentence("appears to have landed near", monitor.config.AirportCode, aircraft,
 		"It changed from a low airborne track to three consecutive on-ground updates near the airport.")
-	return movementAlert(guildID, aircraft, domain.RuleLanding, "Likely landing", description, now), true
+	return movementAlert(guildID, aircraft, domain.RuleLanding, "Likely landing", description, distance, verticalRate, hasVerticalRate, now), true
 }
 
-func movementAlert(guildID uint64, aircraft domain.Aircraft, rule domain.RuleType, title, description string, now time.Time) domain.Alert {
+func movementAlert(guildID uint64, aircraft domain.Aircraft, rule domain.RuleType, title, description string, distance float64, verticalRate int, hasVerticalRate bool, now time.Time) domain.Alert {
 	icao := strings.ToUpper(strings.TrimSpace(aircraft.ICAO))
+	observation := domain.AlertObservationFromAircraft(aircraft)
+	observation.DistanceNM = distance
+	observation.HasDistance = true
+	observation.DistanceFromAirport = true
+	observation.VerticalRateFPM = verticalRate
+	observation.HasVerticalRate = hasVerticalRate
 	return domain.Alert{
 		ID:                   fmt.Sprintf("%s:%s:%d", rule, icao, now.UnixNano()),
 		GuildID:              guildID,
@@ -319,12 +325,13 @@ func movementAlert(guildID uint64, aircraft domain.Aircraft, rule domain.RuleTyp
 		Priority:             domain.AlertNormal,
 		Title:                title,
 		Description:          description,
+		Observation:          observation,
 		ConditionFingerprint: string(rule) + ":" + icao,
 		ObservedAt:           now,
 	}
 }
 
-func movementSentence(action, airport string, aircraft domain.Aircraft, distance float64, verticalRate int, hasVerticalRate bool, evidence string) string {
+func movementSentence(action, airport string, aircraft domain.Aircraft, evidence string) string {
 	identity := strings.TrimSpace(aircraft.Callsign)
 	if identity == "" {
 		identity = strings.TrimSpace(aircraft.ICAO)
@@ -333,20 +340,6 @@ func movementSentence(action, airport string, aircraft domain.Aircraft, distance
 		airport = "the configured airport"
 	}
 	parts := []string{fmt.Sprintf("%s %s %s.", identity, action, airport)}
-	details := make([]string, 0, 4)
-	if aircraft.HasAltitude {
-		details = append(details, fmt.Sprintf("%d ft", aircraft.AltitudeFeet))
-	}
-	if hasVerticalRate {
-		details = append(details, fmt.Sprintf("%+d ft/min", verticalRate))
-	}
-	details = append(details, fmt.Sprintf("%.1f NM from the airport", distance))
-	if aircraft.HasGroundSpeed {
-		details = append(details, fmt.Sprintf("%.0f kt", aircraft.GroundSpeedKts))
-	}
-	if len(details) > 0 {
-		parts = append(parts, strings.Join(details, " · ")+".")
-	}
 	parts = append(parts, evidence, "This is an ADS-B trend, not an official runway status.")
 	return strings.Join(parts, "\n")
 }

@@ -385,7 +385,7 @@ func (engine *Engine) evaluateEmergency(actualScope domain.FeederID, aircraft do
 		updates = append(updates, record.state)
 		alerts = append(alerts, domain.Alert{
 			ID: "emergency:" + aircraft.ICAO + ":" + strconv.FormatInt(now.Unix(), 10), FeederID: actualScope, AircraftICAO: aircraft.ICAO, Callsign: aircraft.Callsign, ConditionFingerprint: fingerprint,
-			Type: domain.RuleEmergency, Priority: domain.AlertEmergency, Title: "Emergency aircraft", Description: emergencyDescription(aircraft), ObservedAt: now,
+			Type: domain.RuleEmergency, Priority: domain.AlertEmergency, Title: "Emergency aircraft", Description: emergencyDescription(aircraft), Observation: domain.AlertObservationFromAircraft(aircraft), ObservedAt: now,
 		})
 	}
 	engine.emergencies[aircraft.ICAO] = record
@@ -520,7 +520,7 @@ func buildAlert(rule compiledRule, actualScope domain.FeederID, aircraft domain.
 	return domain.Alert{
 		ID: strconv.FormatInt(rule.rule.ID, 10) + ":" + aircraft.ICAO + ":" + strconv.FormatInt(now.Unix(), 10), RuleID: rule.rule.ID,
 		GuildID: rule.rule.GuildID, FeederID: actualScope, UserID: rule.rule.UserID, AircraftICAO: aircraft.ICAO, Callsign: aircraft.Callsign, ConditionFingerprint: rule.fingerprint,
-		Type: rule.rule.Type, Priority: domain.AlertNormal, Title: "Watch rule matched", Description: string(rule.rule.Type) + " matched " + aircraft.ICAO, ObservedAt: now, Cooldown: rule.rule.Cooldown,
+		Type: rule.rule.Type, Priority: domain.AlertNormal, Title: "Watch rule matched", Description: string(rule.rule.Type) + " matched " + aircraft.ICAO, Observation: domain.AlertObservationFromAircraft(aircraft), ObservedAt: now, Cooldown: rule.rule.Cooldown,
 	}
 }
 

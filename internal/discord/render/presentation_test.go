@@ -244,12 +244,12 @@ func TestStatusAndFeederDescribeRecentStatistics(t *testing.T) {
 	}
 	statusEmbed := Status(snapshot, time.Minute, now, false)
 	status := fieldValueContaining(statusEmbed, "Live traffic")
-	if !strings.Contains(status, "30.0 msg/s") || !strings.Contains(status, "110.0 NM") {
+	if !strings.Contains(status, "30.0 msg/s") || !strings.Contains(status, "126.6 mi") {
 		t.Fatalf("status live = %q", status)
 	}
 
 	feeder := fieldValueContaining(Feeder(snapshot, now), "Statistics")
-	if !strings.Contains(feeder, "1800 messages") || !strings.Contains(feeder, "6 tracks") || !strings.Contains(feeder, "Max range 110.0 NM") {
+	if !strings.Contains(feeder, "1800 messages") || !strings.Contains(feeder, "6 tracks") || !strings.Contains(feeder, "Max range 126.6 mi") {
 		t.Fatalf("feeder statistics = %q", feeder)
 	}
 }

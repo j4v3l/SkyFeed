@@ -97,6 +97,18 @@ func TestAllDesiredCommandsAndSubcommandsRespond(t *testing.T) {
 	}
 }
 
+func TestUnitChoicesOfferImperialAviationAndMetric(t *testing.T) {
+	choices := unitChoices()
+	if len(choices) != 3 {
+		t.Fatalf("unit choices=%d", len(choices))
+	}
+	for index, want := range []string{"imperial", "aviation", "metric"} {
+		if choices[index].Value != want {
+			t.Fatalf("choice %d=%q want=%q", index, choices[index].Value, want)
+		}
+	}
+}
+
 type catalogCase struct {
 	label, name, group, subcommand string
 	strings                        map[string]string
@@ -176,6 +188,8 @@ func fillCatalogCase(name, group, subcommand string, options []disgocord.Applica
 			}
 		case "metric":
 			test.strings["metric"] = "messages"
+		case "system":
+			test.strings["system"] = "imperial"
 		case "sort":
 			test.strings["sort"] = "distance"
 		case "kind":

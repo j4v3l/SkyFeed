@@ -14,7 +14,7 @@ import (
 )
 
 func TestMigrationFromEveryPriorSchemaVersion(t *testing.T) {
-	for version := 1; version <= 13; version++ {
+	for version := 1; version <= 14; version++ {
 		t.Run(strconv.Itoa(version), func(t *testing.T) {
 			ctx := context.Background()
 			db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
@@ -27,10 +27,69 @@ func TestMigrationFromEveryPriorSchemaVersion(t *testing.T) {
 				t.Fatalf("upgrade from schema %d: %v", version, err)
 			}
 			var latest int
-			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 14 {
+			if err := db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&latest); err != nil || latest != 15 {
 				t.Fatalf("latest schema=%d err=%v", latest, err)
 			}
 		})
+	}
+}
+
+func TestMigrationFifteenDefaultsGuildsToImperialAndPreservesPersonalUnits(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "migration.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	applyMigrationsThrough(t, ctx, db, 14)
+	const at = "2026-08-29T12:00:00Z"
+	if _, err := db.ExecContext(ctx, `INSERT INTO guild_settings(guild_id, units, timezone, created_at, updated_at) VALUES (42, 'aviation', 'UTC', ?, ?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	for userID, units := range map[int]string{7: "aviation", 8: "metric"} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO user_preferences(guild_id, user_id, units, updated_at) VALUES (42, ?, ?, ?)`, userID, units, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statements := []string{
+		`INSERT INTO feeders(id, guild_id, display_name, source_kind, enabled, created_at, updated_at) VALUES ('local', 42, 'Local feeder', 'local', 1, '` + at + `', '` + at + `')`,
+		`INSERT INTO channel_bindings(guild_id, purpose, channel_id, updated_at) VALUES (42, 'alerts', 99, '` + at + `')`,
+		`INSERT INTO watch_rules(id, guild_id, user_id, server_scope, rule_type, rule_value, enabled, cooldown_seconds, minimum_observations, enter_threshold, exit_threshold, best_effort_enrichment, created_at, updated_at, feeder_scope) VALUES (7, 42, 7, 0, 'icao', 'ABC123', 1, 900, 2, 0, 0, 0, '` + at + `', '` + at + `', 'local')`,
+		`INSERT INTO report_rollups(guild_id, feeder_scope, bucket_start, aircraft_observations, messages, maximum_range, peak_tracked) VALUES (42, 'all', '` + at + `', 10, 20, 12.5, 4)`,
+		`INSERT INTO moderation_cases(id, guild_id, moderator_id, target_user_id, action, reason, status, dm_status, created_at) VALUES (11, 42, 7, 8, 'warn', 'Preserve this case', 'succeeded', 'delivered', '` + at + `')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed preservation row: %v", err)
+		}
+	}
+	if err := ApplyMigrations(ctx, db); err != nil {
+		t.Fatal(err)
+	}
+	var guildUnits, legacyGuildUnits string
+	if err := db.QueryRowContext(ctx, `SELECT units, units_v1 FROM guild_settings WHERE guild_id=42`).Scan(&guildUnits, &legacyGuildUnits); err != nil {
+		t.Fatal(err)
+	}
+	if guildUnits != "imperial" || legacyGuildUnits != "aviation" {
+		t.Fatalf("guild units=%q legacy=%q", guildUnits, legacyGuildUnits)
+	}
+	for userID, want := range map[int]string{7: "aviation", 8: "metric"} {
+		var units string
+		if err := db.QueryRowContext(ctx, `SELECT units FROM user_preferences WHERE guild_id=42 AND user_id=?`, userID).Scan(&units); err != nil {
+			t.Fatal(err)
+		}
+		if units != want {
+			t.Fatalf("user %d units=%q want=%q", userID, units, want)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE guild_settings SET units='unsupported' WHERE guild_id=42`); err == nil {
+		t.Fatal("invalid guild units accepted")
+	}
+	for table, want := range map[string]int{"channel_bindings": 1, "watch_rules": 1, "report_rollups": 1, "moderation_cases": 1, "feeders": 1} {
+		var count int
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM `+table+` WHERE guild_id=42`).Scan(&count); err != nil || count != want {
+			t.Fatalf("%s count=%d want=%d err=%v", table, count, want, err)
+		}
 	}
 }
 

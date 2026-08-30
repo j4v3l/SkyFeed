@@ -249,7 +249,7 @@ func (router *Router) handleOpsSettings(ctx context.Context, request CommandRequ
 	case "units":
 		units, ok := domain.ParseUnitSystem(request.Strings["system"])
 		if !ok {
-			return responder.CreateMessage(errorMessage("Choose aviation or metric units."))
+			return responder.CreateMessage(errorMessage("Choose imperial, aviation, or metric units."))
 		}
 		settings.Units = string(units)
 		if err := router.repository.UpsertGuildSettings(ctx, settings); err != nil {

@@ -215,6 +215,29 @@ func TestUserUnitPreferencePersistsAndValidates(t *testing.T) {
 	}
 }
 
+func TestGuildAndUserUnitsDefaultToImperial(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "skyfeed.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.EnsureGuild(ctx, 7); err != nil {
+		t.Fatal(err)
+	}
+	settings, err := store.GuildSettings(ctx, 7)
+	if err != nil || settings.Units != "imperial" {
+		t.Fatalf("settings=%+v err=%v", settings, err)
+	}
+	if err := store.UpsertUserPreference(ctx, storage.UserPreference{GuildID: 7, UserID: 9, Units: "imperial"}); err != nil {
+		t.Fatal(err)
+	}
+	preference, err := store.UserPreference(ctx, 7, 9)
+	if err != nil || preference.Units != "imperial" {
+		t.Fatalf("preference=%+v err=%v", preference, err)
+	}
+}
+
 func TestPurgeAlertStatesRemovesOnlyOldInactiveRows(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "skyfeed.db"))
 	if err != nil {

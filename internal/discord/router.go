@@ -238,7 +238,7 @@ func (router *Router) HandleCommand(request CommandRequest, responder Interactio
 	case "top":
 		return router.handleTop(request, responder, snapshot)
 	case "privacy":
-		return router.handlePrivacy(responder)
+		return router.handlePrivacy(request, responder)
 	case "preferences":
 		return router.handlePreferences(request, responder)
 	case "help":
@@ -313,7 +313,7 @@ func (router *Router) snapshotFor(guildID uint64, raw string) (*domain.Snapshot,
 
 func (router *Router) effectiveUnits(guildID, userID uint64) domain.UnitSystem {
 	if router.repository == nil {
-		return domain.UnitsAviation
+		return domain.DefaultUnitSystem
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
@@ -325,7 +325,7 @@ func (router *Router) effectiveUnits(guildID, userID uint64) domain.UnitSystem {
 	if settings, err := router.repository.GuildSettings(ctx, guildID); err == nil {
 		return domain.NormalizeUnitSystem(settings.Units)
 	}
-	return domain.UnitsAviation
+	return domain.DefaultUnitSystem
 }
 
 func (router *Router) handlePreferences(request CommandRequest, responder InteractionResponder) error {
@@ -334,7 +334,7 @@ func (router *Router) handlePreferences(request CommandRequest, responder Intera
 	}
 	units, ok := domain.ParseUnitSystem(request.Strings["system"])
 	if request.Subcommand != "units" || !ok {
-		return responder.CreateMessage(errorMessage("Choose aviation or metric units."))
+		return responder.CreateMessage(errorMessage("Choose imperial, aviation, or metric units."))
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -730,7 +730,7 @@ func (router *Router) handleAircraft(request CommandRequest, responder Interacti
 	}
 	aircraft, ok := router.resolveAircraft(snapshot, query)
 	if !ok {
-		if message, found := router.unseenAircraftMessage(query); found {
+		if message, found := router.unseenAircraftMessage(query, router.effectiveUnits(request.GuildID, request.UserID)); found {
 			return responder.CreateMessage(message)
 		}
 		return responder.CreateMessage(errorMessage("That aircraft is no longer visible. Run `/aircraft` again to choose from current data."))
@@ -766,7 +766,7 @@ func (router *Router) resolveAircraft(snapshot *domain.Snapshot, query string) (
 	return findAircraft(snapshot, hex)
 }
 
-func (router *Router) unseenAircraftMessage(query string) (disgocord.MessageCreate, bool) {
+func (router *Router) unseenAircraftMessage(query string, units domain.UnitSystem) (disgocord.MessageCreate, bool) {
 	if router.enrichment == nil || !looksLikeICAO(query) {
 		return disgocord.MessageCreate{}, false
 	}
@@ -776,7 +776,7 @@ func (router *Router) unseenAircraftMessage(query string) (disgocord.MessageCrea
 	if err != nil || !value.Found {
 		return disgocord.MessageCreate{}, false
 	}
-	embed := render.AircraftWithEnrichmentAndUnits(domain.Aircraft{ICAO: query}, nil, &value, nil, router.now(), domain.UnitsAviation)
+	embed := render.AircraftWithEnrichmentAndUnits(domain.Aircraft{ICAO: query}, nil, &value, nil, router.now(), units)
 	embed.Description = "Not currently visible to this receiver. Cached ADSBDB metadata is shown."
 	return render.SafeMessage(embed, false), true
 }

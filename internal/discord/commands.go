@@ -333,6 +333,7 @@ func settingsOptions() []disgocord.ApplicationCommandOption {
 
 func unitChoices() []disgocord.ApplicationCommandOptionChoiceString {
 	return []disgocord.ApplicationCommandOptionChoiceString{
+		{Name: "Imperial (mi, ft, mph, °F)", Value: "imperial"},
 		{Name: "Aviation (NM, ft, kt)", Value: "aviation"},
 		{Name: "Metric (km, m, km/h)", Value: "metric"},
 	}
