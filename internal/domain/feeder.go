@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
 
 type FeederID string
@@ -38,6 +40,26 @@ type FeederSummary struct {
 	Health        HealthStatus
 	LastPublished time.Time
 	Aircraft      int
+}
+
+// NormalizeFeederDisplayName validates the public, administrator-approved
+// label shown in Discord. Names are counted as Unicode characters so a short
+// emoji or non-ASCII name is not rejected because of its UTF-8 byte length.
+func NormalizeFeederDisplayName(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !utf8.ValidString(value) {
+		return "", errors.New("feeder display name must be valid UTF-8")
+	}
+	length := utf8.RuneCountInString(value)
+	if length < 1 || length > 80 {
+		return "", errors.New("feeder display name must contain 1 to 80 characters")
+	}
+	for _, character := range value {
+		if unicode.IsControl(character) {
+			return "", errors.New("feeder display name cannot contain control characters")
+		}
+	}
+	return value, nil
 }
 
 func NormalizeFeederID(value string) (FeederID, error) {

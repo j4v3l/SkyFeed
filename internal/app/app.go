@@ -172,9 +172,7 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 			descriptor := feeder.Descriptor
 			if descriptor.ID == domain.FeederLocal {
 				localRegistered = true
-				descriptor.PublicArea = localDescriptor.PublicArea
-				descriptor.AirportICAO = localDescriptor.AirportICAO
-				descriptor.Latitude, descriptor.Longitude, descriptor.HasCenter = localDescriptor.Latitude, localDescriptor.Longitude, localDescriptor.HasCenter
+				descriptor = mergeLocalFeederDescriptor(localDescriptor, descriptor)
 				localDescriptor = descriptor
 				feeder.Descriptor = descriptor
 				feeder.UpdatedAt = time.Now().UTC()
@@ -630,6 +628,15 @@ func Run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 	healthState.SetLive(false)
 	logger.Info("SkyFeed stopped", "component", "app", "event", "stop")
 	return err
+}
+
+// mergeLocalFeederDescriptor keeps durable administrator-owned presentation
+// values while refreshing receiver-derived public location metadata.
+func mergeLocalFeederDescriptor(configured, stored domain.FeederDescriptor) domain.FeederDescriptor {
+	stored.PublicArea = configured.PublicArea
+	stored.AirportICAO = configured.AirportICAO
+	stored.Latitude, stored.Longitude, stored.HasCenter = configured.Latitude, configured.Longitude, configured.HasCenter
+	return stored
 }
 
 func sourcesInitialized(value domain.Health) bool {

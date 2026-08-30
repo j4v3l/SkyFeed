@@ -21,9 +21,9 @@ func (store *Store) UpsertFeeder(ctx context.Context, value storage.Feeder) erro
 	if err != nil || id == domain.FeederAll {
 		return errors.New("invalid feeder ID")
 	}
-	name := strings.TrimSpace(descriptor.DisplayName)
-	if name == "" || len(name) > 80 {
-		return errors.New("feeder display name must contain 1 to 80 characters")
+	name, err := domain.NormalizeFeederDisplayName(descriptor.DisplayName)
+	if err != nil {
+		return err
 	}
 	if descriptor.SourceKind != domain.FeederSourceLocal && descriptor.SourceKind != domain.FeederSourceAgent {
 		return errors.New("feeder source kind must be local or agent")

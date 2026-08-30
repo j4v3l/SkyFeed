@@ -79,6 +79,10 @@ func (manager *FeederManager) Register(descriptor domain.FeederDescriptor) error
 	if descriptor.DisplayName == "" {
 		descriptor.DisplayName = string(id)
 	}
+	descriptor.DisplayName, err = domain.NormalizeFeederDisplayName(descriptor.DisplayName)
+	if err != nil {
+		return err
+	}
 	manager.mu.Lock()
 	entry := manager.feeders[id]
 	if entry == nil {
