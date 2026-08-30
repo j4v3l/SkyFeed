@@ -128,9 +128,15 @@ Nearby pages and component sessions expire. Buttons, select menus, HTTPS link
 buttons, modals, and autocomplete use opaque versioned session IDs. Settings
 and durable administration are private; allowed mentions default to none.
 
-Use `/preferences units` to choose personal aviation or metric units. A personal
-choice overrides the server default set by `/settings units`; scheduled reports
-and the live dashboard use the server default.
+Use `/preferences units` to choose personal Imperial, Aviation, or Metric
+measurements. Imperial is the default and uses miles, feet, miles per hour,
+Fahrenheit, and inches of mercury. Aviation uses nautical miles, feet, knots,
+Celsius, and inches of mercury; Metric uses kilometres, metres, kilometres per
+hour, Celsius, and hectopascals. A personal choice overrides the server default
+set by `/settings units`; scheduled reports, alerts, audits, flight leaders, and
+the live dashboard use the server default. Command filters named `radius-nm`
+and altitude-in-feet remain explicit canonical inputs regardless of display
+preference.
 
 `/alerts configure` can target the Movements category (takeoff, landing, and
 approach, feeder-only) in addition to watches, emergencies, feeder health, and
@@ -220,9 +226,11 @@ Ed25519 key, and sends it outbound. The central service stores only the public
 key and durable replay sequence. It accepts no proxy or arbitrary URL command.
 
 An Admin with Manage Server creates an ephemeral 15-minute invitation using
-`/feeders invite`. Other `/feeders` actions rename approved public metadata,
-set the public airport/weather station, pause, rotate, revoke, test, or choose a
-default view. Ordinary members see only approved public summaries.
+`/feeders invite`. `/feeders rename` changes the approved public name of either
+the local receiver or an invited feeder and persists it across restarts;
+`/feeders set-default` chooses the view used when a command omits its feeder
+option. Other actions set the public airport/weather station, pause, rotate,
+revoke, or test a feeder. Ordinary members see only approved public summaries.
 
 Central ingress remains disabled by default. To put a private HTTPS reverse
 proxy or mesh endpoint in front of loopback port 9091:

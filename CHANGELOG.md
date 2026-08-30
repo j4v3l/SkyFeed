@@ -5,15 +5,25 @@ versioning after the first public preview.
 
 ## Unreleased
 
+## 0.1.2 - 2026-08-29
+
 ### Changed
 
+- Hardened administrator-approved feeder names for local and invited receivers,
+  including Unicode-aware validation, immediate live refresh, and restart-safe
+  persistence. A server can select any approved feeder as its default view.
+- Added separate Imperial, Aviation, and Metric display choices. New and
+  existing server defaults move to U.S. Imperial measurements while explicit
+  member preferences remain unchanged.
+- Applied the selected units consistently to weather, aircraft, movement and
+  high-interest alerts, tracks, reports, flight leaders, privacy disclosures,
+  feeder diagnostics, dashboards, and administrator audits.
 - Added secure Admin-only message deletion by message link, ID, or Discord
   context action, with native Manage Messages enforcement, private confirmation,
   durable moderation audit records, and no stored message content.
 - Added one persistent live flight-leaders card in the configured reports
   channel, refreshed in place with fastest, slowest, highest, and lowest fresh
   airborne aircraft from the deduplicated all-feeder view.
-
 - Reduced community aggregate allocation volume while preserving immutable
   snapshots and deterministic feeder attribution.
 - Partitioned watch-rule indexes and state by feeder, keeping emergency
