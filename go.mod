@@ -8,7 +8,7 @@ require (
 	github.com/disgoorg/snowflake/v2 v2.0.3
 	github.com/klauspost/compress v1.19.2
 	golang.org/x/sync v0.22.0
-	modernc.org/sqlite v1.57.0
+	modernc.org/sqlite v1.58.0
 )
 
 require (
@@ -44,9 +44,9 @@ require (
 	golang.org/x/vuln v1.7.0 // indirect
 	honnef.co/go/tools v0.8.0-rc.1 // indirect
 	k8s.io/klog/v2 v2.90.1 // indirect
-	modernc.org/libc v1.74.4 // indirect
+	modernc.org/libc v1.75.6 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
-	modernc.org/memory v1.11.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
 )
 
 tool (
