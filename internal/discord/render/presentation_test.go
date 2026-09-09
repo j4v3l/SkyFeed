@@ -93,6 +93,7 @@ func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
 	if provider := fieldValueContaining(embed, "Data source"); !strings.Contains(provider, "Community aggregate") || strings.Contains(provider, "Unknown") {
 		t.Fatalf("aggregate provider = %q", provider)
 	}
+	assertAtMostTwoFactsPerLine(t, fieldValueContaining(embed, "Community coverage"))
 }
 
 func TestCommunityActivityIsGroupedByApprovedArea(t *testing.T) {
@@ -519,10 +520,47 @@ func TestAirportDashboardUsesFriendlyWeatherActivityAndAttribution(t *testing.T)
 			t.Fatalf("airport field must remain readable on narrow screens: %#v", field)
 		}
 	}
+	assertAtMostTwoFactsPerLine(t, fieldMap(embed)["🌤️ Flying weather"])
+	assertAtMostTwoFactsPerLine(t, fieldMap(embed)["✈️ Arrivals & departures"])
 
 	details := AirportDashboard(domain.Airport{ICAO: "KXYZ"}, WeatherView{METAR: "KXYZ 231453Z 18012KT", METARStatus: "available"}, domain.AirportActivity{Configured: true}, "weather-details", now, domain.UnitsAviation)
 	if !strings.Contains(embedFieldValues(details), "231453Z") {
 		t.Fatalf("weather details omitted raw report: %q", embedFieldValues(details))
+	}
+}
+
+func TestAirportDashboardLimitsMovementSummaryDensity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	movements := make([]domain.AirportMovement, 4)
+	for index := range movements {
+		movements[index] = domain.AirportMovement{
+			Phase: domain.MovementApproach, ICAO: "ABC12" + string(rune('3'+index)), HasDistance: true,
+			DistanceNM: float64(index + 1), HasAltitude: true, AltitudeFeet: 1500 + index*100,
+			HasVerticalRate: true, VerticalRateFPM: -500, HasGroundSpeed: true, GroundSpeedKts: 120,
+		}
+	}
+	embed := AirportDashboard(
+		domain.Airport{ICAO: "KXYZ"},
+		WeatherView{METARStatus: "available", FlightCategory: "VFR"},
+		domain.AirportActivity{Configured: true, Movements: movements},
+		"", now, domain.UnitsImperial,
+	)
+	value := fieldMap(embed)["✈️ Arrivals & departures"]
+	if got := strings.Count(value, "likely approaching"); got != 2 {
+		t.Fatalf("movement summary rendered %d records, want 2: %q", got, value)
+	}
+	if !strings.Contains(value, "…and 2 more") {
+		t.Fatalf("movement summary omitted overflow hint: %q", value)
+	}
+	assertAtMostTwoFactsPerLine(t, value)
+}
+
+func assertAtMostTwoFactsPerLine(t *testing.T, value string) {
+	t.Helper()
+	for _, line := range strings.Split(value, "\n") {
+		if facts := strings.Count(line, " · ") + 1; facts > 2 {
+			t.Fatalf("line contains %d facts: %q", facts, line)
+		}
 	}
 }
 

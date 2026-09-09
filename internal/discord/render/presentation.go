@@ -132,7 +132,11 @@ func feederOverview(feeders []domain.FeederSummary) string {
 	if len(areaNames) > 0 {
 		coverage = strings.Join(areaNames, " · ")
 	}
-	return Truncate(fmt.Sprintf("🟢 %d healthy · 🟡 %d attention · 🔴 %d offline · ⚪ %d paused\n%s", healthy, attention, offline, disabled, coverage), 1000)
+	return Truncate(Rows(
+		FactRow{Primary: fmt.Sprintf("🟢 %d healthy", healthy), Secondary: fmt.Sprintf("🟡 %d attention", attention)},
+		FactRow{Primary: fmt.Sprintf("🔴 %d offline", offline), Secondary: fmt.Sprintf("⚪ %d paused", disabled)},
+		FactRow{Primary: "**Areas** " + coverage},
+	), 1000)
 }
 
 func Feeder(snapshot *domain.Snapshot, now time.Time) discord.Embed {
@@ -480,15 +484,19 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 	lines := []string{status}
 	if weather.ReportingICAO != "" && weather.RequestedICAO != "" && !strings.EqualFold(weather.ReportingICAO, weather.RequestedICAO) {
 		station := fmt.Sprintf("📡 Observed at **%s** for %s", PlainText(weather.ReportingICAO), PlainText(weather.RequestedICAO))
+		stationFacts := make([]string, 0, 2)
 		if weather.HasStationDistance {
-			station += " · " + unitsFor(units).distanceNM(weather.StationDistanceNM) + " away"
+			stationFacts = append(stationFacts, unitsFor(units).distanceNM(weather.StationDistanceNM)+" away")
 		}
 		if weather.StationStatus == "nearby" {
-			station += " · nearest reporting station"
+			stationFacts = append(stationFacts, "nearest reporting station")
 		} else {
-			station += " · renamed/replacement station"
+			stationFacts = append(stationFacts, "renamed/replacement station")
 		}
 		lines = append(lines, station)
+		if len(stationFacts) > 0 {
+			lines = append(lines, "↳ "+Facts(stationFacts...))
+		}
 	}
 	if weather.HasWind {
 		wind := "variable wind"
@@ -532,7 +540,7 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 		measurements = append(measurements, "pressure "+formatter.pressureInHg(weather.AltimeterInHg))
 	}
 	if len(measurements) > 0 {
-		lines = append(lines, "🌡️ "+strings.Join(measurements, " · "))
+		lines = append(lines, "🌡️ "+Facts(measurements...))
 	}
 	taf := "forecast available"
 	switch weather.TAFStatus {
@@ -543,22 +551,22 @@ func weatherSummary(weather WeatherView, now time.Time, units domain.UnitSystem)
 	case "":
 		taf = "airport forecast not requested"
 	}
-	ageText := ""
 	weatherTime := weather.ObservedAt
 	if weatherTime.IsZero() {
 		weatherTime = weather.FetchedAt
 	}
+	timing := ""
 	if !weatherTime.IsZero() {
 		age := now.Sub(weatherTime)
 		if age < 0 {
 			age = 0
 		}
-		ageText = " · observed " + conciseDuration(age) + " ago"
+		timing = "observed " + conciseDuration(age) + " ago"
 	}
+	lines = append(lines, "🕒 "+Facts(taf, timing))
 	if weather.Stale {
-		ageText += " · showing the last cached report"
+		lines = append(lines, "🟡 Showing the last cached report")
 	}
-	lines = append(lines, "🕒 "+taf+ageText)
 	return strings.Join(lines, "\n")
 }
 
@@ -593,7 +601,7 @@ func cloudSummary(clouds []WeatherCloudView, units domain.UnitSystem) string {
 		}
 		parts = append(parts, cover)
 	}
-	return strings.Join(parts, " · ")
+	return Facts(parts...)
 }
 
 func activitySummary(activity domain.AirportActivity, units domain.UnitSystem, now time.Time) string {
@@ -603,12 +611,13 @@ func activitySummary(activity domain.AirportActivity, units domain.UnitSystem, n
 	if len(activity.Movements) == 0 {
 		return "🟢 No likely arrivals or departures detected right now.\nSkyFeed waits for three compatible local ADS-B updates before showing a trend."
 	}
-	lines := make([]string, 0, min(4, len(activity.Movements))+1)
-	for _, movement := range activity.Movements[:min(4, len(activity.Movements))] {
+	const summaryLimit = 2
+	lines := make([]string, 0, min(summaryLimit, len(activity.Movements))+2)
+	for _, movement := range activity.Movements[:min(summaryLimit, len(activity.Movements))] {
 		lines = append(lines, movementOneLine(movement, units))
 	}
-	if len(activity.Movements) > 4 {
-		lines = append(lines, fmt.Sprintf("…and %d more. Open **Arrivals & departures** for the full view.", len(activity.Movements)-4))
+	if len(activity.Movements) > summaryLimit {
+		lines = append(lines, fmt.Sprintf("…and %d more. Open **Arrivals & departures** for the full view.", len(activity.Movements)-summaryLimit))
 	}
 	if !activity.UpdatedAt.IsZero() {
 		age := now.Sub(activity.UpdatedAt)
@@ -641,7 +650,7 @@ func activityFields(activity domain.AirportActivity, units domain.UnitSystem, no
 
 func movementOneLine(movement domain.AirportMovement, units domain.UnitSystem) string {
 	identity := PlainText(firstNonEmpty(movement.Callsign, movement.ICAO))
-	return fmt.Sprintf("%s **%s** — %s · %s", movementIcon(movement.Phase), identity, movementLabel(movement.Phase), movementFacts(movement, units))
+	return fmt.Sprintf("%s **%s** — %s\n%s", movementIcon(movement.Phase), identity, movementLabel(movement.Phase), movementFacts(movement, units))
 }
 
 func movementFacts(movement domain.AirportMovement, units domain.UnitSystem) string {
@@ -664,7 +673,7 @@ func movementFacts(movement domain.AirportMovement, units domain.UnitSystem) str
 	if len(parts) == 0 {
 		return "live position details unavailable"
 	}
-	return strings.Join(parts, " · ")
+	return Facts(parts...)
 }
 
 func movementIcon(phase domain.MovementPhase) string {
