@@ -1,0 +1,16 @@
+{
+  "title": "SkyFeed • Community feeders",
+  "description": "Approved community coverage only. Account, network, and receiver details stay hidden.\nShowing 1–1 of 1 feeders\nPage 1 of 1",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "1. 🟢 Home radar",
+      "value": "**Area** Palm Beach · **Status** healthy\n**Aircraft** 3",
+      "inline": false
+    }
+  ]
+}

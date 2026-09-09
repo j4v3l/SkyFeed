@@ -1,0 +1,9 @@
+{
+  "title": "SkyFeed • Error",
+  "description": "🟡 **NEEDS ATTENTION**\nThis aircraft is no longer visible. Refresh to see current traffic.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 15971898,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  }
+}

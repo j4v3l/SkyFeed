@@ -1,0 +1,26 @@
+{
+  "title": "SkyFeed • Aircraft • ABC123",
+  "description": "`ABC123`",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "live readsb • snapshot age 2s"
+  },
+  "fields": [
+    {
+      "name": "📍 Position",
+      "value": "Position unavailable\nUnknown · Unknown",
+      "inline": false
+    },
+    {
+      "name": "🧭 Movement",
+      "value": "Track Unknown · Unknown",
+      "inline": false
+    },
+    {
+      "name": "📡 Transponder \u0026 freshness",
+      "value": "Squawk `????` · No active emergency\nObserved \u003ct:1699999940:R\u003e · STALE",
+      "inline": false
+    }
+  ]
+}

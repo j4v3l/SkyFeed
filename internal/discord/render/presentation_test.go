@@ -157,7 +157,7 @@ func TestFlightLeadersIsResponsiveProviderAwareAndUnitAware(t *testing.T) {
 		}
 	}
 	values := embedFieldValues(aviation)
-	for _, expected := range []string{"500 kt", "40000 ft", "2 feeders", "90 kt", "1500 ft"} {
+	for _, expected := range []string{"500 kt", "40,000 ft", "2 feeders", "90 kt", "1,500 ft"} {
 		if !strings.Contains(values, expected) {
 			t.Fatalf("aviation card missing %q: %q", expected, values)
 		}
@@ -333,7 +333,7 @@ func TestInterestingAlertMessageUsesLinkButtonForHTTPSReference(t *testing.T) {
 	if !ok || button.Style != discord.ButtonStyleLink || button.URL != "https://w.wiki/CzEu" {
 		t.Fatalf("button=%#v", row.Components[0])
 	}
-	if button.Label != "w.wiki" {
+	if button.Label != "Open reference" {
 		t.Fatalf("label=%q", button.Label)
 	}
 }
@@ -347,7 +347,7 @@ func TestInterestingAlertKeepsPlainReferenceForInvalidURL(t *testing.T) {
 	embed := InterestingAlert(alert)
 	found := false
 	for _, field := range embed.Fields {
-		if field.Name == "Reference" {
+		if strings.Contains(field.Value, "see local notes") {
 			found = true
 			if strings.Contains(field.Value, "https[:]//") {
 				t.Fatalf("unexpected escaped url in %q", field.Value)
@@ -447,12 +447,12 @@ func TestAircraftRendersBothUnitSystemsAndTrends(t *testing.T) {
 	aircraft := domain.Aircraft{ICAO: "ABC123", HasDistance: true, DistanceNM: 10, BearingDegrees: 45, HasAltitude: true, AltitudeFeet: 10_000, HasGroundSpeed: true, GroundSpeedKts: 100, HasVerticalRate: true, VerticalRateFPM: -500}
 	aviation := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsAviation, now))
 	metric := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsMetric, now))
-	for _, expected := range []string{"NE", "10.0 NM", "10000 ft", "100 kt", "↓ -500 ft/min"} {
+	for _, expected := range []string{"NE", "10.0 NM", "10,000 ft", "100 kt", "↓ -500 ft/min"} {
 		if !strings.Contains(aviation, expected) {
 			t.Fatalf("aviation %q missing %q", aviation, expected)
 		}
 	}
-	for _, expected := range []string{"18.5 km", "3048 m", "185 km/h", "↓ -2.5 m/s"} {
+	for _, expected := range []string{"18.5 km", "3,048 m", "185 km/h", "↓ -2.5 m/s"} {
 		if !strings.Contains(metric, expected) {
 			t.Fatalf("metric %q missing %q", metric, expected)
 		}

@@ -89,11 +89,9 @@ func leaderSection(title string, leader report.AircraftLeader, metric string, un
 	if metric == "altitude" {
 		metricTitle = "Altitude"
 	}
-	return section(title, Facts(
-		"**"+PlainText(identity)+"** · `"+PlainText(aircraft.ICAO)+"`",
-		Labeled(metricTitle, value),
-		context,
-		seenBy,
-		fmt.Sprintf("Observed %.1fs ago", leader.Age.Seconds()),
+	return section(title, Rows(
+		FactRow{Primary: "**" + PlainText(identity) + "**", Secondary: "`" + PlainText(aircraft.ICAO) + "`"},
+		FactRow{Primary: Labeled(metricTitle, value), Secondary: context},
+		FactRow{Primary: seenBy, Secondary: fmt.Sprintf("Observed %.1fs ago", leader.Age.Seconds())},
 	))
 }

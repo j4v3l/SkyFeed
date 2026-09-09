@@ -3,7 +3,6 @@ package render
 import (
 	"net/url"
 	"strings"
-	"unicode/utf8"
 )
 
 // SafeHTTPSURL returns a normalized https URL when raw is a safe external link.
@@ -46,16 +45,5 @@ func allowedPlaneAlertHost(host string) bool {
 }
 
 func referenceLinkLabel(raw string) string {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Host == "" {
-		return "Reference"
-	}
-	host := parsed.Host
-	if strings.HasPrefix(strings.ToLower(host), "www.") {
-		host = host[4:]
-	}
-	if utf8.RuneCountInString(host) > 32 {
-		return "Reference"
-	}
-	return host
+	return "Open reference"
 }

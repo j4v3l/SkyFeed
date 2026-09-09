@@ -1,0 +1,31 @@
+{
+  "title": "SkyFeed • Status",
+  "description": "🟢 **HEALTHY**\nLive state updated \u003ct:1699999998:R\u003e.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3526783,
+  "footer": {
+    "text": "live readsb • snapshot age 2s"
+  },
+  "fields": [
+    {
+      "name": "📡 Live traffic",
+      "value": "1 aircraft · Unavailable\nMax range Unavailable",
+      "inline": false
+    },
+    {
+      "name": "🛰️ Data source",
+      "value": "`readsb` · Never",
+      "inline": false
+    },
+    {
+      "name": "🩺 Source health",
+      "value": "**Aircraft** 🟢 HEALTHY\n**Receiver** ⚪ \n**Statistics** ⚪",
+      "inline": false
+    },
+    {
+      "name": "🤖 SkyFeed",
+      "value": "Up 1h0m0s · Enrichment Enabled • presentation-only cache",
+      "inline": false
+    }
+  ]
+}

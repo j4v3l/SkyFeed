@@ -5,6 +5,19 @@ versioning after the first public preview.
 
 ## Unreleased
 
+## 0.1.3 - 2026-09-09
+
+### Changed
+
+- Reduced repeated text in movement and interesting-aircraft alerts. Movement
+  evidence and uncertainty now share one explanation, and community categories
+  use readable names such as Military and Government.
+- Added explicit observation rows, shorter aircraft overviews, consistently
+  spaced leader records, grouped altitude numbers, and Open reference buttons.
+- Limited shared fact lines to two values and added reviewed JSON card fixtures.
+- Updated compression, SQLite, the Go container builder, and QEMU setup action,
+  including the matching Nix dependency hash.
+
 ## 0.1.2 - 2026-08-29
 
 ### Changed

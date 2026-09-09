@@ -9,7 +9,7 @@ buildGoModule {
   version = "0-unstable-${versionInfo}";
   src = self;
 
-  vendorHash = "sha256-n6XNjfJtdgWhzyIggLXDv9FXMMNqu9UWADiAA+eIGug=";
+  vendorHash = "sha256-fLf/HXUxQ1G24C9sMmS0l+iNSodOH2QbtZdXGcR24Bc=";
 
   doCheck = true;
 
