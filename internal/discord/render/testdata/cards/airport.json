@@ -1,0 +1,26 @@
+{
+  "title": "SkyFeed • Airport • KJFK",
+  "description": "📍 **John F. Kennedy International**\nUnavailable\nA quick look at flying weather and nearby airport activity.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3526783,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "At a glance",
+      "value": "`KJFK` / `—` · elevation Unavailable",
+      "inline": false
+    },
+    {
+      "name": "🌤️ Flying weather",
+      "value": "🟢 **VFR** — generally good visual flying conditions\n☁️ No significant cloud layer reported\n🕒 airport forecast not requested · observed \u003c1s ago",
+      "inline": false
+    },
+    {
+      "name": "✈️ Arrivals \u0026 departures",
+      "value": "🟢 No likely arrivals or departures detected right now.\nSkyFeed waits for three compatible local ADS-B updates before showing a trend.",
+      "inline": false
+    }
+  ]
+}

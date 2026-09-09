@@ -16,9 +16,9 @@ func TestUnitFormatterMatrix(t *testing.T) {
 		units                                               domain.UnitSystem
 		distance, altitude, speed, vertical, temp, pressure string
 	}{
-		{"imperial", domain.UnitsImperial, "11.5 mi", "10000 ft", "115 mph", "-500 ft/min", "68°F", "29.92 inHg"},
-		{"aviation", domain.UnitsAviation, "10.0 NM", "10000 ft", "100 kt", "-500 ft/min", "20°C", "29.92 inHg"},
-		{"metric", domain.UnitsMetric, "18.5 km", "3048 m", "185 km/h", "-2.5 m/s", "20°C", "1013 hPa"},
+		{"imperial", domain.UnitsImperial, "11.5 mi", "10,000 ft", "115 mph", "-500 ft/min", "68°F", "29.92 inHg"},
+		{"aviation", domain.UnitsAviation, "10.0 NM", "10,000 ft", "100 kt", "-500 ft/min", "20°C", "29.92 inHg"},
+		{"metric", domain.UnitsMetric, "18.5 km", "3,048 m", "185 km/h", "-2.5 m/s", "20°C", "1013 hPa"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

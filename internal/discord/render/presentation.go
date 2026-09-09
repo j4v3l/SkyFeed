@@ -289,14 +289,12 @@ func AircraftSummary(aircraft domain.Aircraft, snapshot *domain.Snapshot, units 
 	}
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
 	embed := base("Aircraft • "+PlainText(identity), color, now)
-	embed.Description = fmt.Sprintf("✈️ **%s**\n`%s` · %s · %s",
-		PlainText(identity), PlainText(aircraft.ICAO), PlainText(valueOr(aircraft.Registration, "Registration unknown")), PlainText(valueOr(aircraft.AircraftType, "Type unknown")))
+	embed.Description = Rows(FactRow{Primary: "`" + PlainText(aircraft.ICAO) + "`", Secondary: PlainText(aircraft.Registration)}, FactRow{Primary: PlainText(aircraft.AircraftType)})
 	observation := now.Add(-max(aircraft.Seen, 0))
 	embed.Fields = []discord.EmbedField{
-		section("📍 Position", Facts(positionWithUnits(aircraft, units), altitudeWithUnits(aircraft, units), groundSpeedWithUnits(aircraft, units))),
+		section("📍 Position", Rows(FactRow{Primary: positionWithUnits(aircraft, units)}, FactRow{Primary: altitudeWithUnits(aircraft, units), Secondary: groundSpeedWithUnits(aircraft, units)})),
 		section("🧭 Movement", Facts("Track "+trackWithCompass(aircraft), verticalRateWithUnits(aircraft, units))),
-		section("📡 Transponder", Facts("Squawk `"+PlainText(valueOr(aircraft.Squawk, "????"))+"`", PlainText(alert))),
-		section("🕒 Freshness", Facts("Observed "+RelativeTime(observation, "recently"), strings.ToUpper(freshnessLabel(aircraft.Seen)))),
+		section("📡 Transponder & freshness", Rows(FactRow{Primary: "Squawk `" + PlainText(valueOr(aircraft.Squawk, "????")) + "`", Secondary: PlainText(alert)}, FactRow{Primary: "Observed " + RelativeTime(observation, "recently"), Secondary: strings.ToUpper(freshnessLabel(aircraft.Seen))})),
 	}
 	embed.Footer = &discord.EmbedFooter{Text: aircraftProviderFooter(aircraft, snapshot, nil, nil, now)}
 	return BoundEmbed(embed)
@@ -976,19 +974,9 @@ func AircraftWithEnrichmentAndUnits(aircraft domain.Aircraft, snapshot *domain.S
 	}
 	identity := firstNonEmpty(aircraft.Callsign, aircraft.Registration, aircraft.ICAO)
 	embed := base("Aircraft • "+PlainText(identity), color, now)
-	sourceLabel := "unknown"
-	if aircraft.Provider.Known() {
-		sourceLabel = string(aircraft.Provider)
-	}
-	embed.Description = fmt.Sprintf("✈️ **%s**\n`%s` · %s · %s\nSource `%s`",
-		PlainText(identity),
-		PlainText(aircraft.ICAO),
-		PlainText(valueOr(aircraft.Registration, "Registration unknown")),
-		PlainText(valueOr(aircraft.AircraftType, "Type unknown")),
-		PlainText(sourceLabel),
-	)
+	embed.Description = Rows(FactRow{Primary: "`" + PlainText(aircraft.ICAO) + "`", Secondary: PlainText(aircraft.Registration)}, FactRow{Primary: PlainText(aircraft.AircraftType)})
 	embed.Fields = []discord.EmbedField{
-		section("📍 Live position", Facts(positionWithUnits(aircraft, units), altitudeWithUnits(aircraft, units), groundSpeedWithUnits(aircraft, units))),
+		section("📍 Live position", Rows(FactRow{Primary: positionWithUnits(aircraft, units)}, FactRow{Primary: altitudeWithUnits(aircraft, units), Secondary: groundSpeedWithUnits(aircraft, units)})),
 		section("🧭 Movement", Facts("Track "+trackWithCompass(aircraft), verticalRateWithUnits(aircraft, units))),
 		section("📡 Transponder", Facts("Squawk `"+PlainText(valueOr(aircraft.Squawk, "????"))+"`", alert)),
 	}
@@ -1087,6 +1075,10 @@ func AlertWithUnits(alert domain.Alert, units domain.UnitSystem) discord.Embed {
 		color = Caution
 	}
 	description := PlainText(alert.Description)
+	movement := alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach
+	if movement {
+		description = strings.SplitN(description, "\n", 2)[0]
+	}
 	if alert.RouteSummary != "" {
 		description = description + "\n**Route** " + PlainText(alert.RouteSummary)
 	}
@@ -1095,10 +1087,9 @@ func AlertWithUnits(alert domain.Alert, units domain.UnitSystem) discord.Embed {
 	if observation := alertObservationFacts(alert.Observation, units); observation != "" {
 		embed.Fields = append(embed.Fields, section("Live observation", observation))
 	}
-	if alert.Type == domain.RuleTakeoff || alert.Type == domain.RuleLanding || alert.Type == domain.RuleApproach {
+	if movement {
 		embed.Fields = append(embed.Fields,
-			section("How confident is this?", "Three consecutive local ADS-B samples matched the airport-relative movement pattern."),
-			section("Friendly reminder", "This is a likely movement, not confirmation from air traffic control or the airport."),
+			section("Why SkyFeed flagged this", "Three compatible ADS-B updates. This is an inferred trend, not confirmed airport or air traffic control status."),
 		)
 	} else {
 		embed.Fields = append(embed.Fields, section("Rule", fmt.Sprintf("%s · %s", string(alert.Type), priority)))
@@ -1113,11 +1104,11 @@ func InterestingAlert(alert domain.Alert) discord.Embed {
 func InterestingAlertWithUnits(alert domain.Alert, units domain.UnitSystem) discord.Embed {
 	color := Scope
 	view := "Interesting aircraft"
-	description := PlainText(alert.Description)
+	description := "Community aircraft metadata match."
 	if alert.InterestingPriority {
 		color = EmergencyColor
 		view = "High-interest aircraft"
-		description = "🔴 **HIGH-INTEREST MATCH**\nCommunity metadata match—verify independently.\n" + description
+		description = "🔴 **HIGH-INTEREST MATCH**\nCommunity metadata match—verify independently."
 	}
 	if alert.RouteSummary != "" {
 		description = description + "\n**Route** " + PlainText(alert.RouteSummary)
@@ -1127,22 +1118,28 @@ func InterestingAlertWithUnits(alert domain.Alert, units domain.UnitSystem) disc
 		embed.Description = "**" + PlainText(alert.Title) + "**\n" + embed.Description
 	}
 	embed.Fields = []discord.EmbedField{
-		section("✈️ Aircraft", Facts("`"+PlainText(valueOr(alert.AircraftICAO, "Unknown"))+"`", PlainText(valueOr(alert.Callsign, "Unknown")))),
-		section("🏷️ Classification", PlainText(valueOr(alert.InterestingGroup, "Unknown"))),
+		section("✈️ Aircraft", Rows(FactRow{Primary: "`" + PlainText(valueOr(alert.AircraftICAO, "Unknown")) + "`", Secondary: PlainText(alert.Callsign)})),
 	}
 	if observation := alertObservationFacts(alert.Observation, units); observation != "" {
 		embed.Fields = append(embed.Fields, section("📍 Live observation", observation))
 	}
-	if alert.InterestingOperator != "" {
-		embed.Fields = append(embed.Fields, section("🏢 Operator", PlainText(alert.InterestingOperator)))
+	if alert.InterestingOperator != "" && alert.InterestingOperator != alert.Title {
+		embed.Fields[0].Value += "\n" + PlainText(alert.InterestingOperator)
 	}
-	if alert.InterestingTags != "" {
-		embed.Fields = append(embed.Fields, section("🔖 Tags", PlainText(alert.InterestingTags)))
+	group := alert.InterestingGroup
+	switch group {
+	case "Mil":
+		group = "Military"
+	case "Gov":
+		group = "Government"
+	case "Civ":
+		group = "Civil"
 	}
-	if alert.InterestingLink != "" {
-		if _, ok := SafeHTTPSURL(alert.InterestingLink); !ok {
-			embed.Fields = append(embed.Fields, section("Reference", PlainText(alert.InterestingLink)))
-		}
+	if group != "" || alert.InterestingTags != "" {
+		embed.Fields = append(embed.Fields, section("Why it matched", Rows(FactRow{Primary: PlainText(group)}, FactRow{Primary: Truncate(PlainText(alert.InterestingTags), 300)})))
+	}
+	if alert.InterestingLink != "" && !strings.Contains(alert.InterestingLink, "://") {
+		embed.Fields[0].Value += "\n" + Truncate(PlainText(alert.InterestingLink), 160)
 	}
 	if alert.InterestingImage != "" {
 		if imageURL, ok := SafePlaneAlertImageURL(alert.InterestingImage); ok {
@@ -1153,24 +1150,24 @@ func InterestingAlertWithUnits(alert domain.Alert, units domain.UnitSystem) disc
 }
 
 func alertObservationFacts(observation domain.AlertObservation, units domain.UnitSystem) string {
-	parts := make([]string, 0, 4)
+	position, motion := FactRow{}, FactRow{}
 	if observation.HasDistance {
 		label := "Receiver distance "
 		if observation.DistanceFromAirport {
 			label = "Airport distance "
 		}
-		parts = append(parts, label+distance(observation.DistanceNM, units))
+		position.Primary = label + distance(observation.DistanceNM, units)
 	}
 	if observation.HasAltitude {
-		parts = append(parts, "Altitude "+unitsFor(units).altitudeFeet(observation.AltitudeFeet))
+		position.Secondary = "Altitude " + unitsFor(units).altitudeFeet(observation.AltitudeFeet)
 	}
 	if observation.HasGroundSpeed {
-		parts = append(parts, "Speed "+unitsFor(units).speedKts(observation.GroundSpeedKts))
+		motion.Primary = "Speed " + unitsFor(units).speedKts(observation.GroundSpeedKts)
 	}
 	if observation.HasVerticalRate {
-		parts = append(parts, "Vertical "+unitsFor(units).verticalRateFPM(observation.VerticalRateFPM))
+		motion.Secondary = verticalRateWithUnits(domain.Aircraft{HasVerticalRate: true, VerticalRateFPM: observation.VerticalRateFPM}, units)
 	}
-	return Facts(parts...)
+	return Rows(position, motion)
 }
 
 func Report(summary storage.ReportSummary) discord.Embed {

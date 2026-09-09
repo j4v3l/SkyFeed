@@ -72,11 +72,40 @@ func Facts(values ...string) string {
 	if len(clean) == 0 {
 		return "Unavailable"
 	}
-	lines := make([]string, 0, (len(clean)+2)/3)
-	for start := 0; start < len(clean); start += 3 {
-		lines = append(lines, strings.Join(clean[start:min(start+3, len(clean))], " · "))
+	lines := make([]string, 0, (len(clean)+1)/2)
+	for start := 0; start < len(clean); start += 2 {
+		lines = append(lines, strings.Join(clean[start:min(start+2, len(clean))], " · "))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// FactRow keeps related values together. Separate rows always have a semantic
+// line break, independent of Discord's client width.
+type FactRow struct {
+	Primary   string
+	Secondary string
+}
+
+func Rows(rows ...FactRow) string {
+	var out strings.Builder
+	for _, row := range rows {
+		first, second := strings.TrimSpace(row.Primary), strings.TrimSpace(row.Secondary)
+		if first == "" {
+			first, second = second, ""
+		}
+		if first == "" {
+			continue
+		}
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(first)
+		if second != "" {
+			out.WriteString(" · ")
+			out.WriteString(second)
+		}
+	}
+	return out.String()
 }
 
 func Labeled(label, value string) string {

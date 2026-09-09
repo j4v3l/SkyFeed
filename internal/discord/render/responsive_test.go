@@ -1,8 +1,11 @@
 package render
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -15,11 +18,11 @@ import (
 func TestResponsiveFactsUseSemanticBreaks(t *testing.T) {
 	got := Facts("one", "two", "three", "four", "five", "six", "seven")
 	lines := strings.Split(got, "\n")
-	if len(lines) != 3 {
+	if len(lines) != 4 {
 		t.Fatalf("lines = %q", lines)
 	}
 	for _, line := range lines {
-		if facts := strings.Count(line, " · ") + 1; facts > 3 {
+		if facts := strings.Count(line, " · ") + 1; facts > 2 {
 			t.Fatalf("line contains %d facts: %q", facts, line)
 		}
 	}
@@ -78,11 +81,16 @@ func TestResponsivePresentationSnapshotsSerialize(t *testing.T) {
 		"airport": AirportDashboard(domain.Airport{ICAO: "KJFK", Name: "John F. Kennedy International"}, WeatherView{
 			RequestedICAO: "KJFK", ReportingICAO: "KJFK", METARStatus: "available", FlightCategory: "VFR", FetchedAt: now,
 		}, domain.AirportActivity{AirportCode: "KJFK", Configured: true}, "", now, domain.UnitsAviation),
-		"alerts":     AlertConfigsPage([]storage.AlertConfig{{Category: "emergency", Enabled: true, Cooldown: time.Minute}}, 0, DefaultPageSize, now),
-		"report":     ReportWithUnits(storage.ReportSummary{From: now.Add(-time.Hour), To: now, AircraftObservations: 9, PeakTracked: 3}, domain.UnitsAviation),
-		"feeders":    FeedersPage([]FeederListItem{{Name: "Home radar", Area: "Palm Beach", State: "healthy", Aircraft: 3}}, 0, DefaultPageSize, now),
-		"moderation": ModerationHistoryPage([]storage.ModerationCase{{ID: 7, Action: "timeout", Status: "succeeded", Reason: "Spam", CreatedAt: now}}, 0, DefaultPageSize, now),
-		"help":       Help(now, true),
+		"alerts":        AlertConfigsPage([]storage.AlertConfig{{Category: "emergency", Enabled: true, Cooldown: time.Minute}}, 0, DefaultPageSize, now),
+		"report":        ReportWithUnits(storage.ReportSummary{From: now.Add(-time.Hour), To: now, AircraftObservations: 9, PeakTracked: 3}, domain.UnitsAviation),
+		"feeders":       FeedersPage([]FeederListItem{{Name: "Home radar", Area: "Palm Beach", State: "healthy", Aircraft: 3}}, 0, DefaultPageSize, now),
+		"moderation":    ModerationHistoryPage([]storage.ModerationCase{{ID: 7, Action: "timeout", Status: "succeeded", Reason: "Spam", CreatedAt: now}}, 0, DefaultPageSize, now),
+		"help":          Help(now, true),
+		"movement":      Alert(domain.Alert{Type: domain.RuleApproach, AircraftICAO: "ABC123", Callsign: "SKY123", ObservedAt: now, Description: "SKY123 appears to be approaching the airport.\nThree samples matched."}),
+		"high-interest": InterestingAlert(domain.Alert{InterestingPriority: true, AircraftICAO: "ABC123", InterestingGroup: "Gov", InterestingTags: "Research • Survey", ObservedAt: now}),
+		"empty":         Nearby(nil, 0, 5, now),
+		"error":         Error("This aircraft is no longer visible. Refresh to see current traffic.", now),
+		"stale":         AircraftSummary(domain.Aircraft{ICAO: "ABC123", Seen: time.Minute}, snapshot, domain.UnitsMetric, now),
 		"audit": SystemAudit(SystemAuditData{
 			GeneratedAt: now, OverallStatus: "healthy", Live: true, Ready: true, ActiveProvider: "readsb",
 		}),
@@ -94,6 +102,27 @@ func TestResponsivePresentationSnapshotsSerialize(t *testing.T) {
 				t.Fatal(err)
 			}
 			serialized := string(payload)
+			golden, err := json.MarshalIndent(embed, "", "  ")
+			if err != nil {
+				t.Fatal(err)
+			}
+			golden = append(golden, '\n')
+			path := filepath.Join("testdata", "cards", name+".json")
+			if os.Getenv("SKYFEED_UPDATE_GOLDEN") == "1" {
+				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, golden, 0644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(golden, want) {
+				t.Fatalf("card changed; review and regenerate %s with SKYFEED_UPDATE_GOLDEN=1", path)
+			}
 			if !strings.Contains(serialized, `"title":"SkyFeed • `) {
 				t.Fatalf("serialized snapshot has no SkyFeed hierarchy: %s", serialized)
 			}

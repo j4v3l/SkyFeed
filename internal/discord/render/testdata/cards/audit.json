@@ -1,0 +1,41 @@
+{
+  "title": "SkyFeed • System audit",
+  "description": "🟢 **HEALTHY**\nLive `true` • Ready `true` • Up \u003c1s",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3526783,
+  "footer": {
+    "text": "Admin-only · no coordinates or secrets included"
+  },
+  "fields": [
+    {
+      "name": "📡 Live traffic",
+      "value": "0 aircraft • Provider `readsb` • Age \u003c1s\n0.0 msg/s • Maximum range 0.0 mi",
+      "inline": false
+    },
+    {
+      "name": "🩺 Components",
+      "value": "No component health registered yet.",
+      "inline": false
+    },
+    {
+      "name": "🔔 Server operations",
+      "value": "alerts active · muted squawks `none`\nwatch 0 · alert configs 0 · report schedules 0\ninteresting seen 0 · pending mod logs 0 · plane-alert 0\nmessage delete 0/0 channels",
+      "inline": false
+    },
+    {
+      "name": "🔗 Discord bindings",
+      "value": "channels: none\nroles: none",
+      "inline": false
+    },
+    {
+      "name": "📈 Last 24 hours",
+      "value": "0 aircraft observations · 0 peak tracked · 0 msgs\nmax 0.0 mi · 0 emergency events\nroute catalog 0 · route sightings 0",
+      "inline": false
+    },
+    {
+      "name": "✨ Enrichment",
+      "value": "ADSBDB disabled\nadsb.lol disabled",
+      "inline": false
+    }
+  ]
+}

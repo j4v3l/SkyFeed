@@ -1,0 +1,41 @@
+{
+  "title": "SkyFeed • Help",
+  "description": "👋 **WHAT WOULD YOU LIKE TO DO?**\nStart with a task below. SkyFeed shows a quick answer first and keeps deeper details behind controls.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "✈️ Explore aircraft",
+      "value": "`/nearby` `/traffic` `/aircraft` `/route` `/airport`\n`/airline` `/squawk` `/emergency` `/top live` `/top traffic`",
+      "inline": false
+    },
+    {
+      "name": "🔔 Alerts",
+      "value": "Use `/watch` for personal rules. Operators can configure server delivery with `/alerts`.",
+      "inline": false
+    },
+    {
+      "name": "📊 Reports \u0026 health",
+      "value": "`/status` `/feeder` `/reports` `/privacy`",
+      "inline": false
+    },
+    {
+      "name": "🛡️ Moderation",
+      "value": "Authorized moderators can warn, timeout, kick, ban, and review case history with `/moderation`. SkyFeed Admins with Manage Messages can securely delete a message by link, ID, or its context menu.",
+      "inline": false
+    },
+    {
+      "name": "⚙️ Preferences",
+      "value": "Use `/preferences units` to choose imperial, aviation, or metric values for your own views.",
+      "inline": false
+    },
+    {
+      "name": "🔧 Administration",
+      "value": "Use `/settings`, `/feeders`, and `/audit` for server configuration and diagnostics. Role changes also require Manage Roles.",
+      "inline": false
+    }
+  ]
+}

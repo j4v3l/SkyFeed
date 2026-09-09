@@ -1,0 +1,21 @@
+{
+  "title": "SkyFeed • High-interest aircraft",
+  "description": "🔴 **HIGH-INTEREST MATCH**\nCommunity metadata match—verify independently.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 15749714,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "✈️ Aircraft",
+      "value": "`ABC123`",
+      "inline": false
+    },
+    {
+      "name": "Why it matched",
+      "value": "Government\nResearch • Survey",
+      "inline": false
+    }
+  ]
+}
