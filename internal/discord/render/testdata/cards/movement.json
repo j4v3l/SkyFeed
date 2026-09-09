@@ -1,0 +1,21 @@
+{
+  "title": "SkyFeed • 🛬 Likely approach",
+  "description": "SKY123 appears to be approaching the airport.",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 15971898,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "Aircraft",
+      "value": "`ABC123` · SKY123",
+      "inline": false
+    },
+    {
+      "name": "Why SkyFeed flagged this",
+      "value": "Three compatible ADS-B updates. This is an inferred trend, not confirmed airport or air traffic control status.",
+      "inline": false
+    }
+  ]
+}

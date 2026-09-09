@@ -93,6 +93,7 @@ func TestStatusSummarizesCommunityFeederHealthWithoutPrivateIDs(t *testing.T) {
 	if provider := fieldValueContaining(embed, "Data source"); !strings.Contains(provider, "Community aggregate") || strings.Contains(provider, "Unknown") {
 		t.Fatalf("aggregate provider = %q", provider)
 	}
+	assertAtMostTwoFactsPerLine(t, fieldValueContaining(embed, "Community coverage"))
 }
 
 func TestCommunityActivityIsGroupedByApprovedArea(t *testing.T) {
@@ -157,7 +158,7 @@ func TestFlightLeadersIsResponsiveProviderAwareAndUnitAware(t *testing.T) {
 		}
 	}
 	values := embedFieldValues(aviation)
-	for _, expected := range []string{"500 kt", "40000 ft", "2 feeders", "90 kt", "1500 ft"} {
+	for _, expected := range []string{"500 kt", "40,000 ft", "2 feeders", "90 kt", "1,500 ft"} {
 		if !strings.Contains(values, expected) {
 			t.Fatalf("aviation card missing %q: %q", expected, values)
 		}
@@ -333,7 +334,7 @@ func TestInterestingAlertMessageUsesLinkButtonForHTTPSReference(t *testing.T) {
 	if !ok || button.Style != discord.ButtonStyleLink || button.URL != "https://w.wiki/CzEu" {
 		t.Fatalf("button=%#v", row.Components[0])
 	}
-	if button.Label != "w.wiki" {
+	if button.Label != "Open reference" {
 		t.Fatalf("label=%q", button.Label)
 	}
 }
@@ -347,7 +348,7 @@ func TestInterestingAlertKeepsPlainReferenceForInvalidURL(t *testing.T) {
 	embed := InterestingAlert(alert)
 	found := false
 	for _, field := range embed.Fields {
-		if field.Name == "Reference" {
+		if strings.Contains(field.Value, "see local notes") {
 			found = true
 			if strings.Contains(field.Value, "https[:]//") {
 				t.Fatalf("unexpected escaped url in %q", field.Value)
@@ -447,12 +448,12 @@ func TestAircraftRendersBothUnitSystemsAndTrends(t *testing.T) {
 	aircraft := domain.Aircraft{ICAO: "ABC123", HasDistance: true, DistanceNM: 10, BearingDegrees: 45, HasAltitude: true, AltitudeFeet: 10_000, HasGroundSpeed: true, GroundSpeedKts: 100, HasVerticalRate: true, VerticalRateFPM: -500}
 	aviation := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsAviation, now))
 	metric := embedFieldValues(AircraftSummary(aircraft, nil, domain.UnitsMetric, now))
-	for _, expected := range []string{"NE", "10.0 NM", "10000 ft", "100 kt", "↓ -500 ft/min"} {
+	for _, expected := range []string{"NE", "10.0 NM", "10,000 ft", "100 kt", "↓ -500 ft/min"} {
 		if !strings.Contains(aviation, expected) {
 			t.Fatalf("aviation %q missing %q", aviation, expected)
 		}
 	}
-	for _, expected := range []string{"18.5 km", "3048 m", "185 km/h", "↓ -2.5 m/s"} {
+	for _, expected := range []string{"18.5 km", "3,048 m", "185 km/h", "↓ -2.5 m/s"} {
 		if !strings.Contains(metric, expected) {
 			t.Fatalf("metric %q missing %q", metric, expected)
 		}
@@ -519,10 +520,47 @@ func TestAirportDashboardUsesFriendlyWeatherActivityAndAttribution(t *testing.T)
 			t.Fatalf("airport field must remain readable on narrow screens: %#v", field)
 		}
 	}
+	assertAtMostTwoFactsPerLine(t, fieldMap(embed)["🌤️ Flying weather"])
+	assertAtMostTwoFactsPerLine(t, fieldMap(embed)["✈️ Arrivals & departures"])
 
 	details := AirportDashboard(domain.Airport{ICAO: "KXYZ"}, WeatherView{METAR: "KXYZ 231453Z 18012KT", METARStatus: "available"}, domain.AirportActivity{Configured: true}, "weather-details", now, domain.UnitsAviation)
 	if !strings.Contains(embedFieldValues(details), "231453Z") {
 		t.Fatalf("weather details omitted raw report: %q", embedFieldValues(details))
+	}
+}
+
+func TestAirportDashboardLimitsMovementSummaryDensity(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	movements := make([]domain.AirportMovement, 4)
+	for index := range movements {
+		movements[index] = domain.AirportMovement{
+			Phase: domain.MovementApproach, ICAO: "ABC12" + string(rune('3'+index)), HasDistance: true,
+			DistanceNM: float64(index + 1), HasAltitude: true, AltitudeFeet: 1500 + index*100,
+			HasVerticalRate: true, VerticalRateFPM: -500, HasGroundSpeed: true, GroundSpeedKts: 120,
+		}
+	}
+	embed := AirportDashboard(
+		domain.Airport{ICAO: "KXYZ"},
+		WeatherView{METARStatus: "available", FlightCategory: "VFR"},
+		domain.AirportActivity{Configured: true, Movements: movements},
+		"", now, domain.UnitsImperial,
+	)
+	value := fieldMap(embed)["✈️ Arrivals & departures"]
+	if got := strings.Count(value, "likely approaching"); got != 2 {
+		t.Fatalf("movement summary rendered %d records, want 2: %q", got, value)
+	}
+	if !strings.Contains(value, "…and 2 more") {
+		t.Fatalf("movement summary omitted overflow hint: %q", value)
+	}
+	assertAtMostTwoFactsPerLine(t, value)
+}
+
+func assertAtMostTwoFactsPerLine(t *testing.T, value string) {
+	t.Helper()
+	for _, line := range strings.Split(value, "\n") {
+		if facts := strings.Count(line, " · ") + 1; facts > 2 {
+			t.Fatalf("line contains %d facts: %q", facts, line)
+		}
 	}
 }
 

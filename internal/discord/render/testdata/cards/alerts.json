@@ -1,0 +1,16 @@
+{
+  "title": "SkyFeed • Alert settings",
+  "description": "Showing 1–1 of 1 alert categories\nPage 1 of 1",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "🟢 emergency",
+      "value": "**State** Enabled · **Cooldown** 1m0s\n**Destination** Default channel",
+      "inline": false
+    }
+  ]
+}

@@ -34,9 +34,9 @@ func (formatter unitFormatter) distanceNM(value float64) string {
 
 func (formatter unitFormatter) altitudeFeet(value int) string {
 	if formatter.system == domain.UnitsMetric {
-		return fmt.Sprintf("%d m", int(float64(value)*0.3048))
+		return commaInt(int(float64(value)*0.3048)) + " m"
 	}
-	return fmt.Sprintf("%d ft", value)
+	return commaInt(value) + " ft"
 }
 
 func (formatter unitFormatter) elevationFeet(value float64) string {

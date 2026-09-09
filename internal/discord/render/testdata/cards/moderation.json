@@ -1,0 +1,16 @@
+{
+  "title": "SkyFeed • Moderation history",
+  "description": "Showing 1–1 of 1 cases\nPage 1 of 1",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "🟢 Case 7 • TIMEOUT",
+      "value": "**User** `0` · **Status** SUCCEEDED\n**Created** \u003ct:1700000000:R\u003e\n**Reason**\nSpam",
+      "inline": false
+    }
+  ]
+}

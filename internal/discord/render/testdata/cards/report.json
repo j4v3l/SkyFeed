@@ -1,0 +1,21 @@
+{
+  "title": "SkyFeed • Report",
+  "description": "📊 **TRAFFIC SUMMARY**\n\u003ct:1699996400:f\u003e to \u003ct:1700000000:f\u003e",
+  "timestamp": "2023-11-14T22:13:20Z",
+  "color": 3651071,
+  "footer": {
+    "text": "SkyFeed • live aviation data"
+  },
+  "fields": [
+    {
+      "name": "✈️ Traffic",
+      "value": "9 observations · 3 peak tracked\n0 messages",
+      "inline": false
+    },
+    {
+      "name": "📡 Range \u0026 alerts",
+      "value": "Max 0.0 NM · 0 emergency events",
+      "inline": false
+    }
+  ]
+}
